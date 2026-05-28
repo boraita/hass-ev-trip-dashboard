@@ -1,0 +1,13 @@
+# Last 10 trips, BYD-app style table.
+# Replace __DEVICE__ with your device slug.
+
+type: markdown
+content: |
+  ### Recent trips ({{ states('sensor.__DEVICE___recent_trips') }})
+  {%- for t in state_attr('sensor.__DEVICE___recent_trips', 'trips') or [] %}
+
+  **{{ as_timestamp(t.ended_at) | timestamp_custom('%d/%m %H:%M') }}**{% if t.journey_id %} · _journey #{{ t.journey_id }}_{% endif %}
+  | Distance | Energy | Efficiency | Cost | Score |
+  |---:|---:|---:|---:|---:|
+  | {{ t.distance_km }} km | {{ t.energy_kwh or "—" }} kWh | {{ t.consumption_kwh_100km or "—" }} kWh/100 | {{ t.cost or "—" }} {{ t.currency or "" }} | **{{ t.score or "—" }}** |
+  {%- endfor %}

@@ -1,0 +1,22 @@
+# Battery status — SoC %, kWh in battery, kWh to full charge.
+# Replace __DEVICE__ with your device slug.
+
+type: vertical-stack
+cards:
+  - type: gauge
+    entity: sensor.__DEVICE___battery_level
+    name: Battery
+    min: 0
+    max: 100
+    needle: true
+    severity:
+      green: 50
+      yellow: 20
+      red: 0
+  - type: glance
+    columns: 2
+    entities:
+      - entity: sensor.__DEVICE___battery_energy
+        name: In battery
+      - entity: sensor.__DEVICE___energy_to_full_charge
+        name: "To 100%"

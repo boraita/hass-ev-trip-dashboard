@@ -1,0 +1,22 @@
+# Last completed trip — distance, energy, consumption, cost, score, duration.
+# Replace __DEVICE__ with your device slug.
+
+type: vertical-stack
+cards:
+  - type: markdown
+    content: "### Last trip"
+  - type: glance
+    columns: 3
+    entities:
+      - entity: sensor.__DEVICE___last_trip_distance
+        name: km
+      - entity: sensor.__DEVICE___last_trip_duration
+        name: min
+      - entity: sensor.__DEVICE___last_trip_energy
+        name: kWh
+      - entity: sensor.__DEVICE___last_trip_consumption
+        name: kWh/100
+      - entity: sensor.__DEVICE___last_trip_cost
+        name: "€"
+      - entity: sensor.__DEVICE___last_trip_score
+        name: score

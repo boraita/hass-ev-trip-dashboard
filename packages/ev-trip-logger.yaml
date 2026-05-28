@@ -1,0 +1,35 @@
+# If you already run https://github.com/boraita/hass-ev-trip-logger
+# you don't need to add anything to configuration.yaml — the integration
+# publishes all the entity IDs the dashboard expects out of the box.
+#
+# This file is here only to document the contract. If you want to verify
+# that all required sensors exist for your device, paste this block into
+# your `configuration.yaml` under `template:` and check that no template
+# renders an error in Developer Tools → States.
+#
+# Replace __DEVICE__ with your device slug (e.g. byd_sealion_7).
+
+template:
+  - sensor:
+      - name: "EV dashboard contract check"
+        unique_id: ev_dashboard_contract_check
+        state: >-
+          {% set required = [
+            'sensor.__DEVICE___battery_level',
+            'sensor.__DEVICE___battery_energy',
+            'sensor.__DEVICE___energy_to_full_charge',
+            'sensor.__DEVICE___current_trip_distance',
+            'sensor.__DEVICE___last_trip_distance',
+            'sensor.__DEVICE___last_trip_score',
+            'sensor.__DEVICE___last_journey',
+            'sensor.__DEVICE___current_journey',
+            'sensor.__DEVICE___recent_trips',
+            'sensor.__DEVICE___recent_journeys',
+            'sensor.__DEVICE___recent_charges',
+            'sensor.__DEVICE___distance_this_month',
+            'sensor.__DEVICE___cost_this_month',
+            'sensor.__DEVICE___spent_on_charging_this_month',
+            'sensor.__DEVICE___avg_consumption_30_days',
+          ] %}
+          {% set missing = required | reject('has_value') | list %}
+          {{ 'ok' if missing | length == 0 else (missing | length ~ ' missing') }}

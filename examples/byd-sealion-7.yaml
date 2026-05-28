@@ -1,0 +1,177 @@
+# Full EV Trip Dashboard — three views: Driving (default), History, Stats.
+# Replace byd_sealion_7 with your device slug before importing.
+
+title: EV Trip
+views:
+
+  # ===== VIEW 1: DRIVING (default) =====
+  - title: Driving
+    path: driving
+    icon: mdi:car
+    cards:
+
+      # Battery status at the top
+      - type: vertical-stack
+        cards:
+          - type: gauge
+            entity: sensor.byd_sealion_7_battery_level
+            name: Battery
+            min: 0
+            max: 100
+            needle: true
+            severity:
+              green: 50
+              yellow: 20
+              red: 0
+          - type: glance
+            columns: 2
+            entities:
+              - entity: sensor.byd_sealion_7_battery_energy
+                name: In battery
+              - entity: sensor.byd_sealion_7_energy_to_full_charge
+                name: "To 100%"
+
+      # Live trip — only visible if there's an active trip
+      - type: conditional
+        conditions:
+          - condition: numeric_state
+            entity: sensor.byd_sealion_7_current_trip_distance
+            above: 0
+        card:
+          type: vertical-stack
+          cards:
+            - type: markdown
+              content: "### Current trip"
+            - type: glance
+              columns: 4
+              entities:
+                - entity: sensor.byd_sealion_7_current_trip_distance
+                  name: km
+                - entity: sensor.byd_sealion_7_current_trip_duration
+                  name: min
+                - entity: sensor.byd_sealion_7_current_trip_energy
+                  name: kWh
+                - entity: sensor.byd_sealion_7_current_trip_consumption
+                  name: kWh/100
+                - entity: sensor.byd_sealion_7_current_trip_average_speed
+                  name: km/h
+                - entity: sensor.byd_sealion_7_current_trip_max_power
+                  name: kW max
+                - entity: sensor.byd_sealion_7_current_trip_battery_used
+                  name: "% used"
+                - entity: sensor.byd_sealion_7_current_trip_avg_temperature
+                  name: "°C"
+
+      # Current journey
+      - type: markdown
+        content: |
+          ### Journey in progress
+          {% set s = states('sensor.byd_sealion_7_current_journey') | int(0) %}
+          {% if s > 0 %}
+          - **{{ s }} {% if s == 1 %}stage{% else %}stages{% endif %}** so far
+          - Distance: **{{ state_attr('sensor.byd_sealion_7_current_journey', 'distance_km') }} km**
+          - Energy: **{{ state_attr('sensor.byd_sealion_7_current_journey', 'energy_kwh') }} kWh**
+          - Cost: **{{ state_attr('sensor.byd_sealion_7_current_journey', 'cost') }} €**
+          {% if state_attr('sensor.byd_sealion_7_current_journey', 'stage_active') %}
+          - _Stage in progress right now_
+          {% endif %}
+          {% else %}
+          _Vehicle is home — no journey in progress._
+          {% endif %}
+
+      # Last trip and last journey side by side
+      - type: horizontal-stack
+        cards:
+          - type: vertical-stack
+            cards:
+              - type: markdown
+                content: "### Last trip"
+              - type: glance
+                columns: 3
+                entities:
+                  - entity: sensor.byd_sealion_7_last_trip_distance
+                    name: km
+                  - entity: sensor.byd_sealion_7_last_trip_energy
+                    name: kWh
+                  - entity: sensor.byd_sealion_7_last_trip_consumption
+                    name: kWh/100
+                  - entity: sensor.byd_sealion_7_last_trip_cost
+                    name: "€"
+                  - entity: sensor.byd_sealion_7_last_trip_score
+                    name: score
+                  - entity: sensor.byd_sealion_7_last_trip_duration
+                    name: min
+          - type: markdown
+            content: |
+              ### Last journey
+              {% set s = states('sensor.byd_sealion_7_last_journey') %}
+              {% if s in ('unknown', 'unavailable', '0') %}
+              _No completed journeys yet._
+              {% else %}
+              - **{{ s }} stages**
+              - Distance: **{{ state_attr('sensor.byd_sealion_7_last_journey', 'distance_km') }} km**
+              - Energy: **{{ state_attr('sensor.byd_sealion_7_last_journey', 'energy_kwh') }} kWh**
+              - Cost: **{{ state_attr('sensor.byd_sealion_7_last_journey', 'cost') }} €**
+              {% endif %}
+
+  # ===== VIEW 2: HISTORY =====
+  - title: History
+    path: history
+    icon: mdi:format-list-bulleted
+    cards:
+      - type: markdown
+        content: |
+          ### Recent trips ({{ states('sensor.byd_sealion_7_recent_trips') }})
+          {%- for t in state_attr('sensor.byd_sealion_7_recent_trips', 'trips') or [] %}
+
+          **{{ as_timestamp(t.ended_at) | timestamp_custom('%d/%m %H:%M') }}**{% if t.journey_id %} · _journey #{{ t.journey_id }}_{% endif %}
+          | Distance | Energy | Efficiency | Cost | Score |
+          |---:|---:|---:|---:|---:|
+          | {{ t.distance_km }} km | {{ t.energy_kwh or "—" }} kWh | {{ t.consumption_kwh_100km or "—" }} kWh/100 | {{ t.cost or "—" }} {{ t.currency or "" }} | **{{ t.score or "—" }}** |
+          {%- endfor %}
+
+      - type: markdown
+        content: |
+          ### Recent journeys ({{ states('sensor.byd_sealion_7_recent_journeys') }})
+          {%- for j in state_attr('sensor.byd_sealion_7_recent_journeys', 'journeys') or [] %}
+
+          **{{ as_timestamp(j.ended_at) | timestamp_custom('%d/%m %H:%M') }}** — journey #{{ j.journey_id }}
+          {{ j.stages }} {% if j.stages == 1 %}stage{% else %}stages{% endif %} · {{ j.distance_km }} km · {{ j.energy_kwh }} kWh · {{ j.cost }} €
+          {%- endfor %}
+
+      - type: markdown
+        content: |
+          ### Recent charges
+          {%- for c in state_attr('sensor.byd_sealion_7_recent_charges', 'charges') or [] %}
+
+          **{{ as_timestamp(c.ended_at) | timestamp_custom('%d/%m %H:%M') }}** — {{ c.location or "—" }}
+          {{ c.kwh }} kWh × {{ c.price_per_kwh }} €/kWh = **{{ c.total_cost }} {{ c.currency }}**
+          {%- endfor %}
+
+  # ===== VIEW 3: STATS =====
+  - title: Stats
+    path: stats
+    icon: mdi:chart-bar
+    cards:
+      - type: entities
+        title: Driving — this month
+        entities:
+          - sensor.byd_sealion_7_distance_today
+          - sensor.byd_sealion_7_distance_this_week
+          - sensor.byd_sealion_7_distance_this_month
+          - sensor.byd_sealion_7_distance_this_year
+          - type: divider
+          - sensor.byd_sealion_7_energy_this_month
+          - sensor.byd_sealion_7_cost_this_month
+          - sensor.byd_sealion_7_trips_this_month
+          - type: divider
+          - sensor.byd_sealion_7_avg_consumption_30_days
+      - type: entities
+        title: Charging — this month
+        entities:
+          - sensor.byd_sealion_7_charges_this_month
+          - sensor.byd_sealion_7_energy_charged_this_month
+          - sensor.byd_sealion_7_spent_on_charging_this_month
+          - type: divider
+          - sensor.byd_sealion_7_avg_charge_price_30_days
+          - sensor.byd_sealion_7_charge_in_progress

@@ -1,0 +1,68 @@
+# For users who don't run hass-ev-trip-logger but want the dashboard.
+#
+# This package shows the pattern for wrapping ANY data source into the
+# entity IDs the dashboard expects. The example here exposes input_number
+# helpers that you fill manually — replace them with template sensors
+# fed by your real integration (Tessie, Kia UVO, BYD official, scripts…).
+#
+# Replace __DEVICE__ with the slug you want the dashboard to use.
+
+input_number:
+  __DEVICE___manual_last_trip_distance:
+    name: Last trip distance
+    min: 0
+    max: 5000
+    step: 0.1
+    unit_of_measurement: km
+  __DEVICE___manual_last_trip_energy:
+    name: Last trip energy
+    min: 0
+    max: 200
+    step: 0.01
+    unit_of_measurement: kWh
+  __DEVICE___manual_distance_this_month:
+    name: Distance this month
+    min: 0
+    max: 100000
+    step: 0.1
+    unit_of_measurement: km
+
+template:
+  - sensor:
+      # Bridge: rename helpers to the entity IDs the dashboard expects.
+      - name: "__DEVICE__ Last trip distance"
+        unique_id: __DEVICE___last_trip_distance
+        device_class: distance
+        unit_of_measurement: km
+        state: "{{ states('input_number.__DEVICE___manual_last_trip_distance') }}"
+
+      - name: "__DEVICE__ Last trip energy"
+        unique_id: __DEVICE___last_trip_energy
+        device_class: energy
+        unit_of_measurement: kWh
+        state: "{{ states('input_number.__DEVICE___manual_last_trip_energy') }}"
+
+      # Derived from the two above
+      - name: "__DEVICE__ Last trip consumption"
+        unique_id: __DEVICE___last_trip_consumption
+        unit_of_measurement: kWh/100km
+        state: >
+          {% set d = states('input_number.__DEVICE___manual_last_trip_distance') | float(0) %}
+          {% set e = states('input_number.__DEVICE___manual_last_trip_energy') | float(0) %}
+          {{ (e / d * 100) | round(1) if d > 0 else 0 }}
+
+      - name: "__DEVICE__ Last trip score"
+        unique_id: __DEVICE___last_trip_score
+        state: >
+          {% set d = states('input_number.__DEVICE___manual_last_trip_distance') | float(0) %}
+          {% set e = states('input_number.__DEVICE___manual_last_trip_energy') | float(0) %}
+          {% set c = (e / d * 100) if d > 0 else 0 %}
+          {{ [10, [0, 10 - [0, c - 14.5] | max * 0.6] | max ] | min | round(1) }}
+
+      - name: "__DEVICE__ Distance this month"
+        unique_id: __DEVICE___distance_this_month
+        device_class: distance
+        unit_of_measurement: km
+        state: "{{ states('input_number.__DEVICE___manual_distance_this_month') }}"
+
+  # …add the rest of the entity contract here following the same pattern.

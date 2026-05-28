@@ -1,0 +1,17 @@
+# Last completed journey — stages count + cumulative distance, energy, cost.
+# Replace __DEVICE__ with your device slug.
+
+type: markdown
+content: |
+  ### Last journey
+  {% set s = states('sensor.__DEVICE___last_journey') %}
+  {% if s in ('unknown', 'unavailable', '0') %}
+  _No completed journeys yet._
+  {% else %}
+  - **{{ s }} stages**
+  - Distance: **{{ state_attr('sensor.__DEVICE___last_journey', 'distance_km') }} km**
+  - Energy: **{{ state_attr('sensor.__DEVICE___last_journey', 'energy_kwh') }} kWh**
+  - Cost: **{{ state_attr('sensor.__DEVICE___last_journey', 'cost') }} €**
+  - From: {{ as_timestamp(state_attr('sensor.__DEVICE___last_journey', 'started_at')) | timestamp_custom('%d/%m %H:%M') }}
+  - To: {{ as_timestamp(state_attr('sensor.__DEVICE___last_journey', 'ended_at')) | timestamp_custom('%d/%m %H:%M') }}
+  {% endif %}

@@ -1,0 +1,17 @@
+# Monthly aggregates — distance, energy, cost, trips count, 30-day averages.
+# Replace __DEVICE__ with your device slug.
+
+type: entities
+title: This month
+entities:
+  - sensor.__DEVICE___distance_today
+  - sensor.__DEVICE___distance_this_week
+  - sensor.__DEVICE___distance_this_month
+  - sensor.__DEVICE___distance_this_year
+  - type: divider
+  - sensor.__DEVICE___energy_this_month
+  - sensor.__DEVICE___cost_this_month
+  - sensor.__DEVICE___trips_this_month
+  - type: divider
+  - sensor.__DEVICE___avg_consumption_30_days
+  - sensor.__DEVICE___avg_charge_price_30_days

@@ -1,0 +1,33 @@
+# Last 10 charging sessions with kWh, price, location.
+# Replace __DEVICE__ with your device slug.
+
+type: vertical-stack
+cards:
+  - type: markdown
+    content: "### Charges"
+  - type: glance
+    columns: 3
+    entities:
+      - entity: sensor.__DEVICE___last_charge_energy
+        name: kWh last
+      - entity: sensor.__DEVICE___last_charge_cost
+        name: "€ last"
+      - entity: sensor.__DEVICE___last_charge_price_per_kwh
+        name: "€/kWh last"
+      - entity: sensor.__DEVICE___charges_this_month
+        name: charges/month
+      - entity: sensor.__DEVICE___energy_charged_this_month
+        name: kWh/month
+      - entity: sensor.__DEVICE___spent_on_charging_this_month
+        name: "€ spent/month"
+  - entity: sensor.__DEVICE___charge_in_progress
+    type: entity
+    name: Charging now?
+  - type: markdown
+    content: |
+      #### Recent charges
+      {%- for c in state_attr('sensor.__DEVICE___recent_charges', 'charges') or [] %}
+
+      **{{ as_timestamp(c.ended_at) | timestamp_custom('%d/%m %H:%M') }}** — {{ c.location or "—" }}
+      {{ c.kwh }} kWh × {{ c.price_per_kwh }} €/kWh = **{{ c.total_cost }} {{ c.currency }}**
+      {%- endfor %}

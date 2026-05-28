@@ -1,0 +1,11 @@
+# Last N completed journeys (home-to-home outings).
+# Replace __DEVICE__ with your device slug.
+
+type: markdown
+content: |
+  ### Recent journeys ({{ states('sensor.__DEVICE___recent_journeys') }})
+  {%- for j in state_attr('sensor.__DEVICE___recent_journeys', 'journeys') or [] %}
+
+  **{{ as_timestamp(j.ended_at) | timestamp_custom('%d/%m %H:%M') }}** — journey #{{ j.journey_id }}
+  {{ j.stages }} {% if j.stages == 1 %}stage{% else %}stages{% endif %} · {{ j.distance_km }} km · {{ j.energy_kwh }} kWh · {{ j.cost }} €
+  {%- endfor %}

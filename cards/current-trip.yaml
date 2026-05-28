@@ -1,0 +1,27 @@
+# Current trip (live while driving) — distance, duration, energy, consumption,
+# max power, average speed, average temperature, battery used.
+# Replace __DEVICE__ with your device slug.
+
+type: vertical-stack
+cards:
+  - type: markdown
+    content: "### Current trip"
+  - type: glance
+    columns: 4
+    entities:
+      - entity: sensor.__DEVICE___current_trip_distance
+        name: km
+      - entity: sensor.__DEVICE___current_trip_duration
+        name: min
+      - entity: sensor.__DEVICE___current_trip_energy
+        name: kWh
+      - entity: sensor.__DEVICE___current_trip_consumption
+        name: kWh/100
+      - entity: sensor.__DEVICE___current_trip_average_speed
+        name: km/h
+      - entity: sensor.__DEVICE___current_trip_max_power
+        name: kW max
+      - entity: sensor.__DEVICE___current_trip_battery_used
+        name: "% used"
+      - entity: sensor.__DEVICE___current_trip_avg_temperature
+        name: "°C avg"

@@ -1,0 +1,90 @@
+# Mobile-friendly dashboard — single view, vertical stack, the essentials only.
+# Replace __DEVICE__ with your device slug.
+
+title: EV Trip
+views:
+  - title: EV
+    path: ev
+    icon: mdi:car
+    cards:
+
+      # Battery + status at the top
+      - type: gauge
+        entity: sensor.__DEVICE___battery_level
+        name: Battery
+        min: 0
+        max: 100
+        needle: true
+        severity:
+          green: 50
+          yellow: 20
+          red: 0
+
+      - type: glance
+        columns: 2
+        entities:
+          - entity: sensor.__DEVICE___battery_energy
+            name: In battery
+          - entity: sensor.__DEVICE___energy_to_full_charge
+            name: "To 100%"
+
+      # Live trip (only when driving)
+      - type: conditional
+        conditions:
+          - condition: numeric_state
+            entity: sensor.__DEVICE___current_trip_distance
+            above: 0
+        card:
+          type: glance
+          title: Now driving
+          columns: 3
+          entities:
+            - entity: sensor.__DEVICE___current_trip_distance
+              name: km
+            - entity: sensor.__DEVICE___current_trip_duration
+              name: min
+            - entity: sensor.__DEVICE___current_trip_energy
+              name: kWh
+            - entity: sensor.__DEVICE___current_trip_consumption
+              name: kWh/100
+            - entity: sensor.__DEVICE___current_trip_average_speed
+              name: km/h
+            - entity: sensor.__DEVICE___current_trip_max_power
+              name: kW
+
+      # Last trip
+      - type: glance
+        title: Last trip
+        columns: 3
+        entities:
+          - entity: sensor.__DEVICE___last_trip_distance
+            name: km
+          - entity: sensor.__DEVICE___last_trip_energy
+            name: kWh
+          - entity: sensor.__DEVICE___last_trip_cost
+            name: "€"
+          - entity: sensor.__DEVICE___last_trip_consumption
+            name: kWh/100
+          - entity: sensor.__DEVICE___last_trip_score
+            name: score
+          - entity: sensor.__DEVICE___last_trip_duration
+            name: min
+
+      # Last 5 trips list
+      - type: markdown
+        content: |
+          ### Recent
+          {%- for t in (state_attr('sensor.__DEVICE___recent_trips', 'trips') or [])[:5] %}
+
+          **{{ as_timestamp(t.ended_at) | timestamp_custom('%d/%m %H:%M') }}** — {{ t.distance_km }} km · {{ t.cost or "—" }} € · score **{{ t.score or "—" }}**
+          {%- endfor %}
+
+      # Monthly summary
+      - type: entities
+        title: This month
+        entities:
+          - sensor.__DEVICE___distance_this_month
+          - sensor.__DEVICE___energy_this_month
+          - sensor.__DEVICE___cost_this_month
+          - sensor.__DEVICE___spent_on_charging_this_month
+          - sensor.__DEVICE___avg_consumption_30_days

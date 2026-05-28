@@ -1,0 +1,18 @@
+# Current journey — running totals across all stages of the in-progress journey.
+# Replace __DEVICE__ with your device slug.
+
+type: markdown
+content: |
+  ### Journey in progress
+  {% set s = states('sensor.__DEVICE___current_journey') | int(0) %}
+  {% if s > 0 %}
+  - **{{ s }} {% if s == 1 %}stage{% else %}stages{% endif %}** so far
+  - Distance: **{{ state_attr('sensor.__DEVICE___current_journey', 'distance_km') }} km**
+  - Energy: **{{ state_attr('sensor.__DEVICE___current_journey', 'energy_kwh') }} kWh**
+  - Cost: **{{ state_attr('sensor.__DEVICE___current_journey', 'cost') }} €**
+  {% if state_attr('sensor.__DEVICE___current_journey', 'stage_active') %}
+  - _Stage in progress right now_
+  {% endif %}
+  {% else %}
+  _Vehicle is home — no journey in progress._
+  {% endif %}
