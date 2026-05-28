@@ -1,0 +1,11 @@
+# Trip + charge events as a logbook timeline.
+# Uses HA's logbook card to render every trip_ended / charge_logged event
+# as a row in the timeline.
+# Replace __DEVICE__ with your device slug.
+
+type: logbook
+title: Activity
+hours_to_show: 168   # last 7 days
+entities:
+  - sensor.__DEVICE___last_trip_distance
+  - sensor.__DEVICE___last_charge_energy

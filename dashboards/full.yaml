@@ -148,7 +148,63 @@ views:
           {{ c.kwh }} kWh × {{ c.price_per_kwh }} €/kWh = **{{ c.total_cost }} {{ c.currency }}**
           {%- endfor %}
 
-  # ===== VIEW 3: STATS =====
+  # ===== VIEW 3: CHARTS =====
+  - title: Charts
+    path: charts
+    icon: mdi:chart-line
+    cards:
+      - type: statistics-graph
+        title: Distance per month
+        entities:
+          - sensor.__DEVICE___distance_this_month
+        chart_type: bar
+        period: month
+        stat_types:
+          - max
+        days_to_show: 365
+      - type: statistics-graph
+        title: Energy consumed per month
+        entities:
+          - sensor.__DEVICE___energy_this_month
+        chart_type: bar
+        period: month
+        stat_types:
+          - max
+        days_to_show: 365
+      - type: statistics-graph
+        title: Trips per month
+        entities:
+          - sensor.__DEVICE___trips_this_month
+        chart_type: bar
+        period: month
+        stat_types:
+          - max
+        days_to_show: 365
+      - type: statistics-graph
+        title: Avg consumption 30d (kWh/100km)
+        entities:
+          - sensor.__DEVICE___avg_consumption_30_days
+        chart_type: line
+        period: day
+        stat_types:
+          - mean
+        days_to_show: 60
+      - type: history-graph
+        title: Battery state (24h)
+        hours_to_show: 24
+        entities:
+          - entity: sensor.__DEVICE___battery_level
+            name: SoC
+          - entity: sensor.__DEVICE___battery_energy
+            name: kWh
+      - type: logbook
+        title: Recent activity (last 7d)
+        hours_to_show: 168
+        entities:
+          - sensor.__DEVICE___last_trip_distance
+          - sensor.__DEVICE___last_charge_energy
+
+  # ===== VIEW 4: STATS =====
   - title: Stats
     path: stats
     icon: mdi:chart-bar
