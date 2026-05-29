@@ -10,17 +10,18 @@ No HACS plugin, no JavaScript. Just YAML you drop into your Home Assistant.
 
 - **Driving view** — live current trip, current journey, last trip, last journey, battery status.
 - **History view** — last 10 trips, last 10 journeys, last 10 charges.
+- **Trips view** — searchable, sortable trip list (filter by destination or date, sort by distance/score/efficiency/cost) plus a "records" card highlighting the best trips. 100% native, no HACS.
 - **Stats view** — monthly totals for driving and charging, average consumption and charge price over 30 days.
 - **Individual cards** under `cards/` you can drop into any other dashboard.
 
-All cards work on the standard Lovelace `markdown`, `glance`, `entities`, `gauge` and `conditional` types — no custom dependencies.
+All cards work on the standard Lovelace `markdown`, `glance`, `entities`, `gauge` and `conditional` types — no custom dependencies. The Trips view's search/sort uses two input helpers (see `packages/trip-list-helpers.yaml`).
 
 ## Install
 
 ### Quick start (one dashboard, full pack)
 
 1. Copy `dashboards/full.yaml` to your `config/dashboards/` folder (create it if it doesn't exist).
-2. Edit the file: search-replace `__DEVICE__` with the slug of your vehicle device. For the canonical BYD Sealion 7 case this would be `byd_sealion_7`.
+2. Edit the file: search-replace `__DEVICE__` with the slug of your vehicle device. For the canonical BYD Sealion 7 case this would be `sealion_7` (the slug the integration derives from the device name "Sealion 7").
 3. In Home Assistant: Settings → Dashboards → **+ Add Dashboard** → "From YAML file" → point to the file you just copied. Or paste the content into the Raw configuration editor of any existing dashboard.
 
 ### One card at a time
@@ -72,12 +73,15 @@ cards/
   last-trip.yaml
   last-journey.yaml
   trip-history.yaml
+  trip-search.yaml     Searchable + sortable trip list (needs helpers)
+  trip-records.yaml    Best-trip / records card
   journey-history.yaml
   charges-history.yaml
   monthly-stats.yaml
 packages/
-  ev-trip-logger.yaml  Passthrough (no-op) for ev-trip-logger users
-  from-manual.yaml     Map per-trip CSV / manual inputs
+  ev-trip-logger.yaml      Passthrough (no-op) for ev-trip-logger users
+  trip-list-helpers.yaml   input_text + input_select for the Trips search/sort
+  from-manual.yaml         Map per-trip CSV / manual inputs
 examples/
   byd-sealion-7.yaml   Ready-made full dashboard for BYD Sealion users
 ```

@@ -1,0 +1,27 @@
+# Helpers for the searchable trip list (cards/trip-search.yaml).
+#
+# The trip list search/sort is 100% native — no HACS, no JavaScript — but it
+# needs two input helpers to hold the search text and the chosen sort order.
+#
+# Add this file as a Home Assistant package, OR paste the input_text and
+# input_select blocks straight into your configuration.yaml.
+#
+# Replace __DEVICE__ with your device slug (e.g. sealion_7).
+
+input_text:
+  __DEVICE___trip_search:
+    name: Trip search
+    icon: mdi:magnify
+    max: 50
+
+input_select:
+  __DEVICE___trip_sort:
+    name: Trip sort
+    icon: mdi:sort
+    options:
+      - Newest
+      - Distance
+      - Score
+      - Efficiency
+      - Cost
+    initial: Newest

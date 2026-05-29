@@ -1,4 +1,5 @@
-# Full EV Trip Dashboard — three views: Driving (default), History, Stats.
+# Full EV Trip Dashboard — Driving (default), History, Trips, Charts, Stats.
+# The Trips view needs the helpers in packages/trip-list-helpers.yaml.
 # Replace sim_ev with your device slug before importing.
 
 title: EV Trip
@@ -31,7 +32,8 @@ views:
               - entity: sensor.sim_ev_energy_to_full_charge
                 name: "To 100%"
 
-      # Live trip — only visible if there's an active trip
+      # ===== TRIP slot: live if driving, otherwise the last completed one =====
+      # When there's an active trip (distance > 0) the glance shows live data.
       - type: conditional
         conditions:
           - condition: numeric_state
@@ -41,7 +43,7 @@ views:
           type: vertical-stack
           cards:
             - type: markdown
-              content: "### Current trip"
+              content: "### 🟢 Trip in progress"
             - type: glance
               columns: 4
               entities:
@@ -61,58 +63,68 @@ views:
                   name: "% used"
                 - entity: sensor.sim_ev_current_trip_avg_temperature
                   name: "°C"
+      # Otherwise: the last completed trip stays in the same slot.
+      - type: conditional
+        conditions:
+          - condition: numeric_state
+            entity: sensor.sim_ev_current_trip_distance
+            below: 0.001
+        card:
+          type: vertical-stack
+          cards:
+            - type: markdown
+              content: |
+                ### Last trip
+                {%- set ended = state_attr('sensor.sim_ev_last_trip_distance', 'ended_at') %}
+                {%- if ended %}
+                _{{ as_timestamp(ended) | timestamp_custom('%d/%m %H:%M') }} — {{ state_attr('sensor.sim_ev_last_trip_distance', 'origin') or '?' }} → {{ state_attr('sensor.sim_ev_last_trip_distance', 'destination') or '?' }}_
+                {%- endif %}
+            - type: glance
+              columns: 3
+              entities:
+                - entity: sensor.sim_ev_last_trip_distance
+                  name: km
+                - entity: sensor.sim_ev_last_trip_duration
+                  name: min
+                - entity: sensor.sim_ev_last_trip_energy
+                  name: kWh
+                - entity: sensor.sim_ev_last_trip_consumption
+                  name: kWh/100
+                - entity: sensor.sim_ev_last_trip_cost
+                  name: "€"
+                - entity: sensor.sim_ev_last_trip_score
+                  name: score
 
-      # Current journey
+      # ===== JOURNEY slot: current if in flight, otherwise last completed =====
       - type: markdown
         content: |
-          ### Journey in progress
-          {% set s = states('sensor.sim_ev_current_journey') | int(0) %}
-          {% if s > 0 %}
+          {%- set s = states('sensor.sim_ev_current_journey') | int(0) %}
+          {%- if s > 0 %}
+          ### 🟢 Journey in progress
           - **{{ s }} {% if s == 1 %}stage{% else %}stages{% endif %}** so far
           - Distance: **{{ state_attr('sensor.sim_ev_current_journey', 'distance_km') }} km**
           - Energy: **{{ state_attr('sensor.sim_ev_current_journey', 'energy_kwh') }} kWh**
           - Cost: **{{ state_attr('sensor.sim_ev_current_journey', 'cost') }} €**
-          {% if state_attr('sensor.sim_ev_current_journey', 'stage_active') %}
-          - _Stage in progress right now_
-          {% endif %}
-          {% else %}
-          _Vehicle is home — no journey in progress._
-          {% endif %}
-
-      # Last trip and last journey side by side
-      - type: horizontal-stack
-        cards:
-          - type: vertical-stack
-            cards:
-              - type: markdown
-                content: "### Last trip"
-              - type: glance
-                columns: 3
-                entities:
-                  - entity: sensor.sim_ev_last_trip_distance
-                    name: km
-                  - entity: sensor.sim_ev_last_trip_energy
-                    name: kWh
-                  - entity: sensor.sim_ev_last_trip_consumption
-                    name: kWh/100
-                  - entity: sensor.sim_ev_last_trip_cost
-                    name: "€"
-                  - entity: sensor.sim_ev_last_trip_score
-                    name: score
-                  - entity: sensor.sim_ev_last_trip_duration
-                    name: min
-          - type: markdown
-            content: |
-              ### Last journey
-              {% set s = states('sensor.sim_ev_last_journey') %}
-              {% if s in ('unknown', 'unavailable', '0') %}
-              _No completed journeys yet._
-              {% else %}
-              - **{{ s }} stages**
-              - Distance: **{{ state_attr('sensor.sim_ev_last_journey', 'distance_km') }} km**
-              - Energy: **{{ state_attr('sensor.sim_ev_last_journey', 'energy_kwh') }} kWh**
-              - Cost: **{{ state_attr('sensor.sim_ev_last_journey', 'cost') }} €**
-              {% endif %}
+          {%- if state_attr('sensor.sim_ev_current_journey', 'stage_active') %}
+          - _Stage moving right now_
+          {%- endif %}
+          {%- else %}
+          {%- set ls = states('sensor.sim_ev_last_journey') %}
+          {%- if ls in ('unknown', 'unavailable', '0', 'None') %}
+          ### Last journey
+          _No completed journeys yet._
+          {%- else %}
+          ### Last journey
+          {%- set ended = state_attr('sensor.sim_ev_last_journey', 'ended_at') %}
+          {%- if ended %}
+          _Ended {{ as_timestamp(ended) | timestamp_custom('%d/%m %H:%M') }}_
+          {%- endif %}
+          - **{{ ls }} stages**
+          - Distance: **{{ state_attr('sensor.sim_ev_last_journey', 'distance_km') }} km**
+          - Energy: **{{ state_attr('sensor.sim_ev_last_journey', 'energy_kwh') }} kWh**
+          - Cost: **{{ state_attr('sensor.sim_ev_last_journey', 'cost') }} €**
+          {%- endif %}
+          {%- endif %}
 
   # ===== VIEW 2: HISTORY =====
   - title: History
@@ -148,7 +160,82 @@ views:
           {{ c.kwh }} kWh × {{ c.price_per_kwh }} €/kWh = **{{ c.total_cost }} {{ c.currency }}**
           {%- endfor %}
 
-  # ===== VIEW 3: CHARTS =====
+  # ===== VIEW 3: TRIPS (searchable list + records) =====
+  # Needs the helpers in packages/trip-list-helpers.yaml.
+  - title: Trips
+    path: trips
+    icon: mdi:map-search
+    cards:
+      - type: markdown
+        content: |
+          {% set trips = state_attr('sensor.sim_ev_recent_trips', 'trips') or [] %}
+          {%- if trips | length == 0 %}
+          ### 🏆 Trip records
+          _No trips recorded yet._
+          {%- else %}
+          {%- set scored = trips | rejectattr('score', 'none') | list %}
+          {%- set with_dist = trips | rejectattr('distance_km', 'none') | list %}
+          {%- set with_eff = trips | rejectattr('consumption_kwh_100km', 'none') | list %}
+          {%- set with_cost = trips | rejectattr('cost', 'none') | list %}
+          {%- set best = (scored | sort(attribute='score', reverse=true) | first) if scored else none %}
+          {%- set longest = (with_dist | sort(attribute='distance_km', reverse=true) | first) if with_dist else none %}
+          {%- set efficient = (with_eff | sort(attribute='consumption_kwh_100km') | first) if with_eff else none %}
+          {%- set cheapest = (with_cost | sort(attribute='cost') | first) if with_cost else none %}
+          ### 🏆 Trip records (last {{ trips | length }} trips)
+          | Record | When | Where | Value |
+          |---|---|---|---:|
+          {%- if best %}
+          | 🥇 Best score | {{ as_timestamp(best.ended_at) | timestamp_custom('%d/%m') }} | {{ best.destination or '—' }} | **{{ best.score }}** |
+          {%- endif %}
+          {%- if longest %}
+          | 📏 Longest | {{ as_timestamp(longest.ended_at) | timestamp_custom('%d/%m') }} | {{ longest.destination or '—' }} | **{{ longest.distance_km }} km** |
+          {%- endif %}
+          {%- if efficient %}
+          | 🔋 Most efficient | {{ as_timestamp(efficient.ended_at) | timestamp_custom('%d/%m') }} | {{ efficient.destination or '—' }} | **{{ efficient.consumption_kwh_100km }} kWh/100** |
+          {%- endif %}
+          {%- if cheapest %}
+          | 💶 Cheapest | {{ as_timestamp(cheapest.ended_at) | timestamp_custom('%d/%m') }} | {{ cheapest.destination or '—' }} | **{{ cheapest.cost }} {{ cheapest.currency or '€' }}** |
+          {%- endif %}
+          {%- endif %}
+
+      - type: entities
+        title: Search
+        show_header_toggle: false
+        entities:
+          - entity: input_text.sim_ev_trip_search
+            name: Search (destination / date)
+          - entity: input_select.sim_ev_trip_sort
+            name: Sort by
+
+      - type: markdown
+        content: |
+          {% set q = states('input_text.sim_ev_trip_search') | lower | trim %}
+          {% set sort = states('input_select.sim_ev_trip_sort') %}
+          {% set trips = state_attr('sensor.sim_ev_recent_trips', 'trips') or [] %}
+          {% set ns = namespace(rows=[]) %}
+          {%- for t in trips %}
+            {%- set label = ((t.origin or '') ~ ' ' ~ (t.destination or '') ~ ' ' ~ (as_timestamp(t.ended_at) | timestamp_custom('%d/%m/%Y %H:%M'))) | lower %}
+            {%- if q == '' or q in label %}{% set ns.rows = ns.rows + [t] %}{%- endif %}
+          {%- endfor %}
+          {%- if sort == 'Distance' %}{% set ns.rows = ns.rows | rejectattr('distance_km', 'none') | sort(attribute='distance_km', reverse=true) | list %}
+          {%- elif sort == 'Score' %}{% set ns.rows = ns.rows | rejectattr('score', 'none') | sort(attribute='score', reverse=true) | list %}
+          {%- elif sort == 'Efficiency' %}{% set ns.rows = ns.rows | rejectattr('consumption_kwh_100km', 'none') | sort(attribute='consumption_kwh_100km') | list %}
+          {%- elif sort == 'Cost' %}{% set ns.rows = ns.rows | rejectattr('cost', 'none') | sort(attribute='cost', reverse=true) | list %}
+          {%- else %}{% set ns.rows = ns.rows | sort(attribute='ended_at', reverse=true) | list %}
+          {%- endif %}
+          ### Showing {{ ns.rows | length }}{% if q %} of {{ trips | length }}{% endif %} trips
+          {%- for t in ns.rows %}
+
+          **{{ as_timestamp(t.ended_at) | timestamp_custom('%d/%m %H:%M') }}** · {{ t.origin or '—' }} → {{ t.destination or '—' }}{% if t.journey_id %} · _journey #{{ t.journey_id }}_{% endif %}
+          | Dist | Energy | Effic | Cost | Dur | Score |
+          |---:|---:|---:|---:|---:|---:|
+          | {{ t.distance_km }} km | {{ t.energy_kwh or "—" }} kWh | {{ t.consumption_kwh_100km or "—" }} | {{ t.cost or "—" }} {{ t.currency or "" }} | {{ t.duration_min or "—" }}m | **{{ t.score or "—" }}** |
+          {%- else %}
+
+          _No trips match "{{ q }}"._
+          {%- endfor %}
+
+  # ===== VIEW 4: CHARTS =====
   - title: Charts
     path: charts
     icon: mdi:chart-line
@@ -204,7 +291,7 @@ views:
           - sensor.sim_ev_last_trip_distance
           - sensor.sim_ev_last_charge_energy
 
-  # ===== VIEW 4: STATS =====
+  # ===== VIEW 5: STATS =====
   - title: Stats
     path: stats
     icon: mdi:chart-bar

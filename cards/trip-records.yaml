@@ -1,0 +1,37 @@
+# Trip records / hall of fame — the best trips out of the recent set.
+#
+# Computed live from sensor.__DEVICE___recent_trips, so the window is the
+# last N trips the logger keeps (typically ~10), not all-time history.
+# Replace __DEVICE__ with your device slug.
+
+type: markdown
+content: |
+  {% set trips = state_attr('sensor.__DEVICE___recent_trips', 'trips') or [] %}
+  {%- if trips | length == 0 %}
+  ### 🏆 Trip records
+  _No trips recorded yet._
+  {%- else %}
+  {%- set scored = trips | rejectattr('score', 'none') | list %}
+  {%- set with_dist = trips | rejectattr('distance_km', 'none') | list %}
+  {%- set with_eff = trips | rejectattr('consumption_kwh_100km', 'none') | list %}
+  {%- set with_cost = trips | rejectattr('cost', 'none') | list %}
+  {%- set best = (scored | sort(attribute='score', reverse=true) | first) if scored else none %}
+  {%- set longest = (with_dist | sort(attribute='distance_km', reverse=true) | first) if with_dist else none %}
+  {%- set efficient = (with_eff | sort(attribute='consumption_kwh_100km') | first) if with_eff else none %}
+  {%- set cheapest = (with_cost | sort(attribute='cost') | first) if with_cost else none %}
+  ### 🏆 Trip records (last {{ trips | length }} trips)
+  | Record | When | Where | Value |
+  |---|---|---|---:|
+  {%- if best %}
+  | 🥇 Best score | {{ as_timestamp(best.ended_at) | timestamp_custom('%d/%m') }} | {{ best.destination or '—' }} | **{{ best.score }}** |
+  {%- endif %}
+  {%- if longest %}
+  | 📏 Longest | {{ as_timestamp(longest.ended_at) | timestamp_custom('%d/%m') }} | {{ longest.destination or '—' }} | **{{ longest.distance_km }} km** |
+  {%- endif %}
+  {%- if efficient %}
+  | 🔋 Most efficient | {{ as_timestamp(efficient.ended_at) | timestamp_custom('%d/%m') }} | {{ efficient.destination or '—' }} | **{{ efficient.consumption_kwh_100km }} kWh/100** |
+  {%- endif %}
+  {%- if cheapest %}
+  | 💶 Cheapest | {{ as_timestamp(cheapest.ended_at) | timestamp_custom('%d/%m') }} | {{ cheapest.destination or '—' }} | **{{ cheapest.cost }} {{ cheapest.currency or '€' }}** |
+  {%- endif %}
+  {%- endif %}
