@@ -1,4 +1,5 @@
 # Mobile-friendly dashboard — single view, vertical stack, the essentials only.
+# The Trips search/sort needs the helpers in packages/trip-list-helpers.yaml.
 # Replace __DEVICE__ with your device slug.
 
 title: EV Trip
@@ -10,7 +11,7 @@ views:
 
       # Battery + status at the top
       - type: gauge
-        entity: sensor.__DEVICE___battery_level
+        entity: sensor.__DEVICE___battery_percent
         name: Battery
         min: 0
         max: 100
@@ -68,7 +69,7 @@ views:
             - entity: sensor.__DEVICE___last_trip_energy
               name: kWh
             - entity: sensor.__DEVICE___last_trip_cost
-              name: "€"
+              name: cost
             - entity: sensor.__DEVICE___last_trip_consumption
               name: kWh/100
             - entity: sensor.__DEVICE___last_trip_score
@@ -76,7 +77,33 @@ views:
             - entity: sensor.__DEVICE___last_trip_duration
               name: min
 
-      # Searchable trip list — needs the helpers in packages/trip-list-helpers.yaml.
+      # Records (best trip) — all-time if the logger publishes trip_records, else recent window
+      - type: markdown
+        content: |
+          {%- set CUR = {'EUR':'€','USD':'$','GBP':'£'} %}
+          {%- set rsrc = 'sensor.__DEVICE___trip_records' %}
+          {%- set best = state_attr(rsrc, 'best_score') %}
+          {%- if best is mapping %}
+          ### 🏆 Records ({{ states(rsrc) }} trips)
+          - 🥇 Best score: **{{ best.value }}** ({{ best.destination or '—' }})
+          {%- set lo = state_attr(rsrc, 'longest') %}{% if lo %}
+          - 📏 Longest: **{{ lo.value }} km** ({{ lo.destination or '—' }}){% endif %}
+          {%- set ch = state_attr(rsrc, 'cheapest') %}{% if ch %}
+          - 💶 Cheapest: **{{ ch.value }} {{ CUR.get(ch.currency, ch.currency or '€') }}**{% endif %}
+          {%- else %}
+          {%- set trips = state_attr('sensor.__DEVICE___recent_trips', 'trips') or [] %}
+          {%- if trips | length > 0 %}
+          {%- set b = trips | rejectattr('score','none') | list | sort(attribute='score', reverse=true) | first %}
+          {%- set lo = trips | rejectattr('distance_km','none') | list | sort(attribute='distance_km', reverse=true) | first %}
+          ### 🏆 Records (last {{ trips | length }})
+          {%- if b %}
+          - 🥇 Best score: **{{ b.score }}** ({{ b.destination or '—' }}){% endif %}
+          {%- if lo %}
+          - 📏 Longest: **{{ lo.distance_km }} km** ({{ lo.destination or '—' }}){% endif %}
+          {%- endif %}
+          {%- endif %}
+
+      # Searchable trip list
       - type: entities
         title: Trips
         show_header_toggle: false
@@ -85,28 +112,58 @@ views:
             name: Search
           - entity: input_select.__DEVICE___trip_sort
             name: Sort by
+          - entity: input_select.__DEVICE___trip_window
+            name: Period
 
       - type: markdown
         content: |
-          {% set q = states('input_text.__DEVICE___trip_search') | lower | trim %}
-          {% set sort = states('input_select.__DEVICE___trip_sort') %}
-          {% set trips = state_attr('sensor.__DEVICE___recent_trips', 'trips') or [] %}
-          {% set ns = namespace(rows=[]) %}
+          {%- set CUR = {'EUR':'€','USD':'$','GBP':'£'} %}
+          {%- set raw = states('input_text.__DEVICE___trip_search') %}
+          {%- set q = '' if raw in ['unknown', 'unavailable', 'None'] else raw | lower | trim %}
+          {%- set sort = states('input_select.__DEVICE___trip_sort') %}
+          {%- set win = states('input_select.__DEVICE___trip_window') %}
+          {%- set trips = state_attr('sensor.__DEVICE___recent_trips', 'trips') or [] %}
+          {%- set ns = namespace(rows=[]) %}
           {%- for t in trips %}
-            {%- set label = ((t.origin or '') ~ ' ' ~ (t.destination or '') ~ ' ' ~ (as_timestamp(t.ended_at) | timestamp_custom('%d/%m/%Y %H:%M'))) | lower %}
-            {%- if q == '' or q in label %}{% set ns.rows = ns.rows + [t] %}{%- endif %}
+            {%- set ts = as_timestamp(t.ended_at, 0) %}
+            {%- set label = ((t.origin or '') ~ ' ' ~ (t.destination or '') ~ ' ' ~ (ts | timestamp_custom('%d/%m/%Y %H:%M', true) if ts else '')) | lower %}
+            {%- set okw = true %}
+            {%- if ts and win == 'Today' %}{% set okw = ts >= today_at('00:00').timestamp() %}
+            {%- elif ts and win == 'This week' %}{% set okw = ts >= (today_at('00:00').timestamp() - (now().weekday() * 86400)) %}
+            {%- elif ts and win == 'This month' %}{% set okw = (t.ended_at[:7] == now().strftime('%Y-%m')) %}
+            {%- endif %}
+            {%- if (q == '' or q in label) and okw %}{% set ns.rows = ns.rows + [t] %}{%- endif %}
           {%- endfor %}
-          {%- if sort == 'Distance' %}{% set ns.rows = ns.rows | rejectattr('distance_km', 'none') | sort(attribute='distance_km', reverse=true) | list %}
-          {%- elif sort == 'Score' %}{% set ns.rows = ns.rows | rejectattr('score', 'none') | sort(attribute='score', reverse=true) | list %}
-          {%- elif sort == 'Efficiency' %}{% set ns.rows = ns.rows | rejectattr('consumption_kwh_100km', 'none') | sort(attribute='consumption_kwh_100km') | list %}
-          {%- elif sort == 'Cost' %}{% set ns.rows = ns.rows | rejectattr('cost', 'none') | sort(attribute='cost', reverse=true) | list %}
+          {%- if sort == 'Oldest' %}{% set ns.rows = ns.rows | sort(attribute='ended_at') | list %}
+          {%- elif sort == 'Longest' %}{% set ns.rows = ns.rows | rejectattr('distance_km', 'none') | sort(attribute='distance_km', reverse=true) | list %}
+          {%- elif sort == 'Shortest' %}{% set ns.rows = ns.rows | rejectattr('distance_km', 'none') | sort(attribute='distance_km') | list %}
+          {%- elif sort == 'Best score' %}{% set ns.rows = ns.rows | rejectattr('score', 'none') | sort(attribute='score', reverse=true) | list %}
+          {%- elif sort == 'Worst score' %}{% set ns.rows = ns.rows | rejectattr('score', 'none') | sort(attribute='score') | list %}
+          {%- elif sort == 'Most efficient' %}{% set ns.rows = ns.rows | rejectattr('consumption_kwh_100km', 'none') | sort(attribute='consumption_kwh_100km') | list %}
+          {%- elif sort == 'Least efficient' %}{% set ns.rows = ns.rows | rejectattr('consumption_kwh_100km', 'none') | sort(attribute='consumption_kwh_100km', reverse=true) | list %}
+          {%- elif sort == 'Cheapest' %}{% set ns.rows = ns.rows | rejectattr('cost', 'none') | sort(attribute='cost') | list %}
+          {%- elif sort == 'Priciest' %}{% set ns.rows = ns.rows | rejectattr('cost', 'none') | sort(attribute='cost', reverse=true) | list %}
           {%- else %}{% set ns.rows = ns.rows | sort(attribute='ended_at', reverse=true) | list %}
           {%- endif %}
           {%- for t in ns.rows %}
-          **{{ as_timestamp(t.ended_at) | timestamp_custom('%d/%m %H:%M') }}** · {{ t.destination or '—' }} — {{ t.distance_km }} km · {{ t.cost or "—" }} € · score **{{ t.score or "—" }}**
+          **{{ as_timestamp(t.ended_at) | timestamp_custom('%d/%m %H:%M') }}** · {{ t.destination or '—' }} — {{ t.distance_km }} km · {{ t.cost if t.cost is not none else "—" }} {{ CUR.get(t.currency, t.currency or '') }} · score **{{ t.score if t.score is not none else "—" }}**
           {%- else %}
-          _No trips match "{{ q }}"._
+          _No trips match the current filters._
           {%- endfor %}
+
+      # Recent charges
+      - type: markdown
+        content: |
+          {%- set CUR = {'EUR':'€','USD':'$','GBP':'£'} %}
+          {%- set charges = state_attr('sensor.__DEVICE___recent_charges', 'charges') or [] %}
+          ### Recent charges
+          {%- if charges | length == 0 %}
+          _No charges recorded yet._
+          {%- else %}
+          {%- for c in charges %}
+          **{{ as_timestamp(c.ended_at) | timestamp_custom('%d/%m %H:%M') if c.ended_at else '—' }}** — {{ c.location or '—' }}: {{ c.kwh | default('—', true) }} kWh · **{{ c.total_cost | default('—', true) }} {{ CUR.get(c.currency, c.currency or '€') }}**
+          {%- endfor %}
+          {%- endif %}
 
       # Monthly summary
       - type: entities

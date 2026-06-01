@@ -5,13 +5,15 @@ type: markdown
 content: |
   ### Last journey
   {% set s = states('sensor.__DEVICE___last_journey') %}
-  {% if s in ('unknown', 'unavailable', '0') %}
+  {% if s in ('unknown', 'unavailable', '0', 'None') %}
   _No completed journeys yet._
   {% else %}
+  {%- set st = state_attr('sensor.__DEVICE___last_journey', 'started_at') %}
+  {%- set en = state_attr('sensor.__DEVICE___last_journey', 'ended_at') %}
   - **{{ s }} stages**
-  - Distance: **{{ state_attr('sensor.__DEVICE___last_journey', 'distance_km') }} km**
-  - Energy: **{{ state_attr('sensor.__DEVICE___last_journey', 'energy_kwh') }} kWh**
-  - Cost: **{{ state_attr('sensor.__DEVICE___last_journey', 'cost') }} €**
-  - From: {{ as_timestamp(state_attr('sensor.__DEVICE___last_journey', 'started_at')) | timestamp_custom('%d/%m %H:%M') }}
-  - To: {{ as_timestamp(state_attr('sensor.__DEVICE___last_journey', 'ended_at')) | timestamp_custom('%d/%m %H:%M') }}
+  - Distance: **{{ state_attr('sensor.__DEVICE___last_journey', 'distance_km') | default('—', true) }} km**
+  - Energy: **{{ state_attr('sensor.__DEVICE___last_journey', 'energy_kwh') | default('—', true) }} kWh**
+  - Cost: **{{ state_attr('sensor.__DEVICE___last_journey', 'cost') | default('—', true) }} €**
+  {% if st %}- From: {{ as_timestamp(st) | timestamp_custom('%d/%m %H:%M') }}{% endif %}
+  {% if en %}- To: {{ as_timestamp(en) | timestamp_custom('%d/%m %H:%M') }}{% endif %}
   {% endif %}

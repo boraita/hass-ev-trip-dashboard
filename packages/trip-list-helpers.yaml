@@ -1,12 +1,12 @@
-# Helpers for the searchable trip list (cards/trip-search.yaml).
+# Helpers for the searchable / filterable trip list (Trips view, cards/trip-search.yaml).
 #
-# The trip list search/sort is 100% native — no HACS, no JavaScript — but it
-# needs two input helpers to hold the search text and the chosen sort order.
+# The search / sort / filter is 100% native (no HACS), but it needs a few input
+# helpers to hold the UI state. Add this file as a Home Assistant package, OR
+# paste the blocks into configuration.yaml. Replace __DEVICE__ with your slug.
 #
-# Add this file as a Home Assistant package, OR paste the input_text and
-# input_select blocks straight into your configuration.yaml.
-#
-# Replace __DEVICE__ with your device slug (e.g. sealion_7).
+# NOTE: the sort and period options below are compared as literal strings inside
+# the dashboard templates, so keep the option labels in sync with the templates
+# if you translate them.
 
 input_text:
   __DEVICE___trip_search:
@@ -20,8 +20,62 @@ input_select:
     icon: mdi:sort
     options:
       - Newest
-      - Distance
-      - Score
-      - Efficiency
-      - Cost
+      - Oldest
+      - Longest
+      - Shortest
+      - Best score
+      - Worst score
+      - Most efficient
+      - Least efficient
+      - Cheapest
+      - Priciest
     initial: Newest
+
+  __DEVICE___trip_window:
+    name: Trip period
+    icon: mdi:calendar-range
+    options:
+      - All
+      - Today
+      - This week
+      - This month
+    initial: All
+
+input_number:
+  __DEVICE___trip_min_distance:
+    name: Trip min distance
+    icon: mdi:map-marker-distance
+    min: 0
+    max: 1000
+    step: 5
+    initial: 0
+    unit_of_measurement: km
+    mode: box
+
+  __DEVICE___trip_min_score:
+    name: Trip min score
+    icon: mdi:star
+    min: 0
+    max: 10
+    step: 0.5
+    initial: 0
+    mode: box
+
+  __DEVICE___trip_max_cost:
+    name: Trip max cost
+    icon: mdi:currency-eur
+    min: 0
+    max: 500
+    step: 1
+    initial: 500
+    mode: box
+
+  __DEVICE___trip_max_consumption:
+    name: Trip max consumption
+    icon: mdi:lightning-bolt
+    min: 0
+    max: 50
+    step: 1
+    initial: 50
+    unit_of_measurement: kWh/100km
+    mode: box

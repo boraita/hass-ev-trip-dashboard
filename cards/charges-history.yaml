@@ -25,9 +25,16 @@ cards:
     name: Charging now?
   - type: markdown
     content: |
+      {%- set CUR = {'EUR':'€','USD':'$','GBP':'£'} %}
+      {%- set charges = state_attr('sensor.__DEVICE___recent_charges', 'charges') or [] %}
       #### Recent charges
-      {%- for c in state_attr('sensor.__DEVICE___recent_charges', 'charges') or [] %}
+      {%- if charges | length == 0 %}
 
-      **{{ as_timestamp(c.ended_at) | timestamp_custom('%d/%m %H:%M') }}** — {{ c.location or "—" }}
-      {{ c.kwh }} kWh × {{ c.price_per_kwh }} €/kWh = **{{ c.total_cost }} {{ c.currency }}**
+      _No charges recorded yet._
+      {%- else %}
+      {%- for c in charges %}
+
+      **{{ as_timestamp(c.ended_at) | timestamp_custom('%d/%m %H:%M') if c.ended_at else '—' }}** — {{ c.location or "—" }}
+      {{ c.kwh | default('—', true) }} kWh × {{ c.price_per_kwh | default('—', true) }} {{ CUR.get(c.currency, c.currency or '€') }}/kWh = **{{ c.total_cost | default('—', true) }} {{ CUR.get(c.currency, c.currency or '€') }}**
       {%- endfor %}
+      {%- endif %}

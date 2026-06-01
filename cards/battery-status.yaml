@@ -4,7 +4,7 @@
 type: vertical-stack
 cards:
   - type: gauge
-    entity: sensor.__DEVICE___battery_level
+    entity: sensor.__DEVICE___battery_percent
     name: Battery
     min: 0
     max: 100

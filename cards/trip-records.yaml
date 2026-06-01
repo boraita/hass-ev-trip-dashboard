@@ -1,12 +1,37 @@
-# Trip records / hall of fame — the best trips out of the recent set.
+# Trip records / hall of fame.
 #
-# Computed live from sensor.__DEVICE___recent_trips, so the window is the
-# last N trips the logger keeps (typically ~10), not all-time history.
+# Forward-compatible: if the logger publishes sensor.__DEVICE___trip_records
+# (see CONTRACT.md §2) the card shows ALL-TIME records. Until then it falls
+# back to computing records over the recent window (sensor.__DEVICE___recent_trips),
+# so it works today and auto-upgrades when the logger ships the records sensor.
+#
 # Replace __DEVICE__ with your device slug.
 
 type: markdown
 content: |
-  {% set trips = state_attr('sensor.__DEVICE___recent_trips', 'trips') or [] %}
+  {%- set rsrc = 'sensor.__DEVICE___trip_records' %}
+  {%- set best = state_attr(rsrc, 'best_score') %}
+  {%- if best is mapping %}
+  {#- ===== ALL-TIME path: render straight from the logger records sensor ===== -#}
+  {%- set longest = state_attr(rsrc, 'longest') %}
+  {%- set efficient = state_attr(rsrc, 'most_efficient') %}
+  {%- set cheapest = state_attr(rsrc, 'cheapest') %}
+  ### 🏆 Records ({{ states(rsrc) }} trips all-time)
+  | Record | When | Where | Value |
+  |---|---|---|---:|
+  | 🥇 Best score | {{ as_timestamp(best.ended_at) | timestamp_custom('%d/%m/%y') }} | {{ best.destination or '—' }} | **{{ best.value }}** |
+  {%- if longest %}
+  | 📏 Longest | {{ as_timestamp(longest.ended_at) | timestamp_custom('%d/%m/%y') }} | {{ longest.destination or '—' }} | **{{ longest.value }} km** |
+  {%- endif %}
+  {%- if efficient %}
+  | 🔋 Most efficient | {{ as_timestamp(efficient.ended_at) | timestamp_custom('%d/%m/%y') }} | {{ efficient.destination or '—' }} | **{{ efficient.value }} kWh/100** |
+  {%- endif %}
+  {%- if cheapest %}
+  | 💶 Cheapest | {{ as_timestamp(cheapest.ended_at) | timestamp_custom('%d/%m/%y') }} | {{ cheapest.destination or '—' }} | **{{ cheapest.value }} {{ cheapest.currency or '€' }}** |
+  {%- endif %}
+  {%- else %}
+  {#- ===== FALLBACK path: compute over the recent window ===== -#}
+  {%- set trips = state_attr('sensor.__DEVICE___recent_trips', 'trips') or [] %}
   {%- if trips | length == 0 %}
   ### 🏆 Trip records
   _No trips recorded yet._
@@ -15,23 +40,24 @@ content: |
   {%- set with_dist = trips | rejectattr('distance_km', 'none') | list %}
   {%- set with_eff = trips | rejectattr('consumption_kwh_100km', 'none') | list %}
   {%- set with_cost = trips | rejectattr('cost', 'none') | list %}
-  {%- set best = (scored | sort(attribute='score', reverse=true) | first) if scored else none %}
-  {%- set longest = (with_dist | sort(attribute='distance_km', reverse=true) | first) if with_dist else none %}
-  {%- set efficient = (with_eff | sort(attribute='consumption_kwh_100km') | first) if with_eff else none %}
-  {%- set cheapest = (with_cost | sort(attribute='cost') | first) if with_cost else none %}
+  {%- set b = (scored | sort(attribute='score', reverse=true) | first) if scored else none %}
+  {%- set lo = (with_dist | sort(attribute='distance_km', reverse=true) | first) if with_dist else none %}
+  {%- set ef = (with_eff | sort(attribute='consumption_kwh_100km') | first) if with_eff else none %}
+  {%- set ch = (with_cost | sort(attribute='cost') | first) if with_cost else none %}
   ### 🏆 Trip records (last {{ trips | length }} trips)
   | Record | When | Where | Value |
   |---|---|---|---:|
-  {%- if best %}
-  | 🥇 Best score | {{ as_timestamp(best.ended_at) | timestamp_custom('%d/%m') }} | {{ best.destination or '—' }} | **{{ best.score }}** |
+  {%- if b %}
+  | 🥇 Best score | {{ as_timestamp(b.ended_at) | timestamp_custom('%d/%m') }} | {{ b.destination or '—' }} | **{{ b.score }}** |
   {%- endif %}
-  {%- if longest %}
-  | 📏 Longest | {{ as_timestamp(longest.ended_at) | timestamp_custom('%d/%m') }} | {{ longest.destination or '—' }} | **{{ longest.distance_km }} km** |
+  {%- if lo %}
+  | 📏 Longest | {{ as_timestamp(lo.ended_at) | timestamp_custom('%d/%m') }} | {{ lo.destination or '—' }} | **{{ lo.distance_km }} km** |
   {%- endif %}
-  {%- if efficient %}
-  | 🔋 Most efficient | {{ as_timestamp(efficient.ended_at) | timestamp_custom('%d/%m') }} | {{ efficient.destination or '—' }} | **{{ efficient.consumption_kwh_100km }} kWh/100** |
+  {%- if ef %}
+  | 🔋 Most efficient | {{ as_timestamp(ef.ended_at) | timestamp_custom('%d/%m') }} | {{ ef.destination or '—' }} | **{{ ef.consumption_kwh_100km }} kWh/100** |
   {%- endif %}
-  {%- if cheapest %}
-  | 💶 Cheapest | {{ as_timestamp(cheapest.ended_at) | timestamp_custom('%d/%m') }} | {{ cheapest.destination or '—' }} | **{{ cheapest.cost }} {{ cheapest.currency or '€' }}** |
+  {%- if ch %}
+  | 💶 Cheapest | {{ as_timestamp(ch.ended_at) | timestamp_custom('%d/%m') }} | {{ ch.destination or '—' }} | **{{ ch.cost }} {{ ch.currency or '€' }}** |
+  {%- endif %}
   {%- endif %}
   {%- endif %}

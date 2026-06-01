@@ -1,7 +1,7 @@
-# Searchable, sortable trip list — 100% native (no HACS).
+# Searchable, sortable, filterable trip list — 100% native (no HACS).
 #
-# Type in the search box to filter by destination, origin or date.
-# Use the sort selector to reorder by distance, score, efficiency or cost.
+# Search box filters by destination / origin / date. Sort selector reorders.
+# Period + numeric filters (min distance/score, max cost/consumption) narrow further.
 #
 # Requires the helpers in packages/trip-list-helpers.yaml.
 # Replace __DEVICE__ with your device slug.
@@ -9,41 +9,75 @@
 type: vertical-stack
 cards:
   - type: entities
-    title: Trips
+    title: Trips — search & filter
     show_header_toggle: false
     entities:
       - entity: input_text.__DEVICE___trip_search
         name: Search (destination / date)
       - entity: input_select.__DEVICE___trip_sort
         name: Sort by
+      - entity: input_select.__DEVICE___trip_window
+        name: Period
+      - type: divider
+      - entity: input_number.__DEVICE___trip_min_distance
+        name: Min distance (km)
+      - entity: input_number.__DEVICE___trip_min_score
+        name: Min score
+      - entity: input_number.__DEVICE___trip_max_cost
+        name: Max cost
+      - entity: input_number.__DEVICE___trip_max_consumption
+        name: Max kWh/100
 
   - type: markdown
     content: |
-      {% set q = states('input_text.__DEVICE___trip_search') | lower | trim %}
-      {% set sort = states('input_select.__DEVICE___trip_sort') %}
-      {% set trips = state_attr('sensor.__DEVICE___recent_trips', 'trips') or [] %}
-      {% set ns = namespace(rows=[]) %}
+      {%- set CUR = {'EUR':'€','USD':'$','GBP':'£'} %}
+      {%- set raw = states('input_text.__DEVICE___trip_search') %}
+      {%- set q = '' if raw in ['unknown', 'unavailable', 'None'] else raw | lower | trim %}
+      {%- set sort = states('input_select.__DEVICE___trip_sort') %}
+      {%- set win = states('input_select.__DEVICE___trip_window') %}
+      {%- set minD = states('input_number.__DEVICE___trip_min_distance') | float(0) %}
+      {%- set minS = states('input_number.__DEVICE___trip_min_score') | float(0) %}
+      {%- set maxC = states('input_number.__DEVICE___trip_max_cost') | float(1000000) %}
+      {%- set maxE = states('input_number.__DEVICE___trip_max_consumption') | float(1000000) %}
+      {%- set trips = state_attr('sensor.__DEVICE___recent_trips', 'trips') or [] %}
+      {%- set ns = namespace(rows=[]) %}
       {%- for t in trips %}
-        {%- set label = ((t.origin or '') ~ ' ' ~ (t.destination or '') ~ ' ' ~ (as_timestamp(t.ended_at) | timestamp_custom('%d/%m/%Y %H:%M'))) | lower %}
-        {%- if q == '' or q in label %}
-          {%- set ns.rows = ns.rows + [t] %}
+        {%- set ts = as_timestamp(t.ended_at, 0) %}
+        {%- set label = ((t.origin or '') ~ ' ' ~ (t.destination or '') ~ ' ' ~ (ts | timestamp_custom('%d/%m/%Y %H:%M', true) if ts else '')) | lower %}
+        {%- set okq = (q == '' or q in label) %}
+        {%- set okd = (t.distance_km is none) or (t.distance_km | float(0) >= minD) %}
+        {%- set oks = (t.score is none) or (t.score | float(0) >= minS) %}
+        {%- set okc = (t.cost is none) or (t.cost | float(0) <= maxC) %}
+        {%- set oke = (t.consumption_kwh_100km is none) or (t.consumption_kwh_100km | float(0) <= maxE) %}
+        {%- set okw = true %}
+        {%- if ts and win == 'Today' %}{% set okw = ts >= today_at('00:00').timestamp() %}
+        {%- elif ts and win == 'This week' %}{% set okw = ts >= (today_at('00:00').timestamp() - (now().weekday() * 86400)) %}
+        {%- elif ts and win == 'This month' %}{% set okw = (t.ended_at[:7] == now().strftime('%Y-%m')) %}
         {%- endif %}
+        {%- if okq and okd and oks and okc and oke and okw %}{% set ns.rows = ns.rows + [t] %}{%- endif %}
       {%- endfor %}
-      {#- Trips missing the sort field are dropped from that particular ordering to avoid template errors. -#}
-      {%- if sort == 'Distance' %}{% set ns.rows = ns.rows | rejectattr('distance_km', 'none') | sort(attribute='distance_km', reverse=true) | list %}
-      {%- elif sort == 'Score' %}{% set ns.rows = ns.rows | rejectattr('score', 'none') | sort(attribute='score', reverse=true) | list %}
-      {%- elif sort == 'Efficiency' %}{% set ns.rows = ns.rows | rejectattr('consumption_kwh_100km', 'none') | sort(attribute='consumption_kwh_100km') | list %}
-      {%- elif sort == 'Cost' %}{% set ns.rows = ns.rows | rejectattr('cost', 'none') | sort(attribute='cost', reverse=true) | list %}
+      {%- if sort == 'Oldest' %}{% set ns.rows = ns.rows | sort(attribute='ended_at') | list %}
+      {%- elif sort == 'Longest' %}{% set ns.rows = ns.rows | rejectattr('distance_km', 'none') | sort(attribute='distance_km', reverse=true) | list %}
+      {%- elif sort == 'Shortest' %}{% set ns.rows = ns.rows | rejectattr('distance_km', 'none') | sort(attribute='distance_km') | list %}
+      {%- elif sort == 'Best score' %}{% set ns.rows = ns.rows | rejectattr('score', 'none') | sort(attribute='score', reverse=true) | list %}
+      {%- elif sort == 'Worst score' %}{% set ns.rows = ns.rows | rejectattr('score', 'none') | sort(attribute='score') | list %}
+      {%- elif sort == 'Most efficient' %}{% set ns.rows = ns.rows | rejectattr('consumption_kwh_100km', 'none') | sort(attribute='consumption_kwh_100km') | list %}
+      {%- elif sort == 'Least efficient' %}{% set ns.rows = ns.rows | rejectattr('consumption_kwh_100km', 'none') | sort(attribute='consumption_kwh_100km', reverse=true) | list %}
+      {%- elif sort == 'Cheapest' %}{% set ns.rows = ns.rows | rejectattr('cost', 'none') | sort(attribute='cost') | list %}
+      {%- elif sort == 'Priciest' %}{% set ns.rows = ns.rows | rejectattr('cost', 'none') | sort(attribute='cost', reverse=true) | list %}
       {%- else %}{% set ns.rows = ns.rows | sort(attribute='ended_at', reverse=true) | list %}
       {%- endif %}
-      ### Showing {{ ns.rows | length }}{% if q %} of {{ trips | length }}{% endif %} trips
-      {%- for t in ns.rows %}
+      ### Showing {{ ns.rows | length }} of {{ trips | length }} trips
+      {%- if ns.rows | length == 0 %}
 
-      **{{ as_timestamp(t.ended_at) | timestamp_custom('%d/%m %H:%M') }}** · {{ t.origin or '—' }} → {{ t.destination or '—' }}{% if t.journey_id %} · _journey #{{ t.journey_id }}_{% endif %}
-      | Dist | Energy | Effic | Cost | Dur | Score |
-      |---:|---:|---:|---:|---:|---:|
-      | {{ t.distance_km }} km | {{ t.energy_kwh or "—" }} kWh | {{ t.consumption_kwh_100km or "—" }} | {{ t.cost or "—" }} {{ t.currency or "" }} | {{ t.duration_min or "—" }}m | **{{ t.score or "—" }}** |
+      _No trips match the current filters._
       {%- else %}
-
-      _No trips match "{{ q }}"._
+      | Date | Route | km | kWh/100 | Cost | Rating |
+      |---|---|---:|---:|---:|:--|
+      {%- for t in ns.rows %}
+      {%- set sc = t.score | float(0) %}
+      {%- set full = [(sc / 2) | round(0, 'floor') | int, 5] | min %}
+      {%- set stars = '★' * full + '☆' * (5 - full) %}
+      | {{ as_timestamp(t.ended_at) | timestamp_custom('%d/%m %H:%M') }} | {{ t.origin or '—' }} → {{ t.destination or '—' }}{% if t.journey_id %} ·#{{ t.journey_id }}{% endif %} | {{ t.distance_km }} | {{ t.consumption_kwh_100km if t.consumption_kwh_100km is not none else '—' }} | {{ t.cost if t.cost is not none else '—' }} {{ CUR.get(t.currency, t.currency or '') }} | {% if t.score is not none %}{{ stars }} {{ '%.1f' | format(sc) }}{% else %}—{% endif %} |
       {%- endfor %}
+      {%- endif %}

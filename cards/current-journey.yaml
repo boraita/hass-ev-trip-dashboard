@@ -7,9 +7,9 @@ content: |
   {% set s = states('sensor.__DEVICE___current_journey') | int(0) %}
   {% if s > 0 %}
   - **{{ s }} {% if s == 1 %}stage{% else %}stages{% endif %}** so far
-  - Distance: **{{ state_attr('sensor.__DEVICE___current_journey', 'distance_km') }} km**
-  - Energy: **{{ state_attr('sensor.__DEVICE___current_journey', 'energy_kwh') }} kWh**
-  - Cost: **{{ state_attr('sensor.__DEVICE___current_journey', 'cost') }} €**
+  - Distance: **{{ state_attr('sensor.__DEVICE___current_journey', 'distance_km') | default('—', true) }} km**
+  - Energy: **{{ state_attr('sensor.__DEVICE___current_journey', 'energy_kwh') | default('—', true) }} kWh**
+  - Cost: **{{ state_attr('sensor.__DEVICE___current_journey', 'cost') | default('—', true) }} €**
   {% if state_attr('sensor.__DEVICE___current_journey', 'stage_active') %}
   - _Stage in progress right now_
   {% endif %}

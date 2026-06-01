@@ -3,9 +3,16 @@
 
 type: markdown
 content: |
-  ### Recent journeys ({{ states('sensor.__DEVICE___recent_journeys') }})
-  {%- for j in state_attr('sensor.__DEVICE___recent_journeys', 'journeys') or [] %}
+  {%- set CUR = {'EUR':'€','USD':'$','GBP':'£'} %}
+  {%- set journeys = state_attr('sensor.__DEVICE___recent_journeys', 'journeys') or [] %}
+  ### Recent journeys ({{ journeys | length }})
+  {%- if journeys | length == 0 %}
 
-  **{{ as_timestamp(j.ended_at) | timestamp_custom('%d/%m %H:%M') }}** — journey #{{ j.journey_id }}
-  {{ j.stages }} {% if j.stages == 1 %}stage{% else %}stages{% endif %} · {{ j.distance_km }} km · {{ j.energy_kwh }} kWh · {{ j.cost }} €
+  _No completed journeys yet._
+  {%- else %}
+  {%- for j in journeys %}
+
+  **{{ as_timestamp(j.ended_at) | timestamp_custom('%d/%m %H:%M') if j.ended_at else '—' }}** — journey #{{ j.journey_id }}
+  {{ j.stages | default('?', true) }} {% if j.stages == 1 %}stage{% else %}stages{% endif %} · {{ j.distance_km | default('—', true) }} km · {{ j.energy_kwh | default('—', true) }} kWh · {{ j.cost | default('—', true) }} {{ CUR.get(j.currency, j.currency or '€') }}
   {%- endfor %}
+  {%- endif %}

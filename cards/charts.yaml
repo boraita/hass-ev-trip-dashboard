@@ -1,9 +1,9 @@
-# Long-term statistics graphs by month + last 24h battery curve.
+# Long-term statistics graphs by month + trends + last 24h battery curve.
 # Replace __DEVICE__ with your device slug.
 
 type: vertical-stack
 cards:
-  # ===== Distance per month (last 12 months) =====
+  # ===== Distance per month — total_increasing sensor => LTS 'sum' =====
   - type: statistics-graph
     title: Distance per month
     entities:
@@ -11,10 +11,10 @@ cards:
     chart_type: bar
     period: month
     stat_types:
-      - max
+      - sum
     days_to_show: 365
 
-  # ===== Energy consumed driving per month =====
+  # ===== Energy consumed driving per month => 'sum' =====
   - type: statistics-graph
     title: Energy consumed per month
     entities:
@@ -22,48 +22,45 @@ cards:
     chart_type: bar
     period: month
     stat_types:
-      - max
+      - sum
     days_to_show: 365
 
-  # ===== Number of trips per month =====
+  # ===== Charging cost per month => 'sum' =====
   - type: statistics-graph
-    title: Trips per month
+    title: Charging cost per month
     entities:
-      - sensor.__DEVICE___trips_this_month
+      - sensor.__DEVICE___spent_on_charging_this_month
     chart_type: bar
     period: month
     stat_types:
-      - max
+      - sum
     days_to_show: 365
 
-  # ===== Avg consumption trend (last 30 days, rolling) =====
+  # ===== Avg consumption trend (rolling, measurement) => 'mean' =====
   - type: statistics-graph
-    title: Average consumption (kWh/100km, last 30 days rolling)
+    title: Average consumption (kWh/100km, 30-day rolling)
     entities:
       - sensor.__DEVICE___avg_consumption_30_days
     chart_type: line
     period: day
     stat_types:
       - mean
-    days_to_show: 30
+    days_to_show: 60
 
-  # ===== Battery level over last 24h =====
+  # ===== Battery over last 24h — battery_percent (NOT battery_level) =====
   - type: history-graph
-    title: Battery level (last 24h)
+    title: Battery (last 24h)
     hours_to_show: 24
     entities:
-      - entity: sensor.__DEVICE___battery_level
-        name: SoC
+      - entity: sensor.__DEVICE___battery_percent
+        name: SoC %
       - entity: sensor.__DEVICE___battery_energy
         name: kWh in battery
 
-  # ===== Avg charge price trend =====
-  - type: statistics-graph
-    title: Average charge price (€/kWh, 30 day rolling)
+  # ===== Avg charge price — no state_class, so plot raw history (not statistics) =====
+  - type: history-graph
+    title: Avg charge price (€/kWh, 30-day rolling)
+    hours_to_show: 720
     entities:
-      - sensor.__DEVICE___avg_charge_price_30_days
-    chart_type: line
-    period: day
-    stat_types:
-      - mean
-    days_to_show: 60
+      - entity: sensor.__DEVICE___avg_charge_price_30_days
+        name: €/kWh
