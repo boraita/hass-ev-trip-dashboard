@@ -70,12 +70,14 @@ input_number:
     initial: 500
     mode: box
 
+  # Ceiling high enough that the default does not hide trips: short EV trips
+  # (1–2 km, cold start) routinely exceed 50 kWh/100km. initial == max == no filter.
   __DEVICE___trip_max_consumption:
     name: Trip max consumption
     icon: mdi:lightning-bolt
     min: 0
-    max: 50
-    step: 1
-    initial: 50
+    max: 200
+    step: 5
+    initial: 200
     unit_of_measurement: kWh/100km
     mode: box
