@@ -1,15 +1,17 @@
 # EV Trip Dashboard
 
-A ready-made Lovelace pack to visualise every metric from
+A ready-made dashboard to visualise every metric from
 [hass-ev-trip-logger](https://github.com/boraita/hass-ev-trip-logger) — and any
 other integration that publishes the same sensor names.
 
-No HACS plugin, no JavaScript. Just YAML you drop into your Home Assistant.
+Two ways to use it:
+- **HACS dashboard strategy** (recommended) — install via HACS, point a dashboard at the strategy, and it auto-generates everything from your device. Includes a polished custom trip-list card. No `__DEVICE__` find/replace.
+- **Pure-YAML pack** (no dependencies) — copy the YAML in `dashboards/` / `cards/` and replace `__DEVICE__`. Works on any Home Assistant, no HACS, no JavaScript.
 
 ## What you get
 
 - **Driving view** — battery, range, odometer, temps, live/last trip, current/last journey, and a map of the car's location.
-- **Trips view** — searchable, sortable, **filterable** trip list (search by destination/date; sort by date/distance/score/efficiency/cost; filter by period and by min distance / min score / max cost / max consumption) plus a "records" card highlighting the best trips. 100% native, no HACS.
+- **Trips view** — searchable, sortable, **filterable** trip list (search by destination/date; sort by date/distance/score/efficiency/cost; filter by period and by min distance / min score / max cost / max consumption) plus a "records" card highlighting the best trips. The HACS strategy renders it as a polished custom list card (route chips + colour-coded score); the YAML pack renders it as a native markdown table.
 - **History view** — recent journeys and recent charges.
 - **Charts view** — monthly distance / energy / charging-cost bars, rolling efficiency and charge-price trends, 24h battery curve.
 - **Stats view** — monthly totals for driving and charging, plus the live charge session when plugged in.
@@ -19,7 +21,25 @@ All cards use stock Lovelace types (`markdown`, `glance`, `entities`, `gauge`, `
 
 ## Install
 
-### Quick start (one dashboard, full pack)
+### Option A — HACS (dashboard strategy, recommended)
+
+1. HACS → ⋮ → **Custom repositories** → add `https://github.com/boraita/hass-ev-trip-dashboard` with category **Dashboard**.
+2. Install **EV Trip Dashboard**. HACS downloads `ev-trip-dashboard.js` and registers the Lovelace resource. Reload the browser (hard refresh).
+3. Add the **Trips helpers** (`packages/trip-list-helpers.yaml`) — see note below; the search/filter needs them.
+4. Create a dashboard and set its raw config to:
+   ```yaml
+   strategy:
+     type: custom:ev-trip
+     # device: sealion_7        # optional — auto-detected from sensor.<slug>_recent_trips
+     # vehicle: byd_sealion_7   # optional — car integration (range/odometer/map/temps)
+   ```
+   The strategy auto-detects the trip-logger device and generates all five views. Car-integration cards (map/range/temps) appear only if those entities exist.
+
+> Helpers: a dashboard strategy can't create input helpers, so the Trips search/sort/filter still needs `packages/trip-list-helpers.yaml` added as a package (replace `__DEVICE__`, restart). Without them the list just shows everything unfiltered.
+
+### Option B — Pure YAML (no HACS)
+
+#### Quick start (one dashboard, full pack)
 
 1. Copy `dashboards/full.yaml` to your `config/dashboards/` folder (create it if it doesn't exist).
 2. Edit the file and replace **two** placeholders:
@@ -84,6 +104,8 @@ If you do not run hass-ev-trip-logger but already collect trip data from another
 ## Repo layout
 
 ```
+ev-trip-dashboard.js   HACS plugin: dashboard strategy (custom:ev-trip) + custom trip-list card
+hacs.json              HACS plugin manifest
 dashboards/
   full.yaml            Complete sections dashboard (Driving/Trips/History/Charts/Stats)
   mobile.yaml          Compact single view, optimised for phone width
