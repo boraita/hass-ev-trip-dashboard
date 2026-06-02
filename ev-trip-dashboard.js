@@ -407,15 +407,26 @@ function statsView(D, hass) {
 // Replaces the markdown table when the plugin is installed; honours the same
 // input helpers for search / sort / period / numeric filters.
 // ==========================================================================
-const _fmtDate = (iso) => {
+const _fmtDate = (iso, withYear) => {
   if (!iso) return "—";
   const d = new Date(iso);
   if (isNaN(d)) return "—";
   const p = (n) => String(n).padStart(2, "0");
-  return `${p(d.getDate())}/${p(d.getMonth() + 1)} ${p(d.getHours())}:${p(d.getMinutes())}`;
+  const date = withYear
+    ? `${p(d.getDate())}/${p(d.getMonth() + 1)}/${d.getFullYear()}`
+    : `${p(d.getDate())}/${p(d.getMonth() + 1)}`;
+  return `${date} ${p(d.getHours())}:${p(d.getMinutes())}`;
 };
 const _scoreColor = (s) =>
-  s == null ? "var(--disabled-text-color)" : s >= 8 ? "var(--success-color, #43a047)" : s >= 5 ? "var(--warning-color, #fb8c00)" : "var(--error-color, #e53935)";
+  s == null
+    ? "var(--disabled-text-color)"
+    : s >= 8
+    ? "var(--success-color, #43a047)"
+    : s >= 7
+    ? "var(--light-green-color, #7cb342)"
+    : s >= 5
+    ? "var(--warning-color, #fbc02d)"
+    : "var(--error-color, #e53935)";
 const _esc = (s) => String(s == null ? "" : s).replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
 
 class EvTripListCard extends HTMLElement {
@@ -491,34 +502,36 @@ class EvTripListCard extends HTMLElement {
     if (!this._hass) return;
     const { rows, total } = this._filteredTrips();
     const cur = { EUR: "€", USD: "$", GBP: "£" };
+    const DASH = "—";
+    const fmtNum = (v, dp) => (v == null || isNaN(v) ? DASH : dp == null ? String(v) : Number(v).toFixed(dp));
+
+    const col = (label, value, unit, opts) => {
+      const o = opts || {};
+      const valStyle = o.color ? ` style="color:${o.color}"` : "";
+      const valCls = o.big ? "col-val col-val--big" : "col-val";
+      const unitHtml = unit ? `<div class="col-unit">${_esc(unit)}</div>` : `<div class="col-unit">&nbsp;</div>`;
+      return `<div class="col">
+                <div class="col-label">${_esc(label)}</div>
+                <div class="${valCls}"${valStyle}>${value}</div>
+                ${unitHtml}
+              </div>`;
+    };
+
     const rowsHtml = rows.length
       ? rows
           .map((t) => {
             const sym = cur[t.currency] || t.currency || "";
-            const cons = t.consumption_kwh_100km != null ? `${t.consumption_kwh_100km}` : "—";
-            const cost = t.cost != null ? `${t.cost} ${sym}` : "—";
-            const energy = t.energy_kwh != null ? `${t.energy_kwh} kWh` : "—";
-            const dur = t.duration_min != null ? `${Math.round(t.duration_min)}m` : "—";
-            const score = t.score != null ? Number(t.score).toFixed(1) : "—";
+            const score = t.score != null ? Number(t.score).toFixed(1) : DASH;
             return `
             <div class="trip">
-              <div class="trip-main">
-                <div class="route">
-                  <span class="when">${_fmtDate(t.ended_at)}</span>
-                  <span class="chip">${_esc(t.origin || "—")}</span>
-                  <ha-icon icon="mdi:arrow-right-thin"></ha-icon>
-                  <span class="chip">${_esc(t.destination || "—")}</span>
-                  ${t.journey_id ? `<span class="jid">#${t.journey_id}</span>` : ""}
-                </div>
-                <div class="metrics">
-                  <span><ha-icon icon="mdi:map-marker-distance"></ha-icon>${t.distance_km} km</span>
-                  <span><ha-icon icon="mdi:lightning-bolt"></ha-icon>${energy}</span>
-                  <span><ha-icon icon="mdi:chart-line"></ha-icon>${cons}</span>
-                  <span><ha-icon icon="mdi:cash"></ha-icon>${cost}</span>
-                  <span><ha-icon icon="mdi:timer-outline"></ha-icon>${dur}</span>
-                </div>
+              <div class="trip-date">${_fmtDate(t.ended_at, true)}</div>
+              <div class="cols">
+                ${col("Distancia", fmtNum(t.distance_km), "km")}
+                ${col("Consumo", fmtNum(t.energy_kwh), "kWh")}
+                ${col("Eficiencia", fmtNum(t.consumption_kwh_100km), "kWh/100km")}
+                ${col("Coste", fmtNum(t.cost), sym || DASH)}
+                ${col("Score", score, "", { big: true, color: _scoreColor(t.score) })}
               </div>
-              <div class="score" style="--c:${_scoreColor(t.score)}">${score}</div>
             </div>`;
           })
           .join("")
@@ -527,27 +540,37 @@ class EvTripListCard extends HTMLElement {
     this.innerHTML = `
       <ha-card>
         <style>
-          .head{display:flex;justify-content:space-between;align-items:center;padding:12px 16px 4px;font-weight:600;}
-          .head .count{color:var(--secondary-text-color);font-weight:400;font-size:.9em;}
-          .trip{display:flex;align-items:center;gap:12px;padding:10px 16px;border-top:1px solid var(--divider-color);}
-          .trip-main{flex:1;min-width:0;}
-          .route{display:flex;align-items:center;gap:6px;flex-wrap:wrap;font-size:.95em;}
-          .route .when{color:var(--secondary-text-color);font-variant-numeric:tabular-nums;margin-right:2px;}
-          .route ha-icon{--mdc-icon-size:16px;color:var(--secondary-text-color);}
-          .chip{background:var(--secondary-background-color);border-radius:10px;padding:1px 8px;font-size:.85em;}
-          .jid{color:var(--secondary-text-color);font-size:.8em;}
-          .metrics{display:flex;flex-wrap:wrap;gap:10px;margin-top:4px;color:var(--secondary-text-color);font-size:.85em;}
-          .metrics span{display:inline-flex;align-items:center;gap:3px;}
-          .metrics ha-icon{--mdc-icon-size:15px;}
-          .score{flex:0 0 auto;min-width:34px;height:34px;border-radius:50%;display:flex;align-items:center;justify-content:center;
-                 color:#fff;background:var(--c);font-weight:700;font-size:.85em;box-shadow:0 1px 3px rgba(0,0,0,.25);}
-          .empty{padding:18px 16px;color:var(--secondary-text-color);}
+          .head{display:flex;justify-content:space-between;align-items:baseline;
+                padding:14px 16px 10px;font-weight:600;font-size:1.05em;}
+          .head .count{color:var(--secondary-text-color);font-weight:400;font-size:.82em;}
+          .list{display:flex;flex-direction:column;gap:12px;padding:0 12px 14px;}
+          .trip{background:var(--secondary-background-color, var(--card-background-color));
+                border:1px solid var(--divider-color);border-radius:16px;
+                padding:14px 12px 12px;}
+          .trip-date{text-align:center;font-weight:700;font-size:1.02em;letter-spacing:.2px;
+                     color:var(--primary-text-color);font-variant-numeric:tabular-nums;
+                     margin-bottom:12px;}
+          .cols{display:flex;align-items:stretch;gap:4px;}
+          .col{flex:1 1 0;min-width:0;display:flex;flex-direction:column;align-items:center;
+               justify-content:flex-start;text-align:center;gap:2px;}
+          .col-label{font-size:.62em;letter-spacing:.06em;text-transform:uppercase;
+                     color:var(--secondary-text-color);line-height:1.2;}
+          .col-val{font-size:1.12em;font-weight:700;color:var(--primary-text-color);
+                   font-variant-numeric:tabular-nums;line-height:1.2;
+                   overflow:hidden;text-overflow:ellipsis;max-width:100%;}
+          .col-val--big{font-size:1.5em;font-weight:800;}
+          .col-unit{font-size:.62em;color:var(--secondary-text-color);line-height:1.2;}
+          .empty{padding:24px 16px;text-align:center;color:var(--secondary-text-color);}
+          @media (max-width:360px){
+            .col-label{font-size:.55em;}
+            .col-val{font-size:.95em;}
+            .col-val--big{font-size:1.3em;}
+          }
         </style>
-        <div class="head"><span>${this._config.title || "Trips"}</span>
-          <span class="count">${rows.length}${q_label(total, rows.length)}</span></div>
-        ${rowsHtml}
+        <div class="head"><span>${_esc(this._config.title || "Trips")}</span>
+          <span class="count">Showing ${rows.length} of ${total} trips</span></div>
+        <div class="list">${rowsHtml}</div>
       </ha-card>`;
-    function q_label(tot, shown) { return shown === tot ? `/${tot}` : ` of ${tot}`; }
   }
 }
 customElements.define("ev-trip-list-card", EvTripListCard);
