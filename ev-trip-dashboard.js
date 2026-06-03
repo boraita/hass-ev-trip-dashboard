@@ -71,6 +71,40 @@ const heading = (h, icon) => ({ type: "heading", heading: h, icon });
 const md = (content) => ({ type: "markdown", content });
 const grid = (cards) => ({ type: "grid", cards });
 
+// Currency map for Jinja templates (used by the restored records card).
+const CUR_MAP = "{'EUR':'€','USD':'$','GBP':'£'}";
+
+// Progressive-enhancement check — true if a fancy HACS card is registered.
+// Matches the bare element name or a "custom:"-prefixed type.
+function hasCard(type) {
+  try {
+    if (typeof customElements !== "undefined" && customElements.get && customElements.get(type)) return true;
+  } catch (_e) {
+    /* customElements may be unavailable in non-browser contexts */
+  }
+  const cc = (typeof window !== "undefined" && window.customCards) || [];
+  return cc.some((c) => c && (c.type === type || c.type === `custom:${type}`));
+}
+
+// A mushroom-template-card "tile" with a colored icon (Driving KPIs); falls
+// back to a native tile card when mushroom isn't installed.
+function kpiTile(entity, name, icon, color) {
+  if (hasCard("mushroom-template-card")) {
+    return {
+      type: "custom:mushroom-template-card",
+      entity,
+      primary: name,
+      secondary: "{{ states(entity) }}{{ ' ' ~ state_attr(entity,'unit_of_measurement') if state_attr(entity,'unit_of_measurement') else '' }}",
+      icon: icon || "{{ state_attr(entity,'icon') or 'mdi:information-outline' }}",
+      icon_color: color || "primary",
+      multiline_secondary: false,
+    };
+  }
+  const card = { type: "tile", entity, name };
+  if (color) card.color = color;
+  return card;
+}
+
 // Wraps a vertical stack — used when a "screen" maps to a vertical-stack in the
 // reference YAML. Strategies render any nested cards through Lovelace as-is.
 const vstack = (cards) => ({ type: "vertical-stack", cards });
@@ -1342,8 +1376,11 @@ function viajesView(D, hass) {
   cards.push({ type: "custom:ev-trip-list-card", device: D, title: "Recent trips" });
 
   return {
-    title: "Trips",
-    path: "trips",
+    // Demoted to a distinct path so the restored pre-2.0 "Trips" (left list +
+    // right records/search) can reclaim the canonical "trips" slot. Remove this
+    // view once the restored one is confirmed as the keeper.
+    title: "Trips (cards)",
+    path: "trips-cards",
     icon: "mdi:car-multiple",
     type: "sections",
     max_columns: 2,
@@ -2468,6 +2505,271 @@ customElements.define("ev-trip-patterns-card", EvTripPatternsCard);
 window.customCards = window.customCards || [];
 window.customCards.push({ type: "ev-trip-patterns-card", name: "EV Trip — driving patterns", description: "By-hour bars + weekday km/trips strip (logger v0.5.0)." });
 
+// ==========================================================================
+// RESTORED from v1.5.0 (user favourites, pre-2.0): Driving + Trips views.
+// Additive — the 9-view equivalents stay until these are validated.
+// ==========================================================================
+function drivingView(D, V, hass) {
+  const status = [heading("Status", "mdi:car-electric")];
+
+  // Optional mushroom chips strip — battery %, charging state, range — a quick
+  // at-a-glance header above the gauge. Only when mushroom-chips-card exists.
+  if (hasCard("mushroom-chips-card")) {
+    const chips = [
+      {
+        type: "template",
+        entity: `sensor.${D}_battery_percent`,
+        icon: "{% set b = states(entity)|int(0) %}{{ 'mdi:battery' if b>=95 else 'mdi:battery-' ~ ((b/10)|round*10|int) if b>=10 else 'mdi:battery-outline' }}",
+        icon_color: "{% set b = states(entity)|int(0) %}{{ 'red' if b<20 else 'amber' if b<50 else 'green' }}",
+        content: "{{ states(entity) }}%",
+      },
+    ];
+    if (has(hass, `sensor.${D}_charge_in_progress`)) {
+      chips.push({
+        type: "template",
+        entity: `sensor.${D}_charge_in_progress`,
+        icon: "{{ 'mdi:ev-station' if is_state(entity,'charging') else 'mdi:power-plug-off' }}",
+        icon_color: "{{ 'blue' if is_state(entity,'charging') else 'disabled' }}",
+        content: "{{ states(entity) }}",
+      });
+    }
+    const rangeEnt = has(hass, `sensor.${D}_range_at_recent_efficiency`)
+      ? `sensor.${D}_range_at_recent_efficiency`
+      : has(hass, `sensor.${V}_range`)
+      ? `sensor.${V}_range`
+      : null;
+    if (rangeEnt) {
+      chips.push({
+        type: "template",
+        entity: rangeEnt,
+        icon: "mdi:map-marker-distance",
+        icon_color: "teal",
+        content: "{{ states(entity)|round(0) }} km",
+      });
+    }
+    status.push({ type: "custom:mushroom-chips-card", alignment: "center", chips });
+  }
+
+  // Battery: a mini-graph 24h curve (preferred — shows the trend) and only
+  // fall back to the half-moon gauge when mini-graph-card isn't installed.
+  if (hasCard("mini-graph-card")) {
+    status.push({
+      type: "custom:mini-graph-card",
+      name: "Battery",
+      icon: "mdi:battery-charging",
+      hours_to_show: 24,
+      points_per_hour: 2,
+      line_width: 4,
+      smoothing: true,
+      show: { fill: "fade", state: true, name: true },
+      entities: [{ entity: `sensor.${D}_battery_percent`, name: "Battery" }],
+    });
+  } else {
+    status.push({
+      type: "gauge",
+      entity: `sensor.${D}_battery_percent`,
+      name: "Battery",
+      min: 0,
+      max: 100,
+      needle: true,
+      severity: { green: 50, yellow: 20, red: 0 },
+    });
+  }
+
+  // Battery / range / odometer. Logger gives a real-world range estimate;
+  // the car integration (optional) gives its own range + odometer.
+  const kpis = [
+    { entity: `sensor.${D}_battery_energy`, name: "In battery", icon: "mdi:battery-charging", color: "green" },
+    { entity: `sensor.${D}_energy_to_full_charge`, name: "To 100%", icon: "mdi:battery-plus", color: "blue" },
+  ];
+  if (has(hass, `sensor.${D}_range_at_recent_efficiency`))
+    kpis.push({ entity: `sensor.${D}_range_at_recent_efficiency`, name: "Real range", icon: "mdi:map-marker-distance", color: "teal" });
+  if (has(hass, `sensor.${V}_range`))
+    kpis.push({ entity: `sensor.${V}_range`, name: "Range", icon: "mdi:map-marker-radius", color: "teal" });
+  if (has(hass, `sensor.${V}_odometer`))
+    kpis.push({ entity: `sensor.${V}_odometer`, name: "Odometer", icon: "mdi:counter", color: "grey" });
+  // Mushroom template tiles (one per KPI) when available, else native tiles.
+  for (const k of kpis) status.push(kpiTile(k.entity, k.name, k.icon, k.color));
+
+  if (has(hass, `sensor.${V}_exterior_temperature`))
+    status.push(kpiTile(`sensor.${V}_exterior_temperature`, "Outside", "mdi:thermometer", "orange"));
+  if (has(hass, `sensor.${V}_cabin_temperature`))
+    status.push(kpiTile(`sensor.${V}_cabin_temperature`, "Cabin", "mdi:car-seat", "orange"));
+
+  // Live-trip glance — shown only while a trip is actively tracked, so these
+  // metrics populate live (they're sampled when vehicle_on is on). Include any
+  // that the logger exposes; synthetic/backfilled trips never open this card.
+  const liveEnts = [
+    { entity: `sensor.${D}_current_trip_distance`, name: "km" },
+    { entity: `sensor.${D}_current_trip_duration`, name: "min" },
+    { entity: `sensor.${D}_current_trip_energy`, name: "kWh" },
+    { entity: `sensor.${D}_current_trip_consumption`, name: "kWh/100" },
+    { entity: `sensor.${D}_current_trip_average_speed`, name: "km/h" },
+    { entity: `sensor.${D}_current_trip_battery_used`, name: "% used" },
+  ];
+  for (const [s, n] of [
+    ["current_trip_max_speed", "km/h max"],
+    ["current_trip_max_power", "kW max"],
+    ["current_trip_avg_temperature", "°C"],
+    ["current_trip_regen_energy", "regen"],
+    ["current_trip_cost", "cost"],
+    ["current_trip_score", "score"],
+  ]) {
+    if (has(hass, `sensor.${D}_${s}`)) liveEnts.push({ entity: `sensor.${D}_${s}`, name: n });
+  }
+
+  const lastEnts = [
+    { entity: `sensor.${D}_last_trip_distance`, name: "km" },
+    { entity: `sensor.${D}_last_trip_duration`, name: "min" },
+    { entity: `sensor.${D}_last_trip_energy`, name: "kWh" },
+    { entity: `sensor.${D}_last_trip_consumption`, name: "kWh/100" },
+    { entity: `sensor.${D}_last_trip_cost`, name: "cost" },
+    { entity: `sensor.${D}_last_trip_score`, name: "score" },
+  ];
+  for (const [s, n] of [
+    ["last_trip_average_speed", "km/h"],
+    ["last_trip_max_speed", "km/h max"],
+    ["last_trip_max_power", "kW max"],
+    ["last_trip_regen_energy", "regen"],
+    ["last_trip_battery_used", "% used"],
+    ["last_trip_avg_temperature", "°C"],
+  ]) {
+    if (hasVal(hass, `sensor.${D}_${s}`)) lastEnts.push({ entity: `sensor.${D}_${s}`, name: n });
+  }
+
+  const now = [
+    heading("Now", "mdi:speedometer"),
+    {
+      type: "conditional",
+      conditions: [{ condition: "numeric_state", entity: `sensor.${D}_current_trip_distance`, above: 0 }],
+      card: { type: "glance", title: "🟢 Trip in progress", columns: 4, entities: liveEnts },
+    },
+    {
+      type: "conditional",
+      conditions: [{ condition: "numeric_state", entity: `sensor.${D}_current_trip_distance`, below: 0.001 }],
+      card: {
+        type: "vertical-stack",
+        cards: [
+          md(
+            `### Last trip\n` +
+            `{%- set ended = state_attr('sensor.${D}_last_trip_distance', 'ended_at') %}\n` +
+            `{%- if ended %}\n` +
+            `_{{ as_timestamp(ended) | timestamp_custom('%d/%m %H:%M') }} — {{ state_attr('sensor.${D}_last_trip_distance', 'origin') or '?' }} → {{ state_attr('sensor.${D}_last_trip_distance', 'destination') or '?' }}_\n` +
+            `{%- endif %}`
+          ),
+          { type: "glance", columns: 3, entities: lastEnts },
+        ],
+      },
+    },
+    { type: "custom:ev-trip-journey-card", device: D },
+  ];
+
+  // Charging-now card from the logger's live charge sensors.
+  if (has(hass, `sensor.${D}_current_charge_power`)) {
+    now.push({
+      type: "conditional",
+      conditions: [{ condition: "state", entity: `sensor.${D}_charge_in_progress`, state: "charging" }],
+      card: {
+        type: "glance",
+        title: "⚡ Charging now",
+        columns: 3,
+        entities: [
+          { entity: `sensor.${D}_current_charge_power`, name: "kW" },
+          { entity: `sensor.${D}_current_charge_energy`, name: "kWh" },
+          { entity: `sensor.${D}_current_charge_duration`, name: "min" },
+          { entity: `sensor.${D}_current_charge_price_per_kwh`, name: "€/kWh" },
+          { entity: `sensor.${D}_current_charge_cost`, name: "cost" },
+          { entity: `sensor.${D}_current_charge_type`, name: "type" },
+        ],
+      },
+    });
+  }
+
+  const sections = [grid(status), grid(now)];
+
+  // Map (car integration only).
+  if (has(hass, `device_tracker.${V}_location`)) {
+    sections.push(grid([heading("Where", "mdi:map-marker"), { type: "map", default_zoom: 11, entities: [`device_tracker.${V}_location`] }]));
+  }
+
+  return { title: "Driving", path: "driving", icon: "mdi:car", type: "sections", max_columns: 2, sections };
+}
+
+function recordsCard(D) {
+  return md(
+    `{%- set CUR = ${CUR_MAP} %}\n` +
+    `{%- set rsrc = 'sensor.${D}_trip_records' %}\n` +
+    `{%- set best = state_attr(rsrc, 'best_score') %}\n` +
+    `{%- if best is mapping %}\n` +
+    `{%- set longest = state_attr(rsrc, 'longest') %}\n` +
+    `{%- set efficient = state_attr(rsrc, 'most_efficient') %}\n` +
+    `{%- set cheapest = state_attr(rsrc, 'cheapest') %}\n` +
+    `### 🏆 Records ({{ states(rsrc) }} trips all-time)\n` +
+    `| Record | When | Where | Value |\n|---|---|---|---:|\n` +
+    `{%- if best.value is defined %}\n| 🥇 Best score | {{ as_timestamp(best.ended_at) | timestamp_custom('%d/%m/%y') }} | {{ best.destination or '—' }} | **{{ best.value }}** |\n{%- endif %}\n` +
+    `{%- if longest %}\n| 📏 Longest | {{ as_timestamp(longest.ended_at) | timestamp_custom('%d/%m/%y') }} | {{ longest.destination or '—' }} | **{{ longest.value }} km** |\n{%- endif %}\n` +
+    `{%- if efficient %}\n| 🪫 Most efficient | {{ as_timestamp(efficient.ended_at) | timestamp_custom('%d/%m/%y') }} | {{ efficient.destination or '—' }} | **{{ efficient.value }} kWh/100** |\n{%- endif %}\n` +
+    `{%- if cheapest %}\n| 💶 Cheapest | {{ as_timestamp(cheapest.ended_at) | timestamp_custom('%d/%m/%y') }} | {{ cheapest.destination or '—' }} | **{{ cheapest.value }} {{ CUR.get(cheapest.currency, cheapest.currency or '€') }}** |\n{%- endif %}\n` +
+    `{%- else %}\n` +
+    `{%- set trips = state_attr('sensor.${D}_recent_trips', 'trips') or [] %}\n` +
+    `{%- if trips | length == 0 %}\n### 🏆 Trip records\n_No trips recorded yet._\n` +
+    `{%- else %}\n` +
+    `{%- set scored = trips | rejectattr('score', 'none') | list %}\n` +
+    `{%- set with_dist = trips | rejectattr('distance_km', 'none') | list %}\n` +
+    `{%- set with_eff = trips | rejectattr('consumption_kwh_100km', 'none') | list %}\n` +
+    `{%- set with_cost = trips | rejectattr('cost', 'none') | list %}\n` +
+    `{%- set b = (scored | sort(attribute='score', reverse=true) | first) if scored else none %}\n` +
+    `{%- set lo = (with_dist | sort(attribute='distance_km', reverse=true) | first) if with_dist else none %}\n` +
+    `{%- set ef = (with_eff | sort(attribute='consumption_kwh_100km') | first) if with_eff else none %}\n` +
+    `{%- set ch = (with_cost | sort(attribute='cost') | first) if with_cost else none %}\n` +
+    `### 🏆 Trip records (last {{ trips | length }} trips)\n` +
+    `| Record | When | Where | Value |\n|---|---|---|---:|\n` +
+    `{%- if b %}\n| 🥇 Best score | {{ as_timestamp(b.ended_at) | timestamp_custom('%d/%m') }} | {{ b.destination or '—' }} | **{{ b.score }}** |\n{%- endif %}\n` +
+    `{%- if lo %}\n| 📏 Longest | {{ as_timestamp(lo.ended_at) | timestamp_custom('%d/%m') }} | {{ lo.destination or '—' }} | **{{ lo.distance_km }} km** |\n{%- endif %}\n` +
+    `{%- if ef %}\n| 🪫 Most efficient | {{ as_timestamp(ef.ended_at) | timestamp_custom('%d/%m') }} | {{ ef.destination or '—' }} | **{{ ef.consumption_kwh_100km }} kWh/100** |\n{%- endif %}\n` +
+    `{%- if ch %}\n| 💶 Cheapest | {{ as_timestamp(ch.ended_at) | timestamp_custom('%d/%m') }} | {{ ch.destination or '—' }} | **{{ ch.cost }} {{ CUR.get(ch.currency, ch.currency or '€') }}** |\n{%- endif %}\n` +
+    `{%- endif %}\n{%- endif %}`
+  );
+}
+
+function tripsView(D) {
+  return {
+    title: "Trips",
+    path: "trips",
+    icon: "mdi:map-search",
+    type: "sections",
+    max_columns: 2,
+    sections: [
+      // LEFT column — the trip list.
+      grid([
+        heading("Trips", "mdi:map-marker-path"),
+        { type: "custom:ev-trip-list-card", device: D, title: "Trips" },
+      ]),
+      // RIGHT column — records on top, search & filter below.
+      grid([
+        heading("Records", "mdi:trophy-variant"),
+        recordsCard(D),
+        heading("Search & filter", "mdi:filter-variant"),
+        {
+          type: "entities",
+          show_header_toggle: false,
+          entities: [
+            { entity: `input_text.${D}_trip_search`, name: "Search (destination / date)" },
+            { entity: `input_select.${D}_trip_sort`, name: "Sort by" },
+            { entity: `input_select.${D}_trip_window`, name: "Period" },
+            { type: "divider" },
+            { entity: `input_number.${D}_trip_min_distance`, name: "Min distance (km)" },
+            { entity: `input_number.${D}_trip_min_score`, name: "Min score" },
+            { entity: `input_number.${D}_trip_max_cost`, name: "Max cost" },
+            { entity: `input_number.${D}_trip_max_consumption`, name: "Max kWh/100" },
+          ],
+        },
+      ]),
+    ],
+  };
+}
+
+
 // ---- strategy ------------------------------------------------------------
 // HACS deps are required — no per-card fallback. If a dep is missing the
 // user will see one broken card, not a degraded dashboard.
@@ -2494,6 +2796,9 @@ class EvTripDashboardStrategy {
     return {
       title: "EV Trips",
       views: [
+        // Restored pre-2.0 favourites first (Driving + Trips with records/search).
+        drivingView(D, V, hass),
+        tripsView(D),
         resumenView(D, V, hass),
         calendarioView(D, hass),
         tendenciasView(D, hass),
