@@ -30,6 +30,14 @@ function has(hass, entity) {
   return Object.prototype.hasOwnProperty.call(hass.states, entity);
 }
 
+// True only when the entity exists AND currently has a usable value — used to
+// drop optional metrics (max speed/power, regen, temperature) that are blank
+// because the logger has no speed/power/temperature source sensor configured.
+function hasVal(hass, entity) {
+  const s = hass.states[entity];
+  return !!s && !["unknown", "unavailable", "none", ""].includes(String(s.state).toLowerCase());
+}
+
 const heading = (h, icon) => ({ type: "heading", heading: h, icon });
 const md = (content) => ({ type: "markdown", content });
 const grid = (cards) => ({ type: "grid", cards });
@@ -69,24 +77,29 @@ function drivingView(D, V, hass) {
   if (has(hass, `sensor.${V}_cabin_temperature`))
     status.push({ type: "tile", entity: `sensor.${V}_cabin_temperature`, name: "Cabin", color: "orange" });
 
-  // Live-trip glance: include cost/score/regen/max-speed when the logger
-  // exposes the live-during-trip sensors.
+  // Live-trip glance. Always-available metrics first; the source-dependent
+  // ones (speed/power/temperature/regen) are gated on the matching last_trip
+  // metric ever having a value, so installs without a speed/power/temp sensor
+  // don't get a wall of "Unknown" tiles during a drive.
   const liveEnts = [
     { entity: `sensor.${D}_current_trip_distance`, name: "km" },
     { entity: `sensor.${D}_current_trip_duration`, name: "min" },
     { entity: `sensor.${D}_current_trip_energy`, name: "kWh" },
     { entity: `sensor.${D}_current_trip_consumption`, name: "kWh/100" },
-    { entity: `sensor.${D}_current_trip_average_speed`, name: "km/h" },
-    { entity: `sensor.${D}_current_trip_max_power`, name: "kW max" },
     { entity: `sensor.${D}_current_trip_battery_used`, name: "% used" },
-    { entity: `sensor.${D}_current_trip_avg_temperature`, name: "°C" },
   ];
-  for (const [s, n] of [
-    ["current_trip_max_speed", "km/h max"],
-    ["current_trip_regen_energy", "regen"],
-    ["current_trip_cost", "cost"],
-    ["current_trip_score", "score"],
+  for (const [cur, proxy, n] of [
+    ["current_trip_average_speed", "last_trip_average_speed", "km/h"],
+    ["current_trip_max_speed", "last_trip_max_speed", "km/h max"],
+    ["current_trip_max_power", "last_trip_max_power", "kW max"],
+    ["current_trip_avg_temperature", "last_trip_avg_temperature", "°C"],
+    ["current_trip_regen_energy", "last_trip_regen_energy", "regen"],
   ]) {
+    if (has(hass, `sensor.${D}_${cur}`) && hasVal(hass, `sensor.${D}_${proxy}`))
+      liveEnts.push({ entity: `sensor.${D}_${cur}`, name: n });
+  }
+  // Cost & score are computed by the logger, so keep them whenever present.
+  for (const [s, n] of [["current_trip_cost", "cost"], ["current_trip_score", "score"]]) {
     if (has(hass, `sensor.${D}_${s}`)) liveEnts.push({ entity: `sensor.${D}_${s}`, name: n });
   }
 
@@ -106,7 +119,7 @@ function drivingView(D, V, hass) {
     ["last_trip_battery_used", "% used"],
     ["last_trip_avg_temperature", "°C"],
   ]) {
-    if (has(hass, `sensor.${D}_${s}`)) lastEnts.push({ entity: `sensor.${D}_${s}`, name: n });
+    if (hasVal(hass, `sensor.${D}_${s}`)) lastEnts.push({ entity: `sensor.${D}_${s}`, name: n });
   }
 
   const now = [
