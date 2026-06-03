@@ -1188,10 +1188,8 @@ function cargasView(D, hass) {
     });
   }
 
-  // ---- Last charge: full power-vs-time curve (from recorder history) ----
-  if (has(hass, `sensor.${D}_current_charge_power`)) {
-    cards.push({ type: "custom:ev-charge-graph-card", device: D });
-  }
+  // (Per-charge power curves are rendered inside the charge history card —
+  // each charge shows its own kW-vs-time graph when its day is expanded.)
 
   // ---- KPI grid (2x2) --------------------------------------------------
   // Each tile is a button-card with 96px height so the grid feels denser
@@ -1699,11 +1697,32 @@ window.customCards.push({
 // attribute directly in JS (no markdown card) — robust against frontend
 // markdown quirks, and consistent with the trip list.
 // ==========================================================================
+// Compact power-vs-time SVG for a single charge (used in the charge history).
+const _miniPowerSvg = (pts) => {
+  const VB_W = 300, VB_H = 92, PL = 22, PR = 6, PT = 6, PB = 14;
+  const x0 = PL, x1 = VB_W - PR, y0 = PT, y1 = VB_H - PB;
+  const t0 = Math.min(...pts.map((p) => p.t)), t1 = Math.max(...pts.map((p) => p.t));
+  const maxKw = Math.max(...pts.map((p) => p.v)) * 1.12 || 1;
+  const sx = (t) => x0 + (t1 > t0 ? (t - t0) / (t1 - t0) : 0) * (x1 - x0);
+  const sy = (v) => y1 - (v / maxKw) * (y1 - y0);
+  const ft = (ms) => { const d = new Date(ms); const p = (n) => String(n).padStart(2, "0"); return `${p(d.getHours())}:${p(d.getMinutes())}`; };
+  const line = pts.map((p, i) => `${i ? "L" : "M"}${sx(p.t).toFixed(1)},${sy(p.v).toFixed(1)}`).join(" ");
+  const area = `M${sx(pts[0].t).toFixed(1)},${y1} ` + pts.map((p) => `L${sx(p.t).toFixed(1)},${sy(p.v).toFixed(1)}`).join(" ") + ` L${sx(pts[pts.length - 1].t).toFixed(1)},${y1} Z`;
+  const peak = Math.max(...pts.map((p) => p.v));
+  return `<svg viewBox="0 0 ${VB_W} ${VB_H}" class="cv-svg" preserveAspectRatio="none">
+    <line x1="${x0}" y1="${sy(0).toFixed(1)}" x2="${x1}" y2="${sy(0).toFixed(1)}" class="cv-axis"/>
+    <text x="${x0 - 3}" y="${(sy(maxKw) + 4).toFixed(1)}" text-anchor="end" class="cv-lbl">${peak.toFixed(0)}</text>
+    <path d="${area}" class="cv-area"/><path d="${line}" class="cv-line"/>
+    <text x="${x0}" y="${VB_H - 3}" class="cv-lbl">${ft(t0)}</text>
+    <text x="${x1}" y="${VB_H - 3}" text-anchor="end" class="cv-lbl">${ft(t1)}</text>
+  </svg>`;
+};
 class EvTripHistoryCard extends HTMLElement {
   setConfig(config) {
     this._config = config || {};
     this._device = this._config.device || null;
     this._kind = this._config.kind === "charges" ? "charges" : "journeys";
+    this._curves = this._curves || {}; // charge_id -> points | 'loading'
   }
   set hass(hass) {
     this._hass = hass;
@@ -1763,6 +1782,7 @@ class EvTripHistoryCard extends HTMLElement {
     const fmtNum = (v, dp) => (v == null || isNaN(v) ? DASH : dp == null ? String(v) : Number(v).toFixed(dp));
 
     const inner = kind === "journeys" ? this._journeysHtml(rows, D, sym, DASH, fmtNum) : this._chargesHtml(rows, sym, DASH, fmtNum);
+    if (kind === "charges") this._fetchOpenDayCurves(rows);
 
     this.innerHTML = `
       <ha-card>
@@ -1835,8 +1855,17 @@ class EvTripHistoryCard extends HTMLElement {
                        font-size:.85em;font-style:italic;}
 
           /* ---- expanded charge sessions ---- */
+          .csession + .csession{border-top:1px dashed var(--divider-color);}
           .session{display:flex;align-items:center;gap:10px;padding:8px 4px;}
-          .session + .session{border-top:1px dashed var(--divider-color);}
+          /* ---- per-charge power curve ---- */
+          .s-curve{padding:2px 4px 8px;}
+          .cv-svg{display:block;width:100%;height:92px;}
+          .cv-axis{stroke:var(--divider-color);stroke-width:1;}
+          .cv-area{fill:var(--info-color,#039be5);opacity:.13;}
+          .cv-line{fill:none;stroke:var(--info-color,#039be5);stroke-width:2.5;
+                   stroke-linejoin:round;stroke-linecap:round;}
+          .cv-lbl{fill:var(--secondary-text-color);font-size:8px;}
+          .cv-msg{font-size:.78em;color:var(--secondary-text-color);padding:6px 2px;text-align:center;}
           .session .sbody{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;gap:3px;}
           .session .sroute{display:flex;align-items:center;gap:6px;flex-wrap:wrap;font-size:.9em;}
           .session .stime{font-weight:700;color:var(--primary-text-color);
@@ -2065,17 +2094,27 @@ class EvTripHistoryCard extends HTMLElement {
         const extra =
           (durStr ? ` · <ha-icon class="s-mini" icon="mdi:timer-outline"></ha-icon>${durStr}` : "") +
           (avgKw != null ? ` · <b>${avgKw.toFixed(1)}</b> kW avg` : "");
+        // Per-charge power-vs-time curve (recorder history, fetched lazily).
+        const id = c.charge_id != null ? c.charge_id : c.id;
+        const cv = id != null ? this._curves[id] : undefined;
+        let curve;
+        if (cv == null || cv === "loading") curve = `<div class="cv-msg">Loading power curve…</div>`;
+        else if (!Array.isArray(cv) || cv.length < 2) curve = `<div class="cv-msg">No power history for this charge.</div>`;
+        else curve = _miniPowerSvg(cv);
         return `
-          <div class="session">
-            <div class="sbody">
-              <div class="sroute">
-                <span class="stime">${timeOf(c.ended_at)}</span>
-                <span class="chip">${_esc(c.location || DASH)}</span>
-                ${typeChip}
+          <div class="csession">
+            <div class="session">
+              <div class="sbody">
+                <div class="sroute">
+                  <span class="stime">${timeOf(c.ended_at)}</span>
+                  <span class="chip">${_esc(c.location || DASH)}</span>
+                  ${typeChip}
+                </div>
+                <div class="smetrics"><b>${fmtNum(c.kwh)}</b> kWh · <b>${fmtNum(c.price_per_kwh)}</b> ${_esc(sym(c.currency))}/kWh${extra}</div>
               </div>
-              <div class="smetrics"><b>${fmtNum(c.kwh)}</b> kWh · <b>${fmtNum(c.price_per_kwh)}</b> ${_esc(sym(c.currency))}/kWh${extra}</div>
+              <div class="score-pill" style="background:var(--info-color, #039be5)">${total}</div>
             </div>
-            <div class="score-pill" style="background:var(--info-color, #039be5)">${total}</div>
+            <div class="s-curve">${curve}</div>
           </div>`;
       })
       .join("");
@@ -2083,6 +2122,39 @@ class EvTripHistoryCard extends HTMLElement {
       <div class="detail">
         <div class="stages">${items}</div>
       </div>`;
+  }
+
+  // Lazily fetch the recorder power-curve for each charge of the open day.
+  _fetchOpenDayCurves(rows) {
+    if (this._openId == null || !this._hass) return;
+    const D = this._device;
+    const p = (n) => String(n).padStart(2, "0");
+    const dayKey = (iso) => { const d = new Date(iso); return isNaN(d) ? "unknown" : `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`; };
+    const sessions = rows.filter((c) => dayKey(c.ended_at) === this._openId);
+    for (const c of sessions) {
+      const id = c.charge_id != null ? c.charge_id : c.id;
+      if (id == null || this._curves[id] !== undefined) continue;
+      this._curves[id] = "loading";
+      this._fetchCurve(D, c, id);
+    }
+  }
+  _fetchCurve(D, c, id) {
+    let start, end;
+    try {
+      start = new Date(new Date(c.started_at).getTime() - 30000).toISOString();
+      end = new Date(new Date(c.ended_at || Date.now()).getTime() + 30000).toISOString();
+    } catch (_e) { this._curves[id] = []; this._render(); return; }
+    const ent = `sensor.${D}_current_charge_power`;
+    const path = `history/period/${start}?end_time=${end}&filter_entity_id=${ent}&minimal_response&no_attributes`;
+    Promise.resolve(this._hass.callApi("GET", path))
+      .then((res) => {
+        const ser = Array.isArray(res) && res[0] ? res[0] : [];
+        this._curves[id] = ser
+          .map((x) => ({ t: new Date(x.last_changed || x.lu || x.lc).getTime(), v: parseFloat(x.state) }))
+          .filter((x) => !isNaN(x.t) && !isNaN(x.v));
+        this._render();
+      })
+      .catch(() => { this._curves[id] = []; this._render(); });
   }
 }
 customElements.define("ev-trip-history-card", EvTripHistoryCard);
