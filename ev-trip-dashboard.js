@@ -44,6 +44,30 @@ function hasCard(type) {
   return cc.some((c) => c && c.type === type);
 }
 
+// The fancy HACS cards register asynchronously, often AFTER this strategy's
+// generate() first runs — so hasCard() would see them as missing and we'd fall
+// back to native cards even though they're installed. Wait (briefly) for the
+// candidates to define before building the views. Cards that aren't installed
+// never resolve, so the per-card timeout caps the wait.
+const _FANCY_CARDS = [
+  "mushroom-template-card",
+  "mushroom-chips-card",
+  "mushroom-title-card",
+  "apexcharts-card",
+  "mini-graph-card",
+];
+async function awaitFancyCards(timeoutMs = 2500) {
+  if (typeof customElements === "undefined" || !customElements.whenDefined) return;
+  await Promise.all(
+    _FANCY_CARDS.map((t) =>
+      Promise.race([
+        Promise.resolve(customElements.whenDefined(t)).catch(() => {}),
+        new Promise((resolve) => setTimeout(resolve, timeoutMs)),
+      ])
+    )
+  );
+}
+
 // True only when the entity exists AND currently has a usable value — used to
 // drop optional metrics (max speed/power, regen, temperature) that are blank
 // because the logger has no speed/power/temperature source sensor configured.
@@ -980,6 +1004,9 @@ class EvTripDashboardStrategy {
         ],
       };
     }
+    // Give the installed fancy cards a moment to register so hasCard() sees
+    // them (otherwise we'd fall back to native and the dashboard "looks the same").
+    await awaitFancyCards();
     return {
       title: "EV Trip",
       views: [drivingView(D, V, hass), tripsView(D), historyView(D), chartsView(D, hass), statsView(D, hass)],
