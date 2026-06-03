@@ -517,6 +517,8 @@ function tendenciasView(D, hass) {
   // Additive: rendered above the apex version below. Once logger v0.5.0
   // ships and this is validated, remove the apex "Monthly Km & kWh" card.
   cards.push({ type: "custom:ev-trip-monthly-card", device: D });
+  // Daily km sparkline (replaces the apex 60-day line below once validated).
+  cards.push({ type: "custom:ev-trip-daily-card", device: D });
 
   // ---- Dual-axis bar chart — Monthly Km & kWh ---------------------------
   // data_generator walks monthly_history.attributes.months and emits
@@ -2504,6 +2506,92 @@ class EvTripPatternsCard extends HTMLElement {
 customElements.define("ev-trip-patterns-card", EvTripPatternsCard);
 window.customCards = window.customCards || [];
 window.customCards.push({ type: "ev-trip-patterns-card", name: "EV Trip — driving patterns", description: "By-hour bars + weekday km/trips strip (logger v0.5.0)." });
+
+// ==========================================================================
+// Custom card: daily km over the last 60 days as a thin bar sparkline.
+// Reads sensor.<device>_daily_km_60d.attributes.days =
+//   [{day:"YYYY-MM-DD", distance_km}] (zero-filled, chronological).
+// Robust vanilla-JS alternative to the apex 60-day line.
+// ==========================================================================
+class EvTripDailyCard extends HTMLElement {
+  setConfig(config) {
+    this._config = config || {};
+    this._device = this._config.device || null;
+  }
+  set hass(hass) {
+    this._hass = hass;
+    this._render();
+  }
+  getCardSize() {
+    return 3;
+  }
+  _render() {
+    if (!this._hass) return;
+    const D = this._device || detectDevice(this._hass);
+    this._device = D;
+    const st = this._hass.states[`sensor.${D}_daily_km_60d`];
+    const days = (st && st.attributes && Array.isArray(st.attributes.days) && st.attributes.days) || [];
+
+    if (!days.length) {
+      this.innerHTML = `
+        <ha-card>
+          <div class="dk-head">Daily km · 60 days</div>
+          <div class="dk-empty">No daily data yet.<br><span>Provided by <code>sensor.${_esc(D)}_daily_km_60d</code> (logger v0.5.0).</span></div>
+          <style>
+            .dk-head{padding:14px 16px 4px;font-weight:600;font-size:1.05em;}
+            .dk-empty{padding:18px 16px 22px;text-align:center;color:var(--secondary-text-color);line-height:1.5;}
+            .dk-empty span{font-size:.85em;opacity:.8;}
+          </style>
+        </ha-card>`;
+      return;
+    }
+
+    const vals = days.map((d) => Number(d.distance_km) || 0);
+    const maxKm = Math.max(1, ...vals);
+    const totKm = vals.reduce((a, b) => a + b, 0);
+    const drivenDays = vals.filter((v) => v > 0).length;
+    const avgKm = drivenDays ? totKm / drivenDays : 0;
+    // Label the first day, ~middle and last day of the window.
+    const lblIdx = new Set([0, Math.floor(days.length / 2), days.length - 1]);
+    const fmtDay = (iso) => {
+      const p = String(iso || "").split("-");
+      return p.length === 3 ? `${p[2]}/${p[1]}` : String(iso || "");
+    };
+    const bars = days
+      .map((d, i) => {
+        const km = Number(d.distance_km) || 0;
+        const pct = Math.round((km / maxKm) * 100);
+        const lbl = lblIdx.has(i) ? `<div class="dk-lbl">${fmtDay(d.day)}</div>` : "";
+        return `<div class="dk-bar" title="${_esc(fmtDay(d.day))} — ${km.toFixed(1)} km"><div class="dk-fill" style="height:${pct}%"></div>${lbl}</div>`;
+      })
+      .join("");
+
+    this.innerHTML = `
+      <ha-card>
+        <div class="dk-head">Daily km · 60 days
+          <span class="dk-tot">${totKm.toFixed(0)} km · ${avgKm.toFixed(1)} km/active-day</span>
+        </div>
+        <div class="dk-chart">${bars}</div>
+        <style>
+          .dk-head{display:flex;justify-content:space-between;align-items:baseline;
+                   padding:14px 16px 8px;font-weight:600;font-size:1.05em;flex-wrap:wrap;gap:4px;}
+          .dk-tot{color:var(--secondary-text-color);font-weight:400;font-size:.8em;
+                  font-variant-numeric:tabular-nums;}
+          .dk-chart{display:flex;align-items:flex-end;gap:1px;height:96px;
+                    padding:0 14px 22px;position:relative;}
+          .dk-bar{flex:1 1 0;height:100%;display:flex;flex-direction:column;
+                  justify-content:flex-end;align-items:center;position:relative;}
+          .dk-fill{width:80%;min-height:1px;border-radius:2px 2px 0 0;
+                   background:linear-gradient(180deg,var(--info-color,#039be5),var(--primary-color));}
+          .dk-lbl{position:absolute;bottom:-18px;font-size:.6em;white-space:nowrap;
+                  color:var(--secondary-text-color);}
+        </style>
+      </ha-card>`;
+  }
+}
+customElements.define("ev-trip-daily-card", EvTripDailyCard);
+window.customCards = window.customCards || [];
+window.customCards.push({ type: "ev-trip-daily-card", name: "EV Trip — daily km (60d)", description: "Daily km sparkline for the last 60 days (logger v0.5.0)." });
 
 // ==========================================================================
 // RESTORED from v1.5.0 (user favourites, pre-2.0): Driving + Trips views.
