@@ -535,10 +535,10 @@ function tendenciasView(D, hass) {
   cards.push(
     apexChart({
       title: "Monthly Km & kWh",
-      graphSpan: "365d",
-      span: { end: "month" },
+      // NO graphSpan/span: the data_generator emits category labels ("YYYY-MM"),
+      // and a datetime time-window would filter every string point out → blank.
       apexConfig: {
-        chart: { height: "280px", stacked: false },
+        chart: { type: "bar", height: "280px", stacked: false },
         legend: { position: "bottom" },
         xaxis: { type: "category", labels: { rotate: -45, style: { fontSize: "11px" } } },
         plotOptions: { bar: { columnWidth: "60%", borderRadius: 4 } },
@@ -1224,10 +1224,12 @@ function cargasView(D, hass) {
 
   // ---- Quick-fix the last charge's €/kWh -------------------------------
   // Auto-detect saves charges at the home price; this lets you correct the
-  // most recent one on the fly via ev_trip_logger.set_last_charge_price
-  // (kWh + timestamp stay; cost is recomputed). Needs a runtime input_number
-  // helper `input_number.<device>_charge_price_edit`; shown only when present.
-  if (has(hass, `input_number.${D}_charge_price_edit`)) {
+  // most recent one on the fly. button-card can't template service_data, so
+  // the Apply button calls a runtime HA script `script.<device>_apply_charge_price`
+  // which reads the input_number via server-side Jinja and calls
+  // ev_trip_logger.set_last_charge_price. Set the value to 0 for a free charge.
+  // Shown only when BOTH the input_number helper and the script exist.
+  if (has(hass, `input_number.${D}_charge_price_edit`) && has(hass, `script.${D}_apply_charge_price`)) {
     cards.push({
       type: "vertical-stack",
       cards: [
@@ -1249,11 +1251,8 @@ function cargasView(D, hass) {
           },
           tap_action: {
             action: "call-service",
-            service: "ev_trip_logger.set_last_charge_price",
-            service_data: {
-              price_per_kwh:
-                "[[[ return Number(states['input_number." + D + "_charge_price_edit'].state) ]]]",
-            },
+            service: `script.${D}_apply_charge_price`,
+            service_data: {},
           },
         },
       ],
@@ -1999,7 +1998,7 @@ class EvTripJourneyCard extends HTMLElement {
       badgeBg = "rgba(67,160,71,.16)";
       icon = "mdi:road-variant";
       statusLabel = "🟢 En route";
-      statusSub = at.stage_active ? "In progress · stage moving now" : "In progress";
+      statusSub = "Left " + (at.started_at ? _fmtDate(at.started_at) : DASH) + " · en route";
       a = at;
       stagesNum = curStages;
     } else if (hasLast) {
@@ -2008,7 +2007,9 @@ class EvTripJourneyCard extends HTMLElement {
       badgeBg = "rgba(3,155,229,.16)";
       icon = "mdi:flag-checkered";
       statusLabel = "✅ Finished";
-      statusSub = at.ended_at ? `Ended ${_fmtDate(at.ended_at)}` : "Finished";
+      statusSub =
+        "Left " + (at.started_at ? _fmtDate(at.started_at) : DASH) +
+        " · Arrived " + (at.ended_at ? _fmtDate(at.ended_at) : DASH);
       a = at;
       stagesNum = parseInt(last.state, 10);
     } else {
@@ -2034,6 +2035,19 @@ class EvTripJourneyCard extends HTMLElement {
       return;
     }
 
+    // Charge indicator (heuristic until the logger links charges to journeys):
+    // a charge that ended at/after this journey began counts as "charged".
+    const cip = stOf(`sensor.${D}_charge_in_progress`);
+    const lc = stOf(`sensor.${D}_last_charge_energy`);
+    const charging = cip && String(cip.state).toLowerCase() === "charging";
+    const lcEnd = lc && lc.attributes && lc.attributes.ended_at;
+    const lcLoc = (lc && lc.attributes && lc.attributes.location) || "";
+    const chargedThis = lcEnd && a.started_at && new Date(lcEnd) >= new Date(a.started_at);
+    let chargeChip = "";
+    if (charging) chargeChip = `<span class="jchip jchg"><ha-icon icon="mdi:ev-station"></ha-icon>Charging now</span>`;
+    else if (chargedThis)
+      chargeChip = `<span class="jchip jchg"><ha-icon icon="mdi:lightning-bolt"></ha-icon>Charged ${fmtNum(lc.state, 2)} kWh${lcLoc ? ` · ${_esc(lcLoc)}` : ""}</span>`;
+
     const stageStr = `${isNaN(stagesNum) ? DASH : stagesNum} ${stagesNum === 1 ? "stage" : "stages"}`;
     const tile = (tIcon, label, value, unit) => `
       <div class="jt">
@@ -2055,6 +2069,8 @@ class EvTripJourneyCard extends HTMLElement {
           .jchip{display:inline-flex;align-items:center;gap:5px;border-radius:999px;
                  padding:2px 10px;font-size:.8em;font-weight:700;
                  background:${badgeBg};color:${dotColor};}
+          .jchip ha-icon{--mdc-icon-size:13px;}
+          .jchg{background:rgba(3,155,229,.16);color:var(--info-color,#039be5);}
           .jdot{width:8px;height:8px;border-radius:50%;background:${dotColor};
                 display:inline-block;}
           .jsub{color:var(--secondary-text-color);font-size:.82em;
@@ -2076,6 +2092,7 @@ class EvTripJourneyCard extends HTMLElement {
             <div class="jtitle">${_esc(this._config.title || "Journey")}</div>
             <div class="jstatus">
               <span class="jchip"><span class="jdot"></span>${_esc(statusLabel)}</span>
+              ${chargeChip}
               <span class="jsub">${_esc(stageStr)} · ${_esc(statusSub)}</span>
             </div>
           </div>
