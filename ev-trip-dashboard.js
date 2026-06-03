@@ -1395,6 +1395,24 @@ class EvTripListCard extends HTMLElement {
     // Scores of the filtered set (for percentile).
     const scoreVals = rows.map((t) => t.score).filter((v) => v != null && !isNaN(v));
 
+    // Charges (to show, per trip, the charge that "powered" it + the €/kWh
+    // applied). Match the latest charge that ended at/before the trip started —
+    // the same rule the logger uses to cost a trip.
+    const D2 = this._device || detectDevice(this._hass);
+    const chSt = this._hass.states[`sensor.${D2}_recent_charges`];
+    const charges = (chSt && chSt.attributes && Array.isArray(chSt.attributes.charges) && chSt.attributes.charges) || [];
+    const chargeForTrip = (t) => {
+      if (!t.started_at) return null;
+      const ts = new Date(t.started_at).getTime();
+      let best = null, bestT = -Infinity;
+      for (const c of charges) {
+        const ce = c.ended_at || c.started_at;
+        const cet = ce ? new Date(ce).getTime() : NaN;
+        if (!isNaN(cet) && cet <= ts && cet > bestT) { best = c; bestT = cet; }
+      }
+      return best;
+    };
+
     // Builds the BYD-app-style "Trip detail" panel for one trip.
     const detailHtml = (t) => {
       const sym = cur[t.currency] || t.currency || "€";
@@ -1434,8 +1452,25 @@ class EvTripListCard extends HTMLElement {
       }
       if (t.cost != null && !isNaN(t.cost)) {
         cmpRows.push(
-          `<div class="d-cmp-row"><span class="d-cmp-label">Coste Estimado</span>` +
+          `<div class="d-cmp-row"><span class="d-cmp-label">Estimated cost</span>` +
           `<span class="d-cmp-val" style="color:var(--warning-color, #fb8c00)">${fmtNum(t.cost, 2)} ${_esc(sym)}</span></div>`
+        );
+      }
+      // Effective €/kWh applied to this trip (= cost / energy).
+      if (t.cost != null && t.energy_kwh != null && t.energy_kwh > 0) {
+        cmpRows.push(
+          `<div class="d-cmp-row"><span class="d-cmp-label">Price applied</span>` +
+          `<span class="d-cmp-val">${(t.cost / t.energy_kwh).toFixed(3)} ${_esc(sym)}/kWh</span></div>`
+        );
+      }
+      // The charge that powered this trip (last charge ending before it started).
+      const ch = chargeForTrip(t);
+      if (ch) {
+        const cp = cur[ch.currency] || ch.currency || "€";
+        const loc = ch.location ? ` · ${_esc(ch.location)}` : "";
+        cmpRows.push(
+          `<div class="d-cmp-row"><span class="d-cmp-label">Charge before trip</span>` +
+          `<span class="d-cmp-val" style="color:var(--info-color, #039be5)">${fmtNum(ch.kwh, 2)} kWh @ ${fmtNum(ch.price_per_kwh, 3)} ${_esc(cp)}/kWh${loc}</span></div>`
         );
       }
 
