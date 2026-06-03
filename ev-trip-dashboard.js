@@ -1411,7 +1411,7 @@ class EvTripListCard extends HTMLElement {
       Cheapest: by("cost", 1), Priciest: by("cost", -1),
     };
     rows = rows.slice().sort(sorters[sort] || byDate(-1));
-    return { rows, total };
+    return { rows, total, sort };
   }
   _render() {
     if (!this._hass) return;
@@ -1419,7 +1419,7 @@ class EvTripListCard extends HTMLElement {
     if (!this._clickBound && typeof this.addEventListener === "function") {
       this.connectedCallback();
     }
-    const { rows, total } = this._filteredTrips();
+    const { rows, total, sort } = this._filteredTrips();
     const cur = { EUR: "€", USD: "$", GBP: "£" };
     const DASH = "—";
     const fmtNum = (v, dp) => (v == null || isNaN(v) ? DASH : dp == null ? String(v) : Number(v).toFixed(dp));
@@ -1430,23 +1430,11 @@ class EvTripListCard extends HTMLElement {
     // Scores of the filtered set (for percentile).
     const scoreVals = rows.map((t) => t.score).filter((v) => v != null && !isNaN(v));
 
-    // Charges (to show, per trip, the charge that "powered" it + the €/kWh
-    // applied). Match the latest charge that ended at/before the trip started —
-    // the same rule the logger uses to cost a trip.
+    // Charges — interleaved as their own rows between trips (timeline), so a
+    // charge shows once, in its place, instead of being attributed to trips.
     const D2 = this._device || detectDevice(this._hass);
     const chSt = this._hass.states[`sensor.${D2}_recent_charges`];
     const charges = (chSt && chSt.attributes && Array.isArray(chSt.attributes.charges) && chSt.attributes.charges) || [];
-    const chargeForTrip = (t) => {
-      if (!t.started_at) return null;
-      const ts = new Date(t.started_at).getTime();
-      let best = null, bestT = -Infinity;
-      for (const c of charges) {
-        const ce = c.ended_at || c.started_at;
-        const cet = ce ? new Date(ce).getTime() : NaN;
-        if (!isNaN(cet) && cet <= ts && cet > bestT) { best = c; bestT = cet; }
-      }
-      return best;
-    };
 
     // Builds the BYD-app-style "Trip detail" panel for one trip.
     const detailHtml = (t) => {
@@ -1498,20 +1486,8 @@ class EvTripListCard extends HTMLElement {
           `<span class="d-cmp-val">${(t.cost / t.energy_kwh).toFixed(3)} ${_esc(sym)}/kWh</span></div>`
         );
       }
-      // The charge that powered this trip (last charge ending before it
-      // started) — rendered as its own boxes below: amount + €/kWh.
-      const ch = chargeForTrip(t);
-      let chargeBox = "";
-      if (ch) {
-        const cp = cur[ch.currency] || ch.currency || "€";
-        const loc = ch.location ? `<div class="d-charge-loc">${_esc(ch.location)}</div>` : "";
-        chargeBox = `
-          <div class="d-charge-head"><ha-icon icon="mdi:ev-station"></ha-icon> Charge powering this trip${loc}</div>
-          <div class="d-grid">
-            ${tile("mdi:battery-charging", "Charged", fmtNum(ch.kwh, 2), "kWh")}
-            ${tile("mdi:tag-outline", "Charge price", fmtNum(ch.price_per_kwh, 3), `${cp}/kWh`)}
-          </div>`;
-      }
+      // (Charge info is shown as its own row between trips in the timeline,
+      // not per-trip — a charge belongs to one trip, not every later one.)
 
       return `
         <div class="detail">
@@ -1534,7 +1510,6 @@ class EvTripListCard extends HTMLElement {
             <div class="d-tile-label">Avg speed</div>
             <div class="d-tile-value">${speed}<span class="d-tile-unit"> km/h</span></div>
           </div>
-          ${chargeBox}
           ${cmpRows.length ? `<div class="d-cmp">${cmpRows.join("")}</div>` : ""}
         </div>`;
     };
@@ -1551,27 +1526,70 @@ class EvTripListCard extends HTMLElement {
               </div>`;
     };
 
-    const rowsHtml = rows.length
-      ? rows
-          .map((t) => {
-            const sym = cur[t.currency] || t.currency || "";
-            const score = t.score != null ? Number(t.score).toFixed(1) : DASH;
-            const isOpen = t.id != null && String(this._openTripId) === String(t.id);
-            return `
-            <div class="trip${isOpen ? " trip--open" : ""}" data-trip-id="${_esc(t.id)}">
-              <div class="trip-date">${_fmtDate(t.ended_at, true)}</div>
-              <div class="cols">
-                ${col("Distance", fmtNum(t.distance_km), "km")}
-                ${col("Consumption", fmtNum(t.energy_kwh), "kWh")}
-                ${col("Efficiency", fmtNum(t.consumption_kwh_100km), "kWh/100km")}
-                ${col("Cost", fmtNum(t.cost), sym || DASH)}
-                ${col("Score", score, "", { big: true, color: _scoreColor(t.score) })}
-              </div>
-              ${isOpen ? detailHtml(t) : ""}
-            </div>`;
-          })
-          .join("")
-      : `<div class="empty">No trips match the current filters.</div>`;
+    const tripRowHtml = (t) => {
+      const sym = cur[t.currency] || t.currency || "";
+      const score = t.score != null ? Number(t.score).toFixed(1) : DASH;
+      const isOpen = t.id != null && String(this._openTripId) === String(t.id);
+      return `
+        <div class="trip${isOpen ? " trip--open" : ""}" data-trip-id="${_esc(t.id)}">
+          <div class="trip-date">${_fmtDate(t.ended_at, true)}</div>
+          <div class="cols">
+            ${col("Distance", fmtNum(t.distance_km), "km")}
+            ${col("Consumption", fmtNum(t.energy_kwh), "kWh")}
+            ${col("Efficiency", fmtNum(t.consumption_kwh_100km), "kWh/100km")}
+            ${col("Cost", fmtNum(t.cost), sym || DASH)}
+            ${col("Score", score, "", { big: true, color: _scoreColor(t.score) })}
+          </div>
+          ${isOpen ? detailHtml(t) : ""}
+        </div>`;
+    };
+    const chargeRowHtml = (c) => {
+      const sym = cur[c.currency] || c.currency || "€";
+      let durMin = null;
+      if (c.started_at && c.ended_at) { const d = (new Date(c.ended_at) - new Date(c.started_at)) / 60000; if (!isNaN(d) && d >= 0) durMin = d; }
+      const durStr = durMin == null ? null : durMin >= 60 ? `${Math.floor(durMin / 60)}h ${Math.round(durMin % 60)}m` : `${Math.round(durMin)} min`;
+      const avgKw = c.kwh != null && durMin && durMin > 0 ? Number(c.kwh) / (durMin / 60) : null;
+      const type = c.is_dcfc ? "DC" : "AC";
+      const parts = [
+        `<b>${fmtNum(c.kwh, 2)}</b> kWh`,
+        `<b>${fmtNum(c.price_per_kwh, 3)}</b> ${_esc(sym)}/kWh`,
+        c.total_cost != null ? `<b>${fmtNum(c.total_cost, 2)}</b> ${_esc(sym)}` : null,
+        avgKw != null ? `${avgKw.toFixed(1)} kW` : null,
+        durStr,
+      ].filter(Boolean).join(" · ");
+      return `
+        <div class="charge-row">
+          <div class="cr-badge"><ha-icon icon="mdi:ev-station"></ha-icon></div>
+          <div class="cr-body">
+            <div class="cr-head">Charged${c.location ? ` · ${_esc(c.location)}` : ""}<span class="cr-time">${_fmtDate(c.ended_at, true)}</span></div>
+            <div class="cr-metrics">${parts}</div>
+          </div>
+          <span class="cr-type cr-type--${type === "DC" ? "dc" : "ac"}">${type}</span>
+        </div>`;
+    };
+
+    // For date sorts, weave charges into the trip timeline so each charge shows
+    // once, between the trips around it (not attributed to every later trip).
+    let items;
+    const tsTrip = (t) => new Date(t.ended_at || t.started_at).getTime();
+    const tsChg = (c) => new Date(c.ended_at || c.started_at).getTime();
+    if ((sort === "Newest" || sort === "Oldest") && charges.length && rows.length) {
+      const dir = sort === "Oldest" ? 1 : -1;
+      const tripTimes = rows.map(tsTrip).filter((x) => !isNaN(x));
+      const minT = Math.min(...tripTimes);
+      const merged = rows
+        .map((t) => ({ ts: tsTrip(t), html: tripRowHtml(t) }))
+        .concat(
+          charges
+            .filter((c) => { const ct = tsChg(c); return !isNaN(ct) && ct >= minT; })
+            .map((c) => ({ ts: tsChg(c), html: chargeRowHtml(c) }))
+        )
+        .sort((a, b) => (a.ts - b.ts) * dir);
+      items = merged.map((x) => x.html);
+    } else {
+      items = rows.map(tripRowHtml);
+    }
+    const rowsHtml = items.length ? items.join("") : `<div class="empty">No trips match the current filters.</div>`;
 
     this.innerHTML = `
       <ha-card>
@@ -1585,6 +1603,24 @@ class EvTripListCard extends HTMLElement {
                 padding:14px 12px 12px;cursor:pointer;transition:border-color .15s ease;}
           .trip:hover{border-color:var(--primary-color);}
           .trip--open{border-color:var(--primary-color);}
+          /* ---- charge row woven between trips ---- */
+          .charge-row{display:flex;align-items:center;gap:12px;
+                      background:linear-gradient(90deg, rgba(3,155,229,.10), transparent);
+                      border:1px dashed var(--info-color, #039be5);border-radius:14px;
+                      padding:10px 12px;}
+          .cr-badge{flex:0 0 auto;width:34px;height:34px;border-radius:50%;
+                    background:rgba(3,155,229,.16);display:flex;align-items:center;justify-content:center;}
+          .cr-badge ha-icon{--mdc-icon-size:19px;color:var(--info-color, #039be5);}
+          .cr-body{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;gap:2px;}
+          .cr-head{font-size:.78em;font-weight:700;text-transform:uppercase;letter-spacing:.04em;
+                   color:var(--info-color, #039be5);display:flex;gap:8px;align-items:baseline;}
+          .cr-time{margin-left:auto;font-weight:400;text-transform:none;letter-spacing:0;
+                   color:var(--secondary-text-color);font-variant-numeric:tabular-nums;}
+          .cr-metrics{font-size:.88em;color:var(--primary-text-color);
+                      font-variant-numeric:tabular-nums;}
+          .cr-type{flex:0 0 auto;font-size:.7em;font-weight:800;border-radius:6px;padding:2px 7px;}
+          .cr-type--ac{background:rgba(67,160,71,.16);color:var(--success-color,#43a047);}
+          .cr-type--dc{background:rgba(245,158,11,.18);color:var(--warning-color,#fb8c00);}
           .trip-date{text-align:center;font-weight:700;font-size:1.02em;letter-spacing:.2px;
                      color:var(--primary-text-color);font-variant-numeric:tabular-nums;
                      margin-bottom:12px;}
