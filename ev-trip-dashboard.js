@@ -279,27 +279,11 @@ function historyView(D) {
     sections: [
       grid([
         heading("Journeys", "mdi:road-variant"),
-        md(
-          `{%- set CUR = ${CUR_MAP} %}\n` +
-          `{%- set journeys = state_attr('sensor.${D}_recent_journeys', 'journeys') or [] %}\n` +
-          `{%- if journeys | length == 0 %}\n_No completed journeys yet._\n{%- else %}\n` +
-          `| When | # | Stages | km | kWh | Cost |\n|---|--:|--:|--:|--:|--:|\n` +
-          `{%- for j in journeys %}\n` +
-          `| {{ as_timestamp(j.ended_at) | timestamp_custom('%d/%m %H:%M') if j.ended_at else '—' }} | {{ j.journey_id }} | {{ j.stages | default('—', true) }} | {{ j.distance_km | default('—', true) }} | {{ j.energy_kwh | default('—', true) }} | {{ j.cost | default('—', true) }} {{ CUR.get(j.currency, j.currency or '€') }} |\n` +
-          `{%- endfor %}\n{%- endif %}`
-        ),
+        { type: "custom:ev-trip-history-card", device: D, kind: "journeys", title: "Journeys" },
       ]),
       grid([
         heading("Charges", "mdi:ev-station"),
-        md(
-          `{%- set CUR = ${CUR_MAP} %}\n` +
-          `{%- set charges = state_attr('sensor.${D}_recent_charges', 'charges') or [] %}\n` +
-          `{%- if charges | length == 0 %}\n_No charges recorded yet._\n{%- else %}\n` +
-          `| When | Where | kWh | €/kWh | Total |\n|---|---|--:|--:|--:|\n` +
-          `{%- for c in charges %}\n` +
-          `| {{ as_timestamp(c.ended_at) | timestamp_custom('%d/%m %H:%M') if c.ended_at else '—' }} | {{ c.location or '—' }}{% if c.type %} ({{ c.type }}){% endif %} | {{ c.kwh | default('—', true) }} | {{ c.price_per_kwh | default('—', true) }} | {{ c.total_cost | default('—', true) }} {{ CUR.get(c.currency, c.currency or '€') }} |\n` +
-          `{%- endfor %}\n{%- endif %}`
-        ),
+        { type: "custom:ev-trip-history-card", device: D, kind: "charges", title: "Charges" },
       ]),
     ],
   };
@@ -713,6 +697,78 @@ window.customCards.push({
   name: "EV Trip — list",
   description: "Pretty searchable/sortable trip list for ev-trip-logger.",
 });
+
+// ==========================================================================
+// Custom card: recent journeys / charges as a styled table. Reads the list
+// attribute directly in JS (no markdown card) — robust against frontend
+// markdown quirks, and consistent with the trip list.
+// ==========================================================================
+class EvTripHistoryCard extends HTMLElement {
+  setConfig(config) {
+    this._config = config || {};
+    this._device = this._config.device || null;
+    this._kind = this._config.kind === "charges" ? "charges" : "journeys";
+  }
+  set hass(hass) {
+    this._hass = hass;
+    this._render();
+  }
+  getCardSize() {
+    return 4;
+  }
+  _render() {
+    if (!this._hass) return;
+    const D = this._device || detectDevice(this._hass);
+    const kind = this._kind;
+    const st = this._hass.states[`sensor.${D}_recent_${kind}`];
+    const rows = (st && st.attributes && Array.isArray(st.attributes[kind]) && st.attributes[kind]) || [];
+    const cur = { EUR: "€", USD: "$", GBP: "£" };
+    const sym = (c) => cur[c] || c || "€";
+    const num = (v, suffix = "") => (v === null || v === undefined ? "—" : `${v}${suffix}`);
+
+    let head, body;
+    if (kind === "journeys") {
+      head = `<tr><th>When</th><th>#</th><th class="r">Stages</th><th class="r">km</th><th class="r">kWh</th><th class="r">Cost</th></tr>`;
+      body = rows
+        .map(
+          (j) =>
+            `<tr><td>${_fmtDate(j.ended_at)}</td><td>${num(j.journey_id)}</td><td class="r">${num(j.stages)}</td><td class="r">${num(j.distance_km)}</td><td class="r">${num(j.energy_kwh)}</td><td class="r">${num(j.cost)} ${j.cost != null ? _esc(sym(j.currency)) : ""}</td></tr>`
+        )
+        .join("");
+    } else {
+      head = `<tr><th>When</th><th>Where</th><th class="r">kWh</th><th class="r">€/kWh</th><th class="r">Total</th></tr>`;
+      body = rows
+        .map(
+          (c) =>
+            `<tr><td>${_fmtDate(c.ended_at)}</td><td>${_esc(c.location || "—")}${c.type ? ` <span class="muted">(${_esc(c.type)})</span>` : ""}</td><td class="r">${num(c.kwh)}</td><td class="r">${num(c.price_per_kwh)}</td><td class="r">${num(c.total_cost)} ${c.total_cost != null ? _esc(sym(c.currency)) : ""}</td></tr>`
+        )
+        .join("");
+    }
+
+    const inner = rows.length
+      ? `<table><thead>${head}</thead><tbody>${body}</tbody></table>`
+      : `<div class="empty">No ${kind} recorded yet.</div>`;
+
+    this.innerHTML = `
+      <ha-card>
+        <style>
+          .head{padding:12px 16px 6px;font-weight:600;}
+          table{width:100%;border-collapse:collapse;font-size:.9em;}
+          th,td{padding:7px 16px;text-align:left;border-top:1px solid var(--divider-color);white-space:nowrap;}
+          th{color:var(--secondary-text-color);font-weight:500;font-size:.85em;}
+          td{color:var(--primary-text-color);font-variant-numeric:tabular-nums;}
+          .r{text-align:right;}
+          .muted{color:var(--secondary-text-color);}
+          .empty{padding:16px;color:var(--secondary-text-color);}
+        </style>
+        <div class="head">${_esc(this._config.title || (kind === "journeys" ? "Journeys" : "Charges"))}</div>
+        ${inner}
+      </ha-card>`;
+  }
+}
+customElements.define("ev-trip-history-card", EvTripHistoryCard);
+window.customCards = window.customCards || [];
+window.customCards.push({ type: "ev-trip-history-card", name: "EV Trip — journeys/charges", description: "Recent journeys or charges as a table." });
 
 // ---- strategy ------------------------------------------------------------
 class EvTripDashboardStrategy {
