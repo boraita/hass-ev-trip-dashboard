@@ -341,32 +341,17 @@ function resumenView(D, V, hass) {
 // shows up as one all-day event ("2 trips · 23 km · 1 charge").
 // ==========================================================================
 function calendarioView(D, hass) {
-  // The calendar entity ships with logger v0.5.0. Until it exists, show a
-  // friendly placeholder instead of calendar-card-pro's "entity not found".
-  if (!has(hass, `calendar.${D}_activity`)) {
-    return {
-      title: "Calendar",
-      path: "calendar",
-      icon: "mdi:calendar",
-      type: "sections",
-      max_columns: 2,
-      sections: [
-        grid([
-          mushroomTitle("EV Activity", null, "mdi:calendar"),
-          md(
-            "### 📅 Activity calendar\n\n" +
-              "This view will show a monthly calendar with your trips and charges per day.\n\n" +
-              "_Requires `calendar." +
-              D +
-              "_activity`, which is added when you update **hass-ev-trip-logger to v0.5.0**._"
-          ),
-        ]),
-      ],
-    };
-  }
   const cards = [
     mushroomTitle("EV Activity", null, "mdi:calendar"),
-    {
+    // NEW: robust monthly calendar built from EXISTING recent_trips +
+    // recent_charges — works today, no v0.5.0 calendar entity required.
+    { type: "custom:ev-trip-calendar-card", device: D },
+  ];
+
+  // Additive: keep calendar-card-pro alongside when the v0.5.0 calendar entity
+  // exists, so we can compare and retire one later.
+  if (has(hass, `calendar.${D}_activity`)) {
+    cards.push({
       type: "custom:calendar-card-pro",
       entities: [
         // Two entries on the SAME calendar give calendar-card-pro two
@@ -417,8 +402,8 @@ function calendarioView(D, hass) {
           },
         },
       },
-    },
-  ];
+    });
+  }
 
   return {
     title: "Calendar",
@@ -2592,6 +2577,220 @@ class EvTripDailyCard extends HTMLElement {
 customElements.define("ev-trip-daily-card", EvTripDailyCard);
 window.customCards = window.customCards || [];
 window.customCards.push({ type: "ev-trip-daily-card", name: "EV Trip — daily km (60d)", description: "Daily km sparkline for the last 60 days (logger v0.5.0)." });
+
+// ==========================================================================
+// Custom card: monthly activity calendar built from EXISTING data —
+// sensor.<device>_recent_trips.trips + recent_charges.charges (grouped by the
+// local date of started_at). Works today on logger v0.4.9 (no calendar entity
+// needed). Per-day badges: car = trips (+km), lightning = charges. Tap a day
+// to expand its trips/charges; ‹ › navigate months, • jumps to today.
+// ==========================================================================
+const _localDateKey = (iso) => {
+  if (!iso) return null;
+  const d = new Date(iso);
+  if (isNaN(d)) return null;
+  const p = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+};
+const _timeOfDay = (iso) => {
+  const d = new Date(iso);
+  if (isNaN(d)) return "—";
+  const p = (n) => String(n).padStart(2, "0");
+  return `${p(d.getHours())}:${p(d.getMinutes())}`;
+};
+class EvTripCalendarCard extends HTMLElement {
+  setConfig(config) {
+    this._config = config || {};
+    this._device = this._config.device || null;
+    this._offset = 0; // months relative to current
+    this._openDate = null;
+  }
+  set hass(hass) {
+    this._hass = hass;
+    this._render();
+  }
+  getCardSize() {
+    return 5;
+  }
+  connectedCallback() {
+    if (this._clickBound) return;
+    this._clickBound = true;
+    this.addEventListener("click", (ev) => {
+      const t = ev.target;
+      if (!t || !t.closest) return;
+      const nav = t.closest(".cal-nav[data-dir]");
+      if (nav && this.contains(nav)) {
+        const dir = nav.getAttribute("data-dir");
+        if (dir === "today") this._offset = 0;
+        else this._offset += dir === "next" ? 1 : -1;
+        this._openDate = null;
+        this._render();
+        return;
+      }
+      const cell = t.closest(".cal-day[data-date]");
+      if (cell && this.contains(cell)) {
+        const date = cell.getAttribute("data-date");
+        this._openDate = this._openDate === date ? null : date;
+        this._render();
+      }
+    });
+  }
+  _index() {
+    const D = this._device;
+    const trips = (this._hass.states[`sensor.${D}_recent_trips`] || {}).attributes;
+    const charges = (this._hass.states[`sensor.${D}_recent_charges`] || {}).attributes;
+    const tArr = (trips && Array.isArray(trips.trips) && trips.trips) || [];
+    const cArr = (charges && Array.isArray(charges.charges) && charges.charges) || [];
+    const map = {};
+    const ensure = (k) => (map[k] = map[k] || { trips: [], charges: [], km: 0, kwh: 0 });
+    for (const tr of tArr) {
+      const k = _localDateKey(tr.started_at || tr.ended_at);
+      if (!k) continue;
+      const e = ensure(k);
+      e.trips.push(tr);
+      e.km += Number(tr.distance_km) || 0;
+    }
+    for (const ch of cArr) {
+      const k = _localDateKey(ch.started_at || ch.ended_at);
+      if (!k) continue;
+      const e = ensure(k);
+      e.charges.push(ch);
+      e.kwh += Number(ch.kwh) || 0;
+    }
+    return map;
+  }
+  _render() {
+    if (!this._hass) return;
+    if (!this._clickBound && typeof this.addEventListener === "function") this.connectedCallback();
+    const D = this._device || detectDevice(this._hass);
+    this._device = D;
+    const cur = { EUR: "€", USD: "$", GBP: "£" };
+    const map = this._index();
+
+    const base = new Date();
+    base.setDate(1);
+    base.setMonth(base.getMonth() + this._offset);
+    const y = base.getFullYear();
+    const m = base.getMonth();
+    const monthName = `${_MONTHS_ABBR[m]} ${y}`;
+    const daysInMonth = new Date(y, m + 1, 0).getDate();
+    const lead = (new Date(y, m, 1).getDay() + 6) % 7; // Mon-first blanks
+    const p = (n) => String(n).padStart(2, "0");
+    const todayKey = _localDateKey(new Date().toISOString());
+
+    const dows = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+      .map((d) => `<div class="cal-dow">${d}</div>`)
+      .join("");
+
+    let cells = "";
+    for (let i = 0; i < lead; i++) cells += `<div class="cal-day cal-blank"></div>`;
+    for (let day = 1; day <= daysInMonth; day++) {
+      const key = `${y}-${p(m + 1)}-${p(day)}`;
+      const e = map[key];
+      const isToday = key === todayKey ? " cal-today" : "";
+      const isOpen = key === this._openDate ? " cal-open" : "";
+      let badges = "";
+      if (e && e.trips.length)
+        badges += `<span class="cal-b cal-b-trip"><ha-icon icon="mdi:car"></ha-icon>${e.trips.length}</span>`;
+      if (e && e.charges.length)
+        badges += `<span class="cal-b cal-b-chg"><ha-icon icon="mdi:lightning-bolt"></ha-icon>${e.charges.length}</span>`;
+      const km = e && e.km > 0 ? `<div class="cal-km">${e.km.toFixed(0)} km</div>` : "";
+      const clickable = e ? "" : " cal-empty";
+      cells += `<div class="cal-day${isToday}${isOpen}${clickable}" data-date="${key}"><div class="cal-num">${day}</div>${badges}${km}</div>`;
+    }
+
+    let detail = "";
+    if (this._openDate && map[this._openDate]) {
+      const e = map[this._openDate];
+      const sym = (c) => cur[c] || c || "€";
+      const trs = e.trips
+        .slice()
+        .sort((a, b) => String(a.started_at).localeCompare(String(b.started_at)))
+        .map(
+          (t) =>
+            `<div class="cal-row"><span class="cal-ricon cal-b-trip"><ha-icon icon="mdi:car"></ha-icon></span>` +
+            `<span class="cal-rtime">${_timeOfDay(t.started_at)}</span>` +
+            `<span class="cal-rmain">${_esc(t.origin || "?")} → ${_esc(t.destination || "?")}</span>` +
+            `<span class="cal-rval">${(Number(t.distance_km) || 0).toFixed(0)} km${t.score != null ? ` · ${Number(t.score).toFixed(1)}` : ""}</span></div>`
+        )
+        .join("");
+      const chs = e.charges
+        .slice()
+        .sort((a, b) => String(a.started_at).localeCompare(String(b.started_at)))
+        .map(
+          (c) =>
+            `<div class="cal-row"><span class="cal-ricon cal-b-chg"><ha-icon icon="mdi:lightning-bolt"></ha-icon></span>` +
+            `<span class="cal-rtime">${_timeOfDay(c.started_at)}</span>` +
+            `<span class="cal-rmain">${_esc(c.location || "charge")}${c.is_dcfc ? " · DC" : ""}</span>` +
+            `<span class="cal-rval">${(Number(c.kwh) || 0).toFixed(1)} kWh${c.total_cost != null ? ` · ${(Number(c.total_cost) || 0).toFixed(2)} ${_esc(sym(c.currency))}` : ""}</span></div>`
+        )
+        .join("");
+      const [yy, mm, dd] = this._openDate.split("-");
+      detail = `<div class="cal-detail"><div class="cal-dhead">${dd}/${mm}/${yy}</div>${trs}${chs || (trs ? "" : '<div class="cal-none">No activity.</div>')}</div>`;
+    }
+
+    this.innerHTML = `
+      <ha-card>
+        <div class="cal-top">
+          <div class="cal-month">${monthName}</div>
+          <div class="cal-navs">
+            <span class="cal-nav" data-dir="prev"><ha-icon icon="mdi:chevron-left"></ha-icon></span>
+            <span class="cal-nav cal-dot" data-dir="today"><ha-icon icon="mdi:circle-medium"></ha-icon></span>
+            <span class="cal-nav" data-dir="next"><ha-icon icon="mdi:chevron-right"></ha-icon></span>
+          </div>
+        </div>
+        <div class="cal-grid cal-dows">${dows}</div>
+        <div class="cal-grid cal-cells">${cells}</div>
+        ${detail}
+        <style>
+          .cal-top{display:flex;justify-content:space-between;align-items:center;padding:14px 16px 8px;}
+          .cal-month{font-weight:700;font-size:1.05em;}
+          .cal-navs{display:flex;align-items:center;gap:2px;}
+          .cal-nav{cursor:pointer;border-radius:8px;padding:2px;color:var(--secondary-text-color);
+                   display:inline-flex;}
+          .cal-nav:hover{background:var(--divider-color);color:var(--primary-text-color);}
+          .cal-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:4px;padding:0 12px;}
+          .cal-dows{padding-bottom:4px;}
+          .cal-dow{text-align:center;font-size:.68em;font-weight:700;text-transform:uppercase;
+                   letter-spacing:.03em;color:var(--secondary-text-color);}
+          .cal-cells{padding-bottom:14px;}
+          .cal-day{min-height:46px;border-radius:10px;border:1px solid var(--divider-color);
+                   padding:3px 4px;display:flex;flex-direction:column;gap:2px;position:relative;
+                   background:var(--secondary-background-color,var(--card-background-color));}
+          .cal-blank{border:none;background:none;}
+          .cal-empty{opacity:.5;}
+          .cal-day[data-date]:not(.cal-empty){cursor:pointer;transition:border-color .12s;}
+          .cal-day[data-date]:not(.cal-empty):hover{border-color:var(--primary-color);}
+          .cal-today{border-color:var(--primary-color);box-shadow:inset 0 0 0 1px var(--primary-color);}
+          .cal-open{border-color:var(--primary-color);background:var(--primary-color);}
+          .cal-open .cal-num,.cal-open .cal-km{color:var(--text-primary-color,#fff);}
+          .cal-num{font-size:.78em;font-weight:600;font-variant-numeric:tabular-nums;}
+          .cal-b{display:inline-flex;align-items:center;gap:1px;font-size:.62em;font-weight:700;
+                 border-radius:6px;padding:0 3px;line-height:1.4;}
+          .cal-b ha-icon{--mdc-icon-size:11px;}
+          .cal-b-trip{background:rgba(46,125,50,.18);color:var(--success-color,#43a047);}
+          .cal-b-chg{background:rgba(3,155,229,.18);color:var(--info-color,#039be5);}
+          .cal-km{font-size:.6em;color:var(--secondary-text-color);
+                  font-variant-numeric:tabular-nums;margin-top:auto;}
+          .cal-detail{margin:0 12px 14px;border:1px solid var(--primary-color);border-radius:12px;
+                      padding:10px 12px;display:flex;flex-direction:column;gap:6px;}
+          .cal-dhead{font-weight:700;font-variant-numeric:tabular-nums;}
+          .cal-row{display:flex;align-items:center;gap:8px;font-size:.85em;}
+          .cal-ricon{flex:0 0 auto;width:24px;height:24px;border-radius:50%;
+                     display:flex;align-items:center;justify-content:center;}
+          .cal-ricon ha-icon{--mdc-icon-size:15px;}
+          .cal-rtime{flex:0 0 auto;color:var(--secondary-text-color);
+                     font-variant-numeric:tabular-nums;}
+          .cal-rmain{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+          .cal-rval{flex:0 0 auto;font-weight:600;font-variant-numeric:tabular-nums;}
+          .cal-none{color:var(--secondary-text-color);font-size:.85em;}
+        </style>
+      </ha-card>`;
+  }
+}
+customElements.define("ev-trip-calendar-card", EvTripCalendarCard);
+window.customCards = window.customCards || [];
+window.customCards.push({ type: "ev-trip-calendar-card", name: "EV Trip — activity calendar", description: "Monthly trips/charges calendar from recent_trips + recent_charges." });
 
 // ==========================================================================
 // RESTORED from v1.5.0 (user favourites, pre-2.0): Driving + Trips views.
