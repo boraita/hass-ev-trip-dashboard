@@ -24,16 +24,25 @@ All cards use stock Lovelace types (`markdown`, `glance`, `entities`, `gauge`, `
 ### Option A — HACS (dashboard strategy, recommended)
 
 1. HACS → ⋮ → **Custom repositories** → add `https://github.com/boraita/hass-ev-trip-dashboard` with category **Dashboard**.
-2. Install **EV Trip Dashboard**. HACS downloads `ev-trip-dashboard.js` and registers the Lovelace resource. Reload the browser (hard refresh).
+2. Install **EV Trip Dashboard**. HACS downloads `ev-trip-dashboard.js` and registers the Lovelace resource. Reload the browser (hard refresh, Ctrl/Cmd+Shift+R).
 3. Add the **Trips helpers** (`packages/trip-list-helpers.yaml`) — see note below; the search/filter needs them.
-4. Create a dashboard and set its raw config to:
+4. Create the dashboard. **The strategy does not appear in the "Add dashboard" picker** — instead: **Settings → Dashboards → + Add Dashboard → New dashboard from scratch** → open it → edit (✏️) → **⋮ → Raw configuration editor** → replace everything with the config below → **Save**.
+
    ```yaml
    strategy:
      type: custom:ev-trip
-     # device: sealion_7        # optional — auto-detected from sensor.<slug>_recent_trips
-     # vehicle: byd_sealion_7   # optional — car integration (range/odometer/map/temps)
+     vehicle: byd_sealion_7   # your CAR integration slug — unlocks range/odometer/map/temps/charge session
+     # device: sealion_7      # your trip-LOGGER slug — usually omit (auto-detected)
    ```
-   The strategy auto-detects the trip-logger device and generates all five views. Car-integration cards (map/range/temps) appear only if those entities exist.
+
+#### Strategy options
+
+| Option | Required | What it does |
+|---|---|---|
+| `device` | No | The **trip-logger** slug (e.g. `sealion_7`). **Auto-detected** from the first `sensor.<slug>_recent_trips` entity — only set it if you run more than one logger device. |
+| `vehicle` | No (recommended) | Your **car integration** slug (e.g. `byd_sealion_7`). Unlocks the Driving view's **Range, Odometer, Outside/Cabin temperature, the location map**, and the live **charge session** tiles. Omit it and those car-only cards are simply not shown (everything else still works). |
+
+The strategy regenerates all five views on every load, so you never edit the dashboard again — plugin updates ship new cards automatically.
 
 > Helpers: a dashboard strategy can't create input helpers, so the Trips search/sort/filter still needs `packages/trip-list-helpers.yaml` added as a package (replace `__DEVICE__`, restart). Without them the list just shows everything unfiltered.
 
