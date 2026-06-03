@@ -283,9 +283,9 @@ function historyView(D) {
           `{%- set CUR = ${CUR_MAP} %}\n` +
           `{%- set journeys = state_attr('sensor.${D}_recent_journeys', 'journeys') or [] %}\n` +
           `{%- if journeys | length == 0 %}\n_No completed journeys yet._\n{%- else %}\n` +
-          `{%- for j in journeys %}\n{%- set ended = j.ended_at %}\n` +
-          `**{{ as_timestamp(ended) | timestamp_custom('%d/%m %H:%M') if ended else '—' }}** — journey #{{ j.journey_id }}\n` +
-          `{{ j.stages | default('?', true) }} {% if j.stages == 1 %}stage{% else %}stages{% endif %} · {{ j.distance_km | default('—', true) }} km · {{ j.energy_kwh | default('—', true) }} kWh · {{ j.cost | default('—', true) }} {{ CUR.get(j.currency, j.currency or '€') }}\n` +
+          `| When | # | Stages | km | kWh | Cost |\n|---|--:|--:|--:|--:|--:|\n` +
+          `{%- for j in journeys %}\n` +
+          `| {{ as_timestamp(j.ended_at) | timestamp_custom('%d/%m %H:%M') if j.ended_at else '—' }} | {{ j.journey_id }} | {{ j.stages | default('—', true) }} | {{ j.distance_km | default('—', true) }} | {{ j.energy_kwh | default('—', true) }} | {{ j.cost | default('—', true) }} {{ CUR.get(j.currency, j.currency or '€') }} |\n` +
           `{%- endfor %}\n{%- endif %}`
         ),
       ]),
@@ -295,9 +295,9 @@ function historyView(D) {
           `{%- set CUR = ${CUR_MAP} %}\n` +
           `{%- set charges = state_attr('sensor.${D}_recent_charges', 'charges') or [] %}\n` +
           `{%- if charges | length == 0 %}\n_No charges recorded yet._\n{%- else %}\n` +
-          `{%- for c in charges %}\n{%- set ended = c.ended_at %}\n` +
-          `**{{ as_timestamp(ended) | timestamp_custom('%d/%m %H:%M') if ended else '—' }}** — {{ c.location or '—' }}{% if c.type %} _({{ c.type }})_{% endif %}\n` +
-          `{{ c.kwh | default('—', true) }} kWh × {{ c.price_per_kwh | default('—', true) }} {{ CUR.get(c.currency, c.currency or '€') }}/kWh = **{{ c.total_cost | default('—', true) }} {{ CUR.get(c.currency, c.currency or '€') }}**\n` +
+          `| When | Where | kWh | €/kWh | Total |\n|---|---|--:|--:|--:|\n` +
+          `{%- for c in charges %}\n` +
+          `| {{ as_timestamp(c.ended_at) | timestamp_custom('%d/%m %H:%M') if c.ended_at else '—' }} | {{ c.location or '—' }}{% if c.type %} ({{ c.type }}){% endif %} | {{ c.kwh | default('—', true) }} | {{ c.price_per_kwh | default('—', true) }} | {{ c.total_cost | default('—', true) }} {{ CUR.get(c.currency, c.currency or '€') }} |\n` +
           `{%- endfor %}\n{%- endif %}`
         ),
       ]),
