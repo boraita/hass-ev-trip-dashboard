@@ -406,116 +406,20 @@ function historyView(D) {
   };
 }
 
-// ---- apexcharts helpers (used only when apexcharts-card is installed) -----
-
-// Monthly bars over the last year — apex grouped by month with rounded bars and
-// a smooth color. `agg` is "sum" (totals) for these distance/energy/cost stats.
-function apexMonthlyBar(title, entity, color) {
-  return {
-    type: "custom:apexcharts-card",
-    header: { show: true, title, show_states: false },
-    graph_span: "1y",
-    span: { end: "month" },
-    chart_type: "bar",
-    series: [
-      {
-        entity,
-        type: "column",
-        statistics: { type: "sum", period: "month" },
-        group_by: { func: "last", duration: "1month" },
-        color,
-      },
-    ],
-    apex_config: {
-      chart: { height: 200 },
-      plotOptions: { bar: { columnWidth: "55%", borderRadius: 6 } },
-      dataLabels: { enabled: false },
-      xaxis: { labels: { format: "MMM" } },
-    },
-  };
-}
-
-// Smooth-gradient area/line trend over N days using statistics mean.
-function apexTrendLine(title, series, days) {
-  return {
-    type: "custom:apexcharts-card",
-    header: { show: true, title, show_states: true, colorize_states: true },
-    graph_span: `${days}d`,
-    chart_type: "line",
-    series: series.map((s) => ({
-      entity: s.entity,
-      name: s.name,
-      type: s.area ? "area" : "line",
-      curve: "smooth",
-      stroke_width: 2,
-      statistics: { type: "mean", period: "day" },
-      group_by: { func: "avg", duration: "1d" },
-      color: s.color,
-      ...(s.area ? { opacity: 0.25 } : {}),
-    })),
-    apex_config: { chart: { height: 220 }, dataLabels: { enabled: false }, stroke: { lineCap: "round" } },
-  };
-}
-
-// Battery 24h area — prefers apexcharts, then mini-graph, else history-graph.
-function batteryCard(D) {
-  if (hasCard("apexcharts-card")) {
-    return {
-      type: "custom:apexcharts-card",
-      header: { show: true, title: "Battery (24h)", show_states: true, colorize_states: true },
-      graph_span: "24h",
-      chart_type: "area",
-      series: [{ entity: `sensor.${D}_battery_percent`, name: "SoC %", type: "area", curve: "smooth", opacity: 0.3, stroke_width: 2, color: "var(--success-color)" }],
-      apex_config: { chart: { height: 200 }, yaxis: { min: 0, max: 100 }, dataLabels: { enabled: false } },
-    };
-  }
-  if (hasCard("mini-graph-card")) {
-    return {
-      type: "custom:mini-graph-card",
-      name: "Battery (24h)",
-      hours_to_show: 24,
-      points_per_hour: 1,
-      line_width: 3,
-      smoothing: true,
-      show: { fill: "fade" },
-      entities: [{ entity: `sensor.${D}_battery_percent`, name: "SoC %" }],
-    };
-  }
-  return {
-    type: "history-graph",
-    title: "Battery (24h)",
-    hours_to_show: 24,
-    entities: [{ entity: `sensor.${D}_battery_percent`, name: "SoC %" }],
-  };
-}
-
 function chartsView(D, hass) {
-  const monthly = [heading("Monthly totals", "mdi:chart-bar")];
-  if (hasCard("apexcharts-card")) {
-    monthly.push(
-      apexMonthlyBar("Distance per month", `sensor.${D}_distance_this_month`, "var(--info-color, #039be5)"),
-      apexMonthlyBar("Energy consumed per month", `sensor.${D}_energy_this_month`, "var(--success-color, #43a047)"),
-      apexMonthlyBar("Charging cost per month", `sensor.${D}_spent_on_charging_this_month`, "var(--warning-color, #fb8c00)")
-    );
-  } else {
-    monthly.push(
-      statBar("Distance per month", `sensor.${D}_distance_this_month`),
-      statBar("Energy consumed per month", `sensor.${D}_energy_this_month`),
-      statBar("Charging cost per month", `sensor.${D}_spent_on_charging_this_month`)
-    );
-  }
+  // Native statistics/history graphs — reliable across frontends. (An earlier
+  // apexcharts version produced "Configuration error" on some setups, so we
+  // stick to the built-in graph cards here.)
+  const monthly = [
+    heading("Monthly totals", "mdi:chart-bar"),
+    statBar("Distance per month", `sensor.${D}_distance_this_month`),
+    statBar("Energy consumed per month", `sensor.${D}_energy_this_month`),
+    statBar("Charging cost per month", `sensor.${D}_spent_on_charging_this_month`),
+  ];
 
-  const trends = [heading("Trends", "mdi:chart-line")];
-  if (hasCard("apexcharts-card")) {
-    trends.push(
-      apexTrendLine(
-        "Avg consumption (kWh/100km, 30-day rolling)",
-        [{ entity: `sensor.${D}_avg_consumption_30_days`, name: "kWh/100km", area: true, color: "var(--info-color, #039be5)" }],
-        60
-      )
-    );
-  } else {
-    trends.push({
+  const trends = [
+    heading("Trends", "mdi:chart-line"),
+    {
       type: "statistics-graph",
       title: "Avg consumption (kWh/100km, 30-day rolling)",
       entities: [`sensor.${D}_avg_consumption_30_days`],
@@ -523,23 +427,32 @@ function chartsView(D, hass) {
       period: "day",
       stat_types: ["mean"],
       days_to_show: 60,
-    });
-  }
+    },
+  ];
 
-  // AC vs DC charge price.
+  // AC vs DC charge price (no state_class → plain history graph).
   const priceSeries = [];
   if (has(hass, `sensor.${D}_avg_ac_charge_price_30_days`))
-    priceSeries.push({ entity: `sensor.${D}_avg_ac_charge_price_30_days`, name: "AC €/kWh", color: "var(--success-color, #43a047)" });
+    priceSeries.push({ entity: `sensor.${D}_avg_ac_charge_price_30_days`, name: "AC €/kWh" });
   if (has(hass, `sensor.${D}_avg_dc_fast_charge_price_30_days`))
-    priceSeries.push({ entity: `sensor.${D}_avg_dc_fast_charge_price_30_days`, name: "DC €/kWh", color: "var(--warning-color, #fb8c00)" });
-  priceSeries.push({ entity: `sensor.${D}_avg_charge_price_30_days`, name: "Avg €/kWh", color: "var(--primary-color)" });
-  if (hasCard("apexcharts-card")) {
-    trends.push(apexTrendLine("Charge price (€/kWh)", priceSeries, 30));
-  } else {
-    trends.push({ type: "history-graph", title: "Charge price (€/kWh)", hours_to_show: 720, entities: priceSeries.map((s) => ({ entity: s.entity, name: s.name })) });
-  }
+    priceSeries.push({ entity: `sensor.${D}_avg_dc_fast_charge_price_30_days`, name: "DC €/kWh" });
+  priceSeries.push({ entity: `sensor.${D}_avg_charge_price_30_days`, name: "Avg €/kWh" });
+  trends.push({ type: "history-graph", title: "Charge price (€/kWh)", hours_to_show: 720, entities: priceSeries });
 
-  trends.push(batteryCard(D));
+  // Battery 24h — mini-graph when installed (pretty + reliable), else history.
+  if (hasCard("mini-graph-card")) {
+    trends.push({
+      type: "custom:mini-graph-card",
+      name: "Battery (24h)",
+      hours_to_show: 24,
+      points_per_hour: 2,
+      line_width: 3,
+      smoothing: true,
+      entities: [{ entity: `sensor.${D}_battery_percent`, name: "SoC" }],
+    });
+  } else {
+    trends.push({ type: "history-graph", title: "Battery (24h)", hours_to_show: 24, entities: [{ entity: `sensor.${D}_battery_percent`, name: "SoC %" }] });
+  }
 
   // Consumption vs ambient temperature (from the by_bucket attribute).
   if (has(hass, `sensor.${D}_consumption_by_temperature`)) {
@@ -1009,16 +922,6 @@ class EvTripDashboardStrategy {
     // Give the installed fancy cards a moment to register so hasCard() sees
     // them (otherwise we'd fall back to native and the dashboard "looks the same").
     await awaitFancyCards();
-    try {
-      const diag = _FANCY_CARDS.map((t) => {
-        let ce = false;
-        try { ce = !!(customElements.get && customElements.get(t)); } catch (_e) {}
-        const cc = (typeof window !== "undefined" && window.customCards) || [];
-        const wc = cc.some((c) => c && (c.type === t || c.type === `custom:${t}`));
-        return `${t}[ce=${ce} wc=${wc}]`;
-      }).join("  ");
-      console.info("%c EV-TRIP detect ", "background:#06c;color:#fff;border-radius:3px", diag);
-    } catch (_e) {}
     return {
       title: "EV Trip",
       views: [drivingView(D, V, hass), tripsView(D), historyView(D), chartsView(D, hass), statsView(D, hass)],
