@@ -441,6 +441,19 @@ class EvTripListCard extends HTMLElement {
   getCardSize() {
     return 8;
   }
+  connectedCallback() {
+    // Event delegation: one click listener toggles the tapped trip's detail.
+    if (this._clickBound) return;
+    this._clickBound = true;
+    this.addEventListener("click", (ev) => {
+      const trip = ev.target && ev.target.closest && ev.target.closest(".trip");
+      if (!trip || !this.contains(trip)) return;
+      const id = trip.getAttribute("data-trip-id");
+      if (id == null) return;
+      this._openTripId = String(this._openTripId) === String(id) ? null : id;
+      this._render();
+    });
+  }
   _s(id) {
     const e = this._hass.states[id];
     return e ? e.state : undefined;
@@ -500,10 +513,89 @@ class EvTripListCard extends HTMLElement {
   }
   _render() {
     if (!this._hass) return;
+    // Lazy-bind the click delegation in case connectedCallback hasn't run.
+    if (!this._clickBound && typeof this.addEventListener === "function") {
+      this.connectedCallback();
+    }
     const { rows, total } = this._filteredTrips();
     const cur = { EUR: "€", USD: "$", GBP: "£" };
     const DASH = "—";
     const fmtNum = (v, dp) => (v == null || isNaN(v) ? DASH : dp == null ? String(v) : Number(v).toFixed(dp));
+
+    // Mean efficiency of the filtered set (for "Comparado con tu media").
+    const effVals = rows.map((t) => t.consumption_kwh_100km).filter((v) => v != null && !isNaN(v) && v !== 0);
+    const effMean = effVals.length ? effVals.reduce((a, b) => a + b, 0) / effVals.length : null;
+    // Scores of the filtered set (for percentile).
+    const scoreVals = rows.map((t) => t.score).filter((v) => v != null && !isNaN(v));
+
+    // Builds the BYD-app-style "Detalle del viaje" panel for one trip.
+    const detailHtml = (t) => {
+      const sym = cur[t.currency] || t.currency || "€";
+      const scoreNum = t.score != null ? Number(t.score).toFixed(1) : DASH;
+      const tile = (icon, label, value, unit) => `
+        <div class="d-tile">
+          <ha-icon class="d-tile-icon" icon="${icon}"></ha-icon>
+          <div class="d-tile-label">${_esc(label)}</div>
+          <div class="d-tile-value">${value}<span class="d-tile-unit">${unit ? " " + _esc(unit) : ""}</span></div>
+        </div>`;
+
+      // Velocidad media — derived, guard divide-by-zero.
+      let speed = DASH;
+      if (t.distance_km != null && t.duration_min != null && t.duration_min > 0) {
+        speed = fmtNum(t.distance_km / (t.duration_min / 60), 1);
+      }
+
+      // Comparison rows.
+      const cmpRows = [];
+      if (t.consumption_kwh_100km != null && t.consumption_kwh_100km !== 0 && effMean != null && effMean !== 0) {
+        const pct = ((t.consumption_kwh_100km - effMean) / effMean) * 100;
+        const good = pct <= 0; // lower consumption than mean = good
+        const sign = good ? "−" : "+";
+        const color = good ? "var(--success-color, #43a047)" : "var(--warning-color, #fb8c00)";
+        cmpRows.push(
+          `<div class="d-cmp-row"><span class="d-cmp-label">Comparado con tu media</span>` +
+          `<span class="d-cmp-val" style="color:${color}">${sign}${Math.abs(pct).toFixed(1)}%</span></div>`
+        );
+      }
+      if (t.score != null && scoreVals.length) {
+        const better = scoreVals.filter((s) => s >= t.score).length;
+        const topPct = (better / scoreVals.length) * 100;
+        cmpRows.push(
+          `<div class="d-cmp-row"><span class="d-cmp-label">Percentil</span>` +
+          `<span class="d-cmp-val" style="color:var(--info-color, #039be5)">Top ${topPct.toFixed(0)}%</span></div>`
+        );
+      }
+      if (t.cost != null && !isNaN(t.cost)) {
+        cmpRows.push(
+          `<div class="d-cmp-row"><span class="d-cmp-label">Coste Estimado</span>` +
+          `<span class="d-cmp-val" style="color:var(--warning-color, #fb8c00)">${fmtNum(t.cost, 2)} ${_esc(sym)}</span></div>`
+        );
+      }
+
+      return `
+        <div class="detail">
+          <div class="d-head">
+            <div class="d-title">Detalle del viaje</div>
+            <div class="d-score">
+              <span class="d-score-num" style="color:${_scoreColor(t.score)}">${scoreNum}</span>
+              <span class="d-score-max">/10</span>
+            </div>
+          </div>
+          <div class="d-sub">${_fmtDate(t.ended_at, true)}</div>
+          <div class="d-grid">
+            ${tile("mdi:map-marker-distance", "Distancia", fmtNum(t.distance_km), "km")}
+            ${tile("mdi:timer-outline", "Duración", fmtNum(t.duration_min == null ? null : Math.round(t.duration_min)), "min")}
+            ${tile("mdi:lightning-bolt", "Consumo", fmtNum(t.energy_kwh), "kWh")}
+            ${tile("mdi:chart-line", "Eficiencia", fmtNum(t.consumption_kwh_100km), "kWh/100km")}
+          </div>
+          <div class="d-tile d-tile--wide">
+            <ha-icon class="d-tile-icon" icon="mdi:speedometer"></ha-icon>
+            <div class="d-tile-label">Velocidad media</div>
+            <div class="d-tile-value">${speed}<span class="d-tile-unit"> km/h</span></div>
+          </div>
+          ${cmpRows.length ? `<div class="d-cmp">${cmpRows.join("")}</div>` : ""}
+        </div>`;
+    };
 
     const col = (label, value, unit, opts) => {
       const o = opts || {};
@@ -522,8 +614,9 @@ class EvTripListCard extends HTMLElement {
           .map((t) => {
             const sym = cur[t.currency] || t.currency || "";
             const score = t.score != null ? Number(t.score).toFixed(1) : DASH;
+            const isOpen = t.id != null && String(this._openTripId) === String(t.id);
             return `
-            <div class="trip">
+            <div class="trip${isOpen ? " trip--open" : ""}" data-trip-id="${_esc(t.id)}">
               <div class="trip-date">${_fmtDate(t.ended_at, true)}</div>
               <div class="cols">
                 ${col("Distancia", fmtNum(t.distance_km), "km")}
@@ -532,6 +625,7 @@ class EvTripListCard extends HTMLElement {
                 ${col("Coste", fmtNum(t.cost), sym || DASH)}
                 ${col("Score", score, "", { big: true, color: _scoreColor(t.score) })}
               </div>
+              ${isOpen ? detailHtml(t) : ""}
             </div>`;
           })
           .join("")
@@ -546,7 +640,9 @@ class EvTripListCard extends HTMLElement {
           .list{display:flex;flex-direction:column;gap:12px;padding:0 12px 14px;}
           .trip{background:var(--secondary-background-color, var(--card-background-color));
                 border:1px solid var(--divider-color);border-radius:16px;
-                padding:14px 12px 12px;}
+                padding:14px 12px 12px;cursor:pointer;transition:border-color .15s ease;}
+          .trip:hover{border-color:var(--primary-color);}
+          .trip--open{border-color:var(--primary-color);}
           .trip-date{text-align:center;font-weight:700;font-size:1.02em;letter-spacing:.2px;
                      color:var(--primary-text-color);font-variant-numeric:tabular-nums;
                      margin-bottom:12px;}
@@ -561,6 +657,34 @@ class EvTripListCard extends HTMLElement {
           .col-val--big{font-size:1.5em;font-weight:800;}
           .col-unit{font-size:.62em;color:var(--secondary-text-color);line-height:1.2;}
           .empty{padding:24px 16px;text-align:center;color:var(--secondary-text-color);}
+
+          /* ---- Trip detail panel ("Detalle del viaje") ---- */
+          .detail{margin-top:14px;padding-top:14px;border-top:1px solid var(--divider-color);
+                  display:flex;flex-direction:column;gap:12px;}
+          .d-head{display:flex;justify-content:space-between;align-items:flex-start;}
+          .d-title{font-weight:700;font-size:1.05em;color:var(--primary-text-color);}
+          .d-score{display:flex;align-items:baseline;gap:2px;line-height:1;}
+          .d-score-num{font-size:2em;font-weight:800;font-variant-numeric:tabular-nums;}
+          .d-score-max{font-size:.8em;color:var(--secondary-text-color);}
+          .d-sub{margin-top:-6px;font-size:.85em;color:var(--secondary-text-color);
+                 font-variant-numeric:tabular-nums;}
+          .d-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;}
+          .d-tile{background:var(--secondary-background-color);
+                  border:1px solid var(--divider-color);border-radius:14px;
+                  padding:12px 10px;display:flex;flex-direction:column;align-items:center;
+                  justify-content:center;text-align:center;gap:4px;}
+          .d-tile--wide{width:100%;}
+          .d-tile-icon{--mdc-icon-size:20px;color:var(--secondary-text-color);}
+          .d-tile-label{font-size:.7em;letter-spacing:.05em;text-transform:uppercase;
+                        color:var(--secondary-text-color);}
+          .d-tile-value{font-size:1.4em;font-weight:800;color:var(--primary-text-color);
+                        font-variant-numeric:tabular-nums;line-height:1.1;}
+          .d-tile-unit{font-size:.55em;font-weight:600;color:var(--secondary-text-color);}
+          .d-cmp{display:flex;flex-direction:column;gap:8px;margin-top:2px;}
+          .d-cmp-row{display:flex;justify-content:space-between;align-items:center;
+                     font-size:.95em;}
+          .d-cmp-label{color:var(--secondary-text-color);}
+          .d-cmp-val{font-weight:800;font-variant-numeric:tabular-nums;}
           @media (max-width:360px){
             .col-label{font-size:.55em;}
             .col-val{font-size:.95em;}
