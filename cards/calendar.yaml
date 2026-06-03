@@ -1,0 +1,83 @@
+# Pantalla 2 — Monthly activity calendar for the BYD EV.
+#
+# HACS dependencies (install via HACS → Frontend):
+#   - custom:calendar-card-pro          (preferred, used below)
+#   - custom:mushroom-title-card        (required for the header)
+#   - custom:atomic-calendar-revive     (fallback — see commented block at the bottom)
+#   - custom:browser_mod                (optional — enables the popup on day click)
+#
+# Calendar entity: `calendar.__DEVICE___activity` is exposed by the
+# hass-ev-trip-logger integration. Each day with activity becomes one all-day
+# event whose summary looks like: "2 viajes · 23 km · 1 carga".
+# Replace __DEVICE__ with your device slug.
+
+type: vertical-stack
+cards:
+  - type: custom:mushroom-title-card
+    title: Actividad EV
+    icon: mdi:calendar
+    icon_color: blue
+
+  - type: custom:calendar-card-pro
+    entities:
+      # Match "carga" → blue lightning, "viaje" → green car.
+      # calendar-card-pro applies the first matching rule per event.
+      - entity: calendar.__DEVICE___activity
+        color: "#1976d2"
+        icon: mdi:lightning-bolt
+        accumulate_by: day
+        label: "carga"
+      - entity: calendar.__DEVICE___activity
+        color: "#2e7d32"
+        icon: mdi:car
+        accumulate_by: day
+        label: "viaje"
+    # Monthly grid view with built-in navigation arrows.
+    view: month
+    show_navigation: true
+    show_today: true
+    first_day_of_week: monday
+    language: es
+    time_format: 24
+    max_events_to_show: 4
+    compact_events_to_show: 2
+    show_empty_days: true
+    # Click a day → browser_mod popup if available, else native event details.
+    tap_action:
+      action: fire-dom-event
+      browser_mod:
+        service: browser_mod.popup
+        data:
+          title: Actividad del día
+          size: normal
+          content:
+            type: markdown
+            content: |
+              {% set events = state_attr('calendar.__DEVICE___activity', 'all_events') or [] %}
+              {% set today = states('sensor.date') %}
+              {% set todays = events | selectattr('start', 'search', today) | list %}
+              {% if todays | length == 0 %}
+              _Sin actividad registrada para hoy._
+              {% else %}
+              {% for ev in todays %}
+              **{{ ev.summary }}**
+              {{ ev.description or '' }}
+              {% endfor %}
+              {% endif %}
+
+# -----------------------------------------------------------------------------
+# Fallback using custom:atomic-calendar-revive (uncomment if you prefer it):
+#
+# - type: custom:atomic-calendar-revive
+#   entities:
+#     - entity: calendar.__DEVICE___activity
+#       color: "#1976d2"
+#   name: Actividad EV
+#   showMonth: true
+#   showWeekDay: true
+#   showLocation: false
+#   showDescription: true
+#   firstDayOfWeek: 1
+#   defaultMode: Calendar
+#   language: es
+# -----------------------------------------------------------------------------

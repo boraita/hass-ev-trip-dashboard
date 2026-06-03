@@ -1,0 +1,159 @@
+# Pantalla 8 — BYD-app Trip list (v2).
+# "Viajes" header + Last-30-days KPI strip (5 tiles) + per-trip cards with
+# date·time / Distance / Consumption / Efficiency / Cost / color-coded Score.
+#
+# Replace __DEVICE__ with your device slug (e.g. byd_sealion_7).
+#
+# REQUIRED HACS frontend cards:
+#   - custom:mushroom-template-card
+#   - custom:mushroom-title-card
+#   - custom:button-card
+
+type: vertical-stack
+cards:
+  # ── Header ──────────────────────────────────────────────────────────────
+  - type: custom:mushroom-title-card
+    title: Viajes
+    subtitle: Last 30 days
+    icon: mdi:car-electric
+
+  # ── KPI strip (Last 30 days averages) ───────────────────────────────────
+  # 5 button-cards laid out in a 5-column grid (wraps to 3+2 on narrow widths).
+  - type: grid
+    columns: 5
+    square: false
+    cards:
+      - type: custom:button-card
+        entity: sensor.__DEVICE___avg_trip_distance_30_days
+        name: Avg distance
+        icon: mdi:map-marker-distance
+        show_state: true
+        show_name: true
+        show_icon: true
+        styles:
+          card:
+            - padding: 10px
+            - border-radius: 14px
+          name:
+            - font-size: 12px
+            - opacity: "0.75"
+          state:
+            - font-size: 18px
+            - font-weight: bold
+        state_display: |
+          [[[ return `${entity.state} km` ]]]
+
+      - type: custom:button-card
+        name: Avg consumption
+        icon: mdi:flash
+        show_state: true
+        show_name: true
+        show_icon: true
+        styles:
+          card:
+            - padding: 10px
+            - border-radius: 14px
+          name:
+            - font-size: 12px
+            - opacity: "0.75"
+          state:
+            - font-size: 18px
+            - font-weight: bold
+        # Average of the last 10 trips' energy (kWh). Falls back to "—".
+        state_display: |
+          [[[
+            const trips = (states['sensor.__DEVICE___recent_trips']
+                          && states['sensor.__DEVICE___recent_trips'].attributes
+                          && states['sensor.__DEVICE___recent_trips'].attributes.trips) || [];
+            const vals = trips.map(t => parseFloat(t.energy_kwh)).filter(v => !isNaN(v));
+            if (!vals.length) return '— kWh';
+            const avg = vals.reduce((a,b)=>a+b,0) / vals.length;
+            return `${avg.toFixed(2)} kWh`;
+          ]]]
+
+      - type: custom:button-card
+        entity: sensor.__DEVICE___avg_consumption_30_days
+        name: Avg efficiency
+        icon: mdi:lightning-bolt-outline
+        show_state: true
+        show_name: true
+        show_icon: true
+        styles:
+          card:
+            - padding: 10px
+            - border-radius: 14px
+          name:
+            - font-size: 12px
+            - opacity: "0.75"
+          state:
+            - font-size: 18px
+            - font-weight: bold
+        state_display: |
+          [[[ return `${entity.state} kWh/100km` ]]]
+
+      - type: custom:button-card
+        entity: sensor.__DEVICE___avg_trip_duration_30_days
+        name: Avg duration
+        icon: mdi:timer-outline
+        show_state: true
+        show_name: true
+        show_icon: true
+        styles:
+          card:
+            - padding: 10px
+            - border-radius: 14px
+          name:
+            - font-size: 12px
+            - opacity: "0.75"
+          state:
+            - font-size: 18px
+            - font-weight: bold
+        state_display: |
+          [[[ return `${entity.state} min` ]]]
+
+      - type: custom:button-card
+        entity: sensor.__DEVICE___avg_trip_speed_30_days
+        name: Avg speed
+        icon: mdi:speedometer
+        show_state: true
+        show_name: true
+        show_icon: true
+        styles:
+          card:
+            - padding: 10px
+            - border-radius: 14px
+          name:
+            - font-size: 12px
+            - opacity: "0.75"
+          state:
+            - font-size: 18px
+            - font-weight: bold
+        state_display: |
+          [[[ return `${entity.state} km/h` ]]]
+
+  # ── Per-trip list (last 10) ─────────────────────────────────────────────
+  # One mushroom-template-card renders a markdown blob with all trips so the
+  # Jinja for-loop runs once. Score is color-coded with an emoji indicator.
+  - type: custom:mushroom-template-card
+    primary: Recent trips
+    secondary: "{{ states('sensor.__DEVICE___recent_trips') }} in the log"
+    icon: mdi:format-list-bulleted
+    icon_color: blue
+    fill_container: true
+    multiline_secondary: true
+    content: |
+      {%- set trips = state_attr('sensor.__DEVICE___recent_trips', 'trips') or [] %}
+      {%- for t in trips[:10] %}
+      ### {{ as_timestamp(t.started_at) | timestamp_custom('%d/%m/%Y') }} · {{ as_timestamp(t.started_at) | timestamp_custom('%H:%M') }}
+      | Distance | Consumption | Efficiency | Cost | Score |
+      |---:|---:|---:|---:|:--:|
+      | {{ t.distance_km | default('—') }} km | {{ t.energy_kwh | default('—') }} kWh | {{ t.consumption_kwh_100km | default('—') }} kWh/100km | {{ t.cost | default('—') }} {{ t.currency | default('') }} | {% set s = t.score | float(0) %}{% if s >= 7 %}🟢{% elif s >= 4 %}🟡{% else %}🔴{% endif %} **{{ t.score | default('—') }}** |
+
+      _{{ t.origin | default('—') }} → {{ t.destination | default('—') }}_
+      {%- if not loop.last %}
+
+      ---
+      {%- endif %}
+      {%- else %}
+      _No trips recorded yet._
+      {%- endfor %}

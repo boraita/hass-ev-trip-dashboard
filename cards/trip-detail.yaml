@@ -1,0 +1,218 @@
+# Trip detail (BYD app, pantalla 7) — single-trip drilldown.
+#
+# Shows KPIs for the last completed trip, a comparison vs the driver's
+# 30-day average consumption, a percentile (where this trip ranks among
+# the recent_trips window), the estimated cost, and a route map fed from
+# the vehicle's device_tracker breadcrumbs.
+#
+# HACS dependencies (install via HACS → Frontend):
+#   - custom:mushroom-template-card
+#   - custom:mushroom-title-card
+#   - custom:button-card
+#   - custom:ev-trip-journey-card  (ships with this integration — useful
+#     if you want to switch this card to the live current trip)
+#
+# Placeholders:
+#   __DEVICE__  → ev_trip_logger device slug (e.g. byd_sealion_7)
+#   __VEHICLE__ → manufacturer integration slug used for device_tracker
+#                 (e.g. byd for `device_tracker.byd_location`)
+
+type: vertical-stack
+cards:
+  - type: custom:mushroom-title-card
+    title: Detalle del viaje
+    subtitle: >-
+      {{ state_attr('sensor.__DEVICE___last_trip', 'started_at')
+         | as_timestamp(0) | timestamp_custom('%d %b %H:%M', true)
+         if state_attr('sensor.__DEVICE___last_trip', 'started_at') else '—' }}
+    icon: mdi:magnify
+
+  # ── KPI grid (2×2) ────────────────────────────────────────────────
+  - type: grid
+    columns: 2
+    square: false
+    cards:
+      - type: custom:button-card
+        entity: sensor.__DEVICE___last_trip_distance
+        name: Distancia
+        show_state: true
+        show_icon: true
+        icon: mdi:road-variant
+        styles:
+          card:
+            - padding: 12px
+            - border-radius: 16px
+          name:
+            - font-size: 12px
+            - opacity: "0.7"
+          state:
+            - font-size: 22px
+            - font-weight: bold
+
+      - type: custom:button-card
+        entity: sensor.__DEVICE___last_trip_energy
+        name: Consumo
+        show_state: true
+        show_icon: true
+        icon: mdi:lightning-bolt
+        styles:
+          card:
+            - padding: 12px
+            - border-radius: 16px
+          name:
+            - font-size: 12px
+            - opacity: "0.7"
+          state:
+            - font-size: 22px
+            - font-weight: bold
+
+      - type: custom:button-card
+        entity: sensor.__DEVICE___last_trip_consumption
+        name: Eficiencia
+        show_state: true
+        show_icon: true
+        icon: mdi:speedometer
+        styles:
+          card:
+            - padding: 12px
+            - border-radius: 16px
+          name:
+            - font-size: 12px
+            - opacity: "0.7"
+          state:
+            - font-size: 22px
+            - font-weight: bold
+
+      - type: custom:button-card
+        # avg_speed lives on the `last_trip` sensor attributes, not as its
+        # own entity — surface it via a template button.
+        template: ""
+        name: Velocidad media
+        show_state: true
+        show_icon: true
+        icon: mdi:gauge
+        label: >-
+          [[[
+            const v = states['sensor.__DEVICE___last_trip'].attributes.avg_speed_kmh;
+            return (v == null) ? '—' : v.toFixed(1) + ' km/h';
+          ]]]
+        show_label: true
+        styles:
+          card:
+            - padding: 12px
+            - border-radius: 16px
+          name:
+            - font-size: 12px
+            - opacity: "0.7"
+          label:
+            - font-size: 22px
+            - font-weight: bold
+          state:
+            - display: none
+
+  # ── Comparison vs personal 30-day average ─────────────────────────
+  - type: custom:mushroom-template-card
+    primary: Frente a tu media
+    secondary: >-
+      {% set trip = states('sensor.__DEVICE___last_trip_consumption') | float(0) %}
+      {% set avg  = states('sensor.__DEVICE___total_30d_avg_consumption') | float(0) %}
+      {% if avg > 0 and trip > 0 %}
+        {% set delta = ((trip - avg) / avg) * 100 %}
+        {% if delta < 0 %}
+          {{ delta | round(1) }}% mejor que tu media (≈ {{ avg | round(1) }} kWh/100km)
+        {% else %}
+          +{{ delta | round(1) }}% peor que tu media (≈ {{ avg | round(1) }} kWh/100km)
+        {% endif %}
+      {% else %}
+        Aún no hay datos suficientes
+      {% endif %}
+    icon: mdi:chart-line-variant
+    icon_color: >-
+      {% set trip = states('sensor.__DEVICE___last_trip_consumption') | float(0) %}
+      {% set avg  = states('sensor.__DEVICE___total_30d_avg_consumption') | float(0) %}
+      {% if avg > 0 and trip > 0 %}
+        {{ 'green' if trip <= avg else 'red' }}
+      {% else %}
+        grey
+      {% endif %}
+
+  # ── Percentile within the recent_trips window ─────────────────────
+  # Lower consumption is better → "Top X%" means this trip beat X% of
+  # recent trips (had lower kWh/100km than them).
+  - type: custom:mushroom-template-card
+    primary: Percentil
+    secondary: >-
+      {% set trip = states('sensor.__DEVICE___last_trip_consumption') | float(0) %}
+      {% set trips = state_attr('sensor.__DEVICE___recent_trips', 'trips') or [] %}
+      {% set valid = trips
+           | selectattr('consumption_kwh_100km', 'defined')
+           | rejectattr('consumption_kwh_100km', 'none')
+           | list %}
+      {% set total = valid | count %}
+      {% if total > 0 and trip > 0 %}
+        {% set worse = valid
+             | selectattr('consumption_kwh_100km', '>', trip)
+             | list | count %}
+        {% set pct = ((worse / total) * 100) | round(0) %}
+        Top {{ pct }}% — mejor que {{ worse }} de {{ total }} viajes recientes
+      {% else %}
+        Sin histórico aún
+      {% endif %}
+    icon: mdi:trophy-variant
+    icon_color: >-
+      {% set trip = states('sensor.__DEVICE___last_trip_consumption') | float(0) %}
+      {% set trips = state_attr('sensor.__DEVICE___recent_trips', 'trips') or [] %}
+      {% set valid = trips
+           | selectattr('consumption_kwh_100km', 'defined')
+           | rejectattr('consumption_kwh_100km', 'none')
+           | list %}
+      {% set total = valid | count %}
+      {% if total > 0 and trip > 0 %}
+        {% set worse = valid | selectattr('consumption_kwh_100km', '>', trip) | list | count %}
+        {% set pct = (worse / total) * 100 %}
+        {{ 'green' if pct >= 50 else ('amber' if pct >= 25 else 'red') }}
+      {% else %}
+        grey
+      {% endif %}
+
+  # ── Estimated cost for this trip ──────────────────────────────────
+  - type: custom:button-card
+    entity: sensor.__DEVICE___last_trip_cost
+    name: Coste estimado
+    show_state: true
+    show_icon: true
+    icon: mdi:cash-multiple
+    styles:
+      card:
+        - padding: 14px
+        - border-radius: 16px
+      name:
+        - font-size: 13px
+        - opacity: "0.7"
+      state:
+        - font-size: 26px
+        - font-weight: bold
+
+  # ── Route map (HA native — breadcrumbs around the trip window) ────
+  # The integration samples 1 GPS point per 30s while the car is on and
+  # stores them via storage.async_trip_positions(trip_id). The native
+  # `map` card can't query that API, so we fall back to the device's
+  # recorder history — `hours_to_show` is sized to the trip duration so
+  # the breadcrumb trail roughly matches the route.
+  - type: map
+    title: Ruta
+    default_zoom: 13
+    hours_to_show: >-
+      {% set d = state_attr('sensor.__DEVICE___last_trip', 'duration_min') | float(0) %}
+      {{ ((d / 60) + 0.5) | round(0) if d > 0 else 1 }}
+    entities:
+      - entity: device_tracker.__VEHICLE___location
+
+  - type: markdown
+    content: >
+      _Ruta aproximada a partir del histórico del `device_tracker`. La
+      integración guarda 1 muestra GPS cada 30 s mientras el coche está
+      encendido (`storage.async_trip_positions(trip_id)`). Para dibujar
+      la ruta exacta instala un mapa de Leaflet (p. ej. `ha-card-leaflet`
+      o `plotly-graph-card` con scatter geo) y aliméntalo con un sensor
+      REST/template que lea esas posiciones._

@@ -1,23 +1,46 @@
 # EV Trip Dashboard
 
-A ready-made dashboard to visualise every metric from
-[hass-ev-trip-logger](https://github.com/boraita/hass-ev-trip-logger) — and any
-other integration that publishes the same sensor names.
+A polished 9-view dashboard inspired by the BYD mobile app, powered by
+[hass-ev-trip-logger](https://github.com/boraita/hass-ev-trip-logger) **v0.5.0+**
+— works with any car integration that publishes the same sensor names.
+
+## ⚠️ Required HACS frontend cards (v0.2.0)
+
+This pack now **requires** the following HACS frontend repos installed in your
+Home Assistant. They unlock the rich BYD-app-style visuals — KPI tiles, dual-axis
+bars, scatter, radar, route map, monthly calendar, etc.
+
+| HACS frontend | Used for |
+|---|---|
+| `custom:mushroom-template-card` (Mushroom) | Hero, KPI labels, score-colored trip rows |
+| `custom:mushroom-chips-card` | ODO/Energy/SOH strip in the Resumen view |
+| `custom:mushroom-title-card` | Section headers in every view |
+| `custom:button-card` | KPI tiles, tire-pressure cells, floating "+" |
+| `custom:apexcharts-card` | Dual-axis monthly bars, by-hour bars, radar, scatter |
+| `custom:mini-graph-card` | Compact line charts (60-day km, etc.) |
+| `custom:calendar-card-pro` | The monthly activity calendar |
+
+Optional but recommended:
+- `custom:browser_mod` — click-on-day popups in the Calendar view
+- `custom:atomic-calendar-revive` — fallback if you don't want calendar-card-pro
+
+## 9 views — one per BYD-app pantalla
+
+| # | View | What's on it |
+|---|---|---|
+| 1 | **Resumen** | Vehicle hero + SoC + range + ODO/Energy/SOH/System chips + tire pressures (2×2) + location map + conditional live-charge popup |
+| 2 | **Calendario** | Monthly calendar with per-day badges — `mdi:lightning-bolt` for charges, `mdi:car` for trips. Powered by the new `calendar.<device>_activity` entity |
+| 3 | **Tendencias** | 4 KPI tiles (long trip, avg trip, driving time, monthly cost) + dual-axis Monthly Km vs kWh bar chart + 60-day km line |
+| 4 | **Patrones** | Trips KPI + daily-avg + 24-hour distribution bars + radar by weekday + 7-day Mon-Sun strip with km totals |
+| 5 | **Eficiencia** | Avg consumption hero + monthly avg consumption line + Efficiency vs Distance scatter (score-colored dots) + temperature bucket bars |
+| 6 | **Récords** | 4 record KPI tiles (longest, max duration, cheapest, best efficiency) + top-9 lists (distance, consumption, efficiency, speed) |
+| 7 | **Detalle** | Single-trip drilldown: 4 KPIs (distance, consumption, efficiency, avg speed) + delta vs personal average + percentile + estimated cost + route map placeholder (uses GPS samples from `trip_positions`) |
+| 8 | **Viajes** | 5 KPI averages (last 30 days) + trip cards with date·time / distance / consumption / efficiency / cost / score color-coded |
+| 9 | **Cargas** | 4 KPI tiles (avg kWh / avg cost / avg €/kWh / total charges) + charge cards with date / kWh / source label AC/DC / cost / SoC delta + floating "+" button for manual log |
 
 Two ways to use it:
-- **HACS dashboard strategy** (recommended) — install via HACS, point a dashboard at the strategy, and it auto-generates everything from your device. Includes a polished custom trip-list card. No `__DEVICE__` find/replace.
-- **Pure-YAML pack** (no dependencies) — copy the YAML in `dashboards/` / `cards/` and replace `__DEVICE__`. Works on any Home Assistant, no HACS, no JavaScript.
-
-## What you get
-
-- **Driving view** — battery, range, odometer, temps, live/last trip, current/last journey, and a map of the car's location.
-- **Trips view** — searchable, sortable, **filterable** trip list (search by destination/date; sort by date/distance/score/efficiency/cost; filter by period and by min distance / min score / max cost / max consumption) plus a "records" card highlighting the best trips. The HACS strategy renders it as a polished custom list card (route chips + colour-coded score); the YAML pack renders it as a native markdown table.
-- **History view** — recent journeys and recent charges.
-- **Charts view** — monthly distance / energy / charging-cost bars, rolling efficiency and charge-price trends, 24h battery curve.
-- **Stats view** — monthly totals for driving and charging, plus the live charge session when plugged in.
-- **Individual cards** under `cards/` you can drop into any other dashboard.
-
-All cards use stock Lovelace types (`markdown`, `glance`, `entities`, `gauge`, `tile`, `heading`, `map`, `conditional`, `statistics-graph`, `history-graph`) inside the native `sections` layout — no custom dependencies. The Trips view's search/sort/filter uses the input helpers in `packages/trip-list-helpers.yaml`.
+- **HACS dashboard strategy** (recommended) — install via HACS, the strategy auto-generates all 9 views from your device slug. No find/replace.
+- **Pure-YAML pack** — copy `dashboards/full.yaml` (or `mobile.yaml` for compact) and replace `__DEVICE__` / `__VEHICLE__`. Each card under `cards/` is also a standalone drop-in.
 
 ## Install
 

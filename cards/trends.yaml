@@ -1,0 +1,215 @@
+# Pantalla 3 — Tendencias (Trends) view for the BYD trip-logger dashboard.
+# 4 KPI tiles (2x2 grid) + dual-axis monthly bar chart + last-60-days km line chart.
+#
+# Required HACS components:
+#   - custom:apexcharts-card
+#   - custom:mushroom-template-card
+#   - custom:button-card
+#   - custom:mini-graph-card
+#   - custom:mushroom-title-card
+#
+# Replace __DEVICE__ with your device slug.
+
+type: vertical-stack
+cards:
+  # ===== Header =====
+  - type: custom:mushroom-title-card
+    title: Tendencias
+    subtitle: Resumen de los últimos 30/60 días
+    icon: mdi:chart-line
+
+  # ===== KPI tiles (2x2 grid) =====
+  - type: grid
+    columns: 2
+    square: false
+    cards:
+      # --- Tile 1: days since the longest trip ever ---
+      # `trip_records` exposes attrs.totals with the lifetime records (longest_trip_date, etc.).
+      - type: custom:button-card
+        name: Long trip
+        icon: mdi:trophy-outline
+        show_state: true
+        state:
+          - operator: template
+            value: |
+              [[[
+                const d = entity.attributes?.totals?.longest_trip_date;
+                if (!d) return false;
+                const days = Math.floor((Date.now() - new Date(d).getTime()) / 86400000);
+                return days <= 30;
+              ]]]
+            color: rgb(255, 152, 0)
+          - operator: default
+            color: rgb(244, 67, 54)
+        entity: sensor.__DEVICE___trip_records
+        label: |
+          [[[
+            const d = entity.attributes?.totals?.longest_trip_date;
+            if (!d) return 'sin datos';
+            const days = Math.floor((Date.now() - new Date(d).getTime()) / 86400000);
+            return `hace ${days} día${days === 1 ? '' : 's'}`;
+          ]]]
+        styles:
+          card:
+            - padding: 12px
+            - border-radius: 16px
+          name:
+            - font-size: 13px
+            - opacity: "0.75"
+          label:
+            - font-size: 12px
+            - opacity: "0.85"
+          state:
+            - font-size: 20px
+            - font-weight: bold
+
+      # --- Tile 2: average trip distance + duration (30d) ---
+      - type: custom:mushroom-template-card
+        primary: Avg trip
+        secondary: >-
+          {{ states('sensor.__DEVICE___avg_trip_distance_30_days') }} km ·
+          {{ states('sensor.__DEVICE___avg_trip_duration_30_days') }} min
+        icon: mdi:road-variant
+        icon_color: blue
+        fill_container: true
+
+      # --- Tile 3: total driving time (30d) ---
+      - type: custom:mushroom-template-card
+        primary: Driving time
+        secondary: >-
+          {{ states('sensor.__DEVICE___driving_time_30_days') }} h (30d)
+        icon: mdi:steering
+        icon_color: green
+        fill_container: true
+
+      # --- Tile 4: monthly cost ---
+      - type: custom:mushroom-template-card
+        primary: Monthly cost
+        secondary: >-
+          {{ states('sensor.__DEVICE___cost_this_month') }} €
+        icon: mdi:cash-multiple
+        icon_color: amber
+        fill_container: true
+
+  # ===== Dual-axis bar chart — Monthly Km & kWh =====
+  # data_generator walks `monthly_history.attributes.months` (array of
+  # {month: "YYYY-MM", distance_km, energy_kwh, ...}) and emits [timestamp, value]
+  # pairs. Month strings are parsed as the 1st day of the month so apex aligns
+  # bars on a datetime x-axis. Two series share the x-axis but use separate
+  # y-axes (left=km, right=kWh).
+  - type: custom:apexcharts-card
+    header:
+      show: true
+      title: Monthly Km & kWh
+      show_states: false
+    graph_span: 365d
+    span:
+      end: month
+    apex_config:
+      chart:
+        height: 280px
+        stacked: false
+      legend:
+        position: bottom
+      xaxis:
+        type: category
+        labels:
+          rotate: -45
+          style:
+            fontSize: 11px
+      plotOptions:
+        bar:
+          columnWidth: 60%
+          borderRadius: 4
+      tooltip:
+        shared: true
+    yaxis:
+      - id: km
+        decimals: 0
+        apex_config:
+          title:
+            text: Km
+          labels:
+            style:
+              colors: "#ef5350"
+      - id: kwh
+        opposite: true
+        decimals: 1
+        apex_config:
+          title:
+            text: kWh
+          labels:
+            style:
+              colors: "#26c6da"
+    series:
+      - entity: sensor.__DEVICE___monthly_history
+        name: Distance (km)
+        type: column
+        yaxis_id: km
+        color: "#ef5350"
+        # Emit one [label, km] pair per month from attrs.months.
+        data_generator: |
+          const months = entity.attributes.months || [];
+          return months.map(m => [m.month, m.distance_km]);
+      - entity: sensor.__DEVICE___monthly_history
+        name: Energy (kWh)
+        type: column
+        yaxis_id: kwh
+        color: "#26c6da"
+        # Same source array, but project the kWh field.
+        data_generator: |
+          const months = entity.attributes.months || [];
+          return months.map(m => [m.month, m.energy_kwh]);
+
+  # ===== Line chart — Km driven in last 60 days =====
+  # data_generator walks `daily_km_60d.attributes.days` (array of
+  # {day: "YYYY-MM-DD", distance_km}) and converts each day to a millisecond
+  # timestamp so apex can plot it on a datetime x-axis. Smoothed red line with
+  # gradient fill for a clean trend visualisation.
+  - type: custom:apexcharts-card
+    header:
+      show: true
+      title: Km driven in last 60 days
+      show_states: true
+      colorize_states: true
+    graph_span: 60d
+    span:
+      end: day
+    apex_config:
+      chart:
+        height: 260px
+      stroke:
+        curve: smooth
+        width: 3
+      fill:
+        type: gradient
+        gradient:
+          shadeIntensity: 1
+          opacityFrom: 0.55
+          opacityTo: 0.05
+          stops: [0, 90, 100]
+      xaxis:
+        type: datetime
+        labels:
+          datetimeFormatter:
+            month: "MMM"
+            day: "dd MMM"
+      tooltip:
+        x:
+          format: "dd MMM yyyy"
+    yaxis:
+      - decimals: 0
+        min: 0
+        apex_config:
+          title:
+            text: Km / day
+    series:
+      - entity: sensor.__DEVICE___daily_km_60d
+        name: Km
+        type: area
+        color: "#e53935"
+        stroke_width: 3
+        # Convert each {day, distance_km} into [ms-timestamp, km].
+        data_generator: |
+          const days = entity.attributes.days || [];
+          return days.map(d => [new Date(d.day).getTime(), d.distance_km]);

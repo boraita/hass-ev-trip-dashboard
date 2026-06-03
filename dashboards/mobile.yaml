@@ -1,176 +1,51 @@
-# Mobile-friendly dashboard — single view, vertical stack, the essentials only.
-# The Trips search/sort needs the helpers in packages/trip-list-helpers.yaml.
-# Replace __DEVICE__ with your device slug.
+# EV Trip Dashboard — mobile-first compact layout.
+# Same backend as full.yaml but only the 4 most-used views, single column.
+#
+# Placeholders:
+#   __DEVICE__   the trip-LOGGER slug (e.g. sealion_7)
+#   __VEHICLE__  the CAR integration slug (e.g. byd_sealion_7)
+#
+# Required HACS frontends (same as full.yaml — see that file for the full list).
 
-title: EV Trip
+title: EV Mobile
 views:
-  - title: EV
-    path: ev
-    icon: mdi:car
-    cards:
 
-      # Battery + status at the top
-      - type: gauge
-        entity: sensor.__DEVICE___battery_percent
-        name: Battery
-        min: 0
-        max: 100
-        needle: true
-        severity:
-          green: 50
-          yellow: 20
-          red: 0
+  - title: Resumen
+    path: resumen
+    icon: mdi:car-electric
+    type: sections
+    max_columns: 1
+    sections:
+      - type: grid
+        cards:
+          !include ../cards/resumen-vehicle.yaml
 
-      - type: glance
-        columns: 2
-        entities:
-          - entity: sensor.__DEVICE___battery_energy
-            name: In battery
-          - entity: sensor.__DEVICE___energy_to_full_charge
-            name: "To 100%"
+  - title: Viajes
+    path: trips
+    icon: mdi:car-multiple
+    type: sections
+    max_columns: 1
+    sections:
+      - type: grid
+        cards:
+          !include ../cards/trip-list-v2.yaml
 
-      # Live trip (only when driving)
-      - type: conditional
-        conditions:
-          - condition: numeric_state
-            entity: sensor.__DEVICE___current_trip_distance
-            above: 0
-        card:
-          type: glance
-          title: Now driving
-          columns: 3
-          entities:
-            - entity: sensor.__DEVICE___current_trip_distance
-              name: km
-            - entity: sensor.__DEVICE___current_trip_duration
-              name: min
-            - entity: sensor.__DEVICE___current_trip_energy
-              name: kWh
-            - entity: sensor.__DEVICE___current_trip_consumption
-              name: kWh/100
-            - entity: sensor.__DEVICE___current_trip_average_speed
-              name: km/h
-            - entity: sensor.__DEVICE___current_trip_max_power
-              name: kW
+  - title: Cargas
+    path: charges
+    icon: mdi:ev-station
+    type: sections
+    max_columns: 1
+    sections:
+      - type: grid
+        cards:
+          !include ../cards/charges-v2.yaml
 
-      # Last trip — only when no live trip is open (otherwise the card above covers it)
-      - type: conditional
-        conditions:
-          - condition: numeric_state
-            entity: sensor.__DEVICE___current_trip_distance
-            below: 0.001
-        card:
-          type: glance
-          title: Last trip
-          columns: 3
-          entities:
-            - entity: sensor.__DEVICE___last_trip_distance
-              name: km
-            - entity: sensor.__DEVICE___last_trip_energy
-              name: kWh
-            - entity: sensor.__DEVICE___last_trip_cost
-              name: cost
-            - entity: sensor.__DEVICE___last_trip_consumption
-              name: kWh/100
-            - entity: sensor.__DEVICE___last_trip_score
-              name: score
-            - entity: sensor.__DEVICE___last_trip_duration
-              name: min
-
-      # Records (best trip) — all-time if the logger publishes trip_records, else recent window
-      - type: markdown
-        content: |
-          {%- set CUR = {'EUR':'€','USD':'$','GBP':'£'} %}
-          {%- set rsrc = 'sensor.__DEVICE___trip_records' %}
-          {%- set best = state_attr(rsrc, 'best_score') %}
-          {%- if best is mapping %}
-          ### 🏆 Records ({{ states(rsrc) }} trips)
-          - 🥇 Best score: **{{ best.value }}** ({{ best.destination or '—' }})
-          {%- set lo = state_attr(rsrc, 'longest') %}{% if lo %}
-          - 📏 Longest: **{{ lo.value }} km** ({{ lo.destination or '—' }}){% endif %}
-          {%- set ch = state_attr(rsrc, 'cheapest') %}{% if ch %}
-          - 💶 Cheapest: **{{ ch.value }} {{ CUR.get(ch.currency, ch.currency or '€') }}**{% endif %}
-          {%- else %}
-          {%- set trips = state_attr('sensor.__DEVICE___recent_trips', 'trips') or [] %}
-          {%- if trips | length > 0 %}
-          {%- set b = trips | rejectattr('score','none') | list | sort(attribute='score', reverse=true) | first %}
-          {%- set lo = trips | rejectattr('distance_km','none') | list | sort(attribute='distance_km', reverse=true) | first %}
-          ### 🏆 Records (last {{ trips | length }})
-          {%- if b %}
-          - 🥇 Best score: **{{ b.score }}** ({{ b.destination or '—' }}){% endif %}
-          {%- if lo %}
-          - 📏 Longest: **{{ lo.distance_km }} km** ({{ lo.destination or '—' }}){% endif %}
-          {%- endif %}
-          {%- endif %}
-
-      # Searchable trip list
-      - type: entities
-        title: Trips
-        show_header_toggle: false
-        entities:
-          - entity: input_text.__DEVICE___trip_search
-            name: Search
-          - entity: input_select.__DEVICE___trip_sort
-            name: Sort by
-          - entity: input_select.__DEVICE___trip_window
-            name: Period
-
-      - type: markdown
-        content: |
-          {%- set CUR = {'EUR':'€','USD':'$','GBP':'£'} %}
-          {%- set raw = states('input_text.__DEVICE___trip_search') %}
-          {%- set q = '' if raw in ['unknown', 'unavailable', 'None'] else raw | lower | trim %}
-          {%- set sort = states('input_select.__DEVICE___trip_sort') %}
-          {%- set win = states('input_select.__DEVICE___trip_window') %}
-          {%- set trips = state_attr('sensor.__DEVICE___recent_trips', 'trips') or [] %}
-          {%- set ns = namespace(rows=[]) %}
-          {%- for t in trips %}
-            {%- set ts = as_timestamp(t.ended_at, 0) %}
-            {%- set label = ((t.origin or '') ~ ' ' ~ (t.destination or '') ~ ' ' ~ (ts | timestamp_custom('%d/%m/%Y %H:%M', true) if ts else '')) | lower %}
-            {%- set okw = true %}
-            {%- if ts and win == 'Today' %}{% set okw = ts >= today_at('00:00').timestamp() %}
-            {%- elif ts and win == 'This week' %}{% set okw = ts >= (today_at('00:00').timestamp() - (now().weekday() * 86400)) %}
-            {%- elif ts and win == 'This month' %}{% set okw = (t.ended_at[:7] == now().strftime('%Y-%m')) %}
-            {%- endif %}
-            {%- if (q == '' or q in label) and okw %}{% set ns.rows = ns.rows + [t] %}{%- endif %}
-          {%- endfor %}
-          {%- if sort == 'Oldest' %}{% set ns.rows = ns.rows | sort(attribute='ended_at') | list %}
-          {%- elif sort == 'Longest' %}{% set ns.rows = ns.rows | rejectattr('distance_km', 'none') | sort(attribute='distance_km', reverse=true) | list %}
-          {%- elif sort == 'Shortest' %}{% set ns.rows = ns.rows | rejectattr('distance_km', 'none') | sort(attribute='distance_km') | list %}
-          {%- elif sort == 'Best score' %}{% set ns.rows = ns.rows | rejectattr('score', 'none') | sort(attribute='score', reverse=true) | list %}
-          {%- elif sort == 'Worst score' %}{% set ns.rows = ns.rows | rejectattr('score', 'none') | sort(attribute='score') | list %}
-          {%- elif sort == 'Most efficient' %}{% set ns.rows = ns.rows | rejectattr('consumption_kwh_100km', 'none') | sort(attribute='consumption_kwh_100km') | list %}
-          {%- elif sort == 'Least efficient' %}{% set ns.rows = ns.rows | rejectattr('consumption_kwh_100km', 'none') | sort(attribute='consumption_kwh_100km', reverse=true) | list %}
-          {%- elif sort == 'Cheapest' %}{% set ns.rows = ns.rows | rejectattr('cost', 'none') | sort(attribute='cost') | list %}
-          {%- elif sort == 'Priciest' %}{% set ns.rows = ns.rows | rejectattr('cost', 'none') | sort(attribute='cost', reverse=true) | list %}
-          {%- else %}{% set ns.rows = ns.rows | sort(attribute='ended_at', reverse=true) | list %}
-          {%- endif %}
-          {%- for t in ns.rows %}
-          **{{ as_timestamp(t.ended_at) | timestamp_custom('%d/%m %H:%M') }}** · {{ t.destination or '—' }} — {{ t.distance_km }} km · {{ t.cost if t.cost is not none else "—" }} {{ CUR.get(t.currency, t.currency or '') }} · score **{{ t.score if t.score is not none else "—" }}**
-          {%- else %}
-          _No trips match the current filters._
-          {%- endfor %}
-
-      # Recent charges
-      - type: markdown
-        content: |
-          {%- set CUR = {'EUR':'€','USD':'$','GBP':'£'} %}
-          {%- set charges = state_attr('sensor.__DEVICE___recent_charges', 'charges') or [] %}
-          ### Recent charges
-          {%- if charges | length == 0 %}
-          _No charges recorded yet._
-          {%- else %}
-          {%- for c in charges %}
-          **{{ as_timestamp(c.ended_at) | timestamp_custom('%d/%m %H:%M') if c.ended_at else '—' }}** — {{ c.location or '—' }}: {{ c.kwh | default('—', true) }} kWh · **{{ c.total_cost | default('—', true) }} {{ CUR.get(c.currency, c.currency or '€') }}**
-          {%- endfor %}
-          {%- endif %}
-
-      # Monthly summary
-      - type: entities
-        title: This month
-        entities:
-          - sensor.__DEVICE___distance_this_month
-          - sensor.__DEVICE___energy_this_month
-          - sensor.__DEVICE___cost_this_month
-          - sensor.__DEVICE___spent_on_charging_this_month
-          - sensor.__DEVICE___avg_consumption_30_days
+  - title: Récords
+    path: tops
+    icon: mdi:trophy
+    type: sections
+    max_columns: 1
+    sections:
+      - type: grid
+        cards:
+          !include ../cards/tops-rankings.yaml

@@ -1,0 +1,259 @@
+# Pantalla 5 — Efficiency view (BYD app style).
+# Monthly avg consumption line + Efficiency vs Distance scatter + Temperature bar.
+# Replace __DEVICE__ with your device slug.
+#
+# Requires HACS:
+#   - custom:apexcharts-card
+#   - custom:mushroom-title-card
+#   - custom:mushroom-template-card
+#   - custom:button-card
+
+type: vertical-stack
+cards:
+  # ===== Header =====
+  - type: custom:mushroom-title-card
+    title: Eficiencia
+    subtitle: Consumo, distancia y temperatura
+    alignment: start
+
+  # ===== Hero: 30-day average consumption =====
+  - type: custom:button-card
+    entity: sensor.__DEVICE___avg_consumption_30_days
+    name: Consumo medio (30 días)
+    show_state: true
+    show_icon: true
+    icon: mdi:leaf
+    styles:
+      card:
+        - padding: 18px
+        - border-radius: 16px
+        - background: linear-gradient(135deg, rgba(46,160,67,0.18), rgba(46,160,67,0.04))
+      grid:
+        - grid-template-areas: '"i n" "i s"'
+        - grid-template-columns: 64px 1fr
+        - grid-template-rows: auto auto
+      icon:
+        - color: '#2ea043'
+        - width: 48px
+      name:
+        - justify-self: start
+        - font-size: 14px
+        - opacity: 0.75
+      state:
+        - justify-self: start
+        - font-size: 28px
+        - font-weight: 600
+        - color: '#2ea043'
+    state_display: |
+      [[[ return `${entity.state} kWh/100km`; ]]]
+
+  # ===== Monthly avg consumption (LINE) =====
+  # data_generator: read attrs.months from sensor.__DEVICE___monthly_history.
+  # For each month object compute kWh/100km = energy_kwh / distance_km * 100
+  # (guard divide-by-zero). x = first day of the month, y = consumption.
+  - type: custom:apexcharts-card
+    header:
+      show: true
+      title: Avg consumption per month (kWh/100km)
+      show_states: false
+    graph_span: 365d
+    span:
+      end: month
+    apex_config:
+      chart:
+        height: 260
+      stroke:
+        curve: smooth
+        width: 3
+      markers:
+        size: 4
+      dataLabels:
+        enabled: false
+      grid:
+        borderColor: rgba(255,255,255,0.08)
+      tooltip:
+        x:
+          format: MMM yyyy
+      xaxis:
+        type: datetime
+        labels:
+          datetimeFormatter:
+            year: yyyy
+            month: "MMM 'yy"
+      yaxis:
+        decimalsInFloat: 1
+        title:
+          text: kWh/100km
+    series:
+      - entity: sensor.__DEVICE___monthly_history
+        name: Consumo
+        color: '#2ea043'
+        type: line
+        # Walk attrs.months, parse "YYYY-MM" into a timestamp, compute kWh/100km.
+        data_generator: |
+          const months = entity.attributes.months || [];
+          return months.map((m) => {
+            const km = Number(m.distance_km) || 0;
+            const kwh = Number(m.energy_kwh) || 0;
+            const cons = km > 0 ? (kwh / km) * 100 : null;
+            const [y, mo] = String(m.month || '').split('-').map(Number);
+            const ts = (y && mo) ? new Date(y, mo - 1, 1).getTime() : new Date(m.month).getTime();
+            return [ts, cons];
+          }).filter((p) => p[1] !== null);
+
+  # ===== Efficiency vs Distance (SCATTER) =====
+  # data_generator: read attrs.trips from sensor.__DEVICE___recent_trips.
+  # Each trip becomes one point: x = distance_km, y = consumption_kwh_100km.
+  # We split into 3 series so apex colors dots by score range:
+  #   - green  for score >= 7
+  #   - orange for 4 <= score < 7
+  #   - red    for score < 4 (or missing)
+  - type: custom:apexcharts-card
+    header:
+      show: true
+      title: Efficiency vs Distance
+      show_states: false
+    graph_span: 90d
+    chart_type: scatter
+    apex_config:
+      chart:
+        height: 280
+      dataLabels:
+        enabled: false
+      grid:
+        borderColor: rgba(255,255,255,0.08)
+      legend:
+        show: true
+        position: bottom
+      tooltip:
+        shared: false
+        intersect: true
+        x:
+          formatter: |
+            EVAL:function(val){ return val.toFixed(1) + ' km'; }
+        y:
+          formatter: |
+            EVAL:function(val){ return val.toFixed(1) + ' kWh/100km'; }
+      xaxis:
+        type: numeric
+        title:
+          text: Distance (km)
+        decimalsInFloat: 0
+      yaxis:
+        title:
+          text: kWh/100km
+        decimalsInFloat: 1
+    series:
+      - entity: sensor.__DEVICE___recent_trips
+        name: Score ≥ 7
+        color: '#2ea043'
+        type: scatter
+        # Keep only trips with score >= 7 and valid x/y values.
+        data_generator: |
+          const trips = entity.attributes.trips || [];
+          return trips
+            .filter((t) => Number(t.score) >= 7
+              && t.distance_km != null
+              && t.consumption_kwh_100km != null)
+            .map((t) => [Number(t.distance_km), Number(t.consumption_kwh_100km)]);
+      - entity: sensor.__DEVICE___recent_trips
+        name: Score 4–7
+        color: '#f0883e'
+        type: scatter
+        # Mid-tier trips (score between 4 inclusive and 7 exclusive).
+        data_generator: |
+          const trips = entity.attributes.trips || [];
+          return trips
+            .filter((t) => {
+              const s = Number(t.score);
+              return s >= 4 && s < 7
+                && t.distance_km != null
+                && t.consumption_kwh_100km != null;
+            })
+            .map((t) => [Number(t.distance_km), Number(t.consumption_kwh_100km)]);
+      - entity: sensor.__DEVICE___recent_trips
+        name: Score < 4
+        color: '#f85149'
+        type: scatter
+        # Low-score trips + trips where score is missing/NaN.
+        data_generator: |
+          const trips = entity.attributes.trips || [];
+          return trips
+            .filter((t) => {
+              const s = Number(t.score);
+              return (isNaN(s) || s < 4)
+                && t.distance_km != null
+                && t.consumption_kwh_100km != null;
+            })
+            .map((t) => [Number(t.distance_km), Number(t.consumption_kwh_100km)]);
+
+  # ===== Consumption by temperature bucket (BAR) =====
+  # data_generator: read attrs.by_bucket from sensor.__DEVICE___consumption_by_temperature.
+  # Object shape: {"-5": 22.1, "0": 19.4, "5": 17.8, ...}
+  # Sort keys numerically ascending so the x-axis goes cold -> hot.
+  - type: custom:apexcharts-card
+    header:
+      show: true
+      title: Consumption by temperature (kWh/100km)
+      show_states: false
+    chart_type: bar
+    apex_config:
+      chart:
+        height: 240
+      plotOptions:
+        bar:
+          borderRadius: 4
+          columnWidth: 60%
+          distributed: true
+      dataLabels:
+        enabled: true
+        formatter: |
+          EVAL:function(val){ return val ? val.toFixed(1) : ''; }
+        style:
+          fontSize: 11px
+      legend:
+        show: false
+      grid:
+        borderColor: rgba(255,255,255,0.08)
+      xaxis:
+        type: category
+        title:
+          text: Temperature bucket (°C)
+      yaxis:
+        title:
+          text: kWh/100km
+        decimalsInFloat: 1
+    series:
+      - entity: sensor.__DEVICE___consumption_by_temperature
+        name: Consumo
+        type: bar
+        # Build [label, value] pairs sorted by bucket key parsed as int.
+        # Each label gets a "°C" suffix for the x-axis category.
+        data_generator: |
+          const buckets = entity.attributes.by_bucket || {};
+          return Object.keys(buckets)
+            .map((k) => [parseInt(k, 10), Number(buckets[k])])
+            .filter((p) => !isNaN(p[0]) && !isNaN(p[1]))
+            .sort((a, b) => a[0] - b[0])
+            .map(([k, v]) => [`${k}°C`, v]);
+
+  # ===== Footer hint =====
+  - type: custom:mushroom-template-card
+    primary: Consejo de eficiencia
+    secondary: >-
+      {% set c = states('sensor.__DEVICE___avg_consumption_30_days') | float(0) %}
+      {% if c == 0 %} Sin datos suficientes todavía.
+      {% elif c < 16 %} Excelente — mantienes un consumo muy eficiente.
+      {% elif c < 19 %} Buen consumo, dentro de lo esperado.
+      {% elif c < 22 %} Algo elevado: revisa estilo de conducción o clima.
+      {% else %} Consumo alto: trayectos cortos/frío/autopista influyen mucho.
+      {% endif %}
+    icon: mdi:lightbulb-on-outline
+    icon_color: |-
+      {% set c = states('sensor.__DEVICE___avg_consumption_30_days') | float(0) %}
+      {% if c == 0 %} grey
+      {% elif c < 19 %} green
+      {% elif c < 22 %} orange
+      {% else %} red
+      {% endif %}
+    fill_container: true

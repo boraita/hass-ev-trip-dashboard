@@ -1,0 +1,300 @@
+# Pantalla 4 — Trip patterns.
+#
+# Shows when you tend to drive: total trip count + daily-average distance,
+# a 24-bar histogram (trips per hour), a weekday radar (trips per day) and
+# a 7-cell strip with km totals Mon–Sun.
+#
+# Required HACS frontend cards:
+#   - custom:apexcharts-card
+#   - custom:mushroom-template-card
+#   - custom:button-card
+#   - custom:mushroom-title-card
+#
+# Required sensors (slug = __DEVICE__):
+#   - sensor.__DEVICE___trip_patterns
+#       state            -> total trips in the last 90 days (int)
+#       attrs.by_hour    -> {"0": n, "1": n, ..., "23": n}  trips bucketed by hour
+#       attrs.by_weekday -> {"0": n, "1": n, ..., "6":  n}  0 = Monday
+#       attrs.km_by_weekday -> {"0": km, ..., "6": km}      0 = Monday
+#   - sensor.__DEVICE___avg_trip_distance_30_days   (km, proxy for daily avg)
+#
+# Replace __DEVICE__ with your device slug.
+
+type: vertical-stack
+cards:
+  # ===== Title =====
+  - type: custom:mushroom-title-card
+    title: Patrones
+    subtitle: Cuándo y cuánto conduces (últimos 90 días)
+    icon: mdi:chart-bell-curve-cumulative
+
+  # ===== KPI strip: Trips count + Daily avg km =====
+  - type: horizontal-stack
+    cards:
+      - type: custom:button-card
+        entity: sensor.__DEVICE___trip_patterns
+        name: Viajes
+        show_state: true
+        show_label: true
+        label: ult. 90 días
+        icon: mdi:routes
+        styles:
+          card:
+            - padding: 12px
+            - border-radius: 18px
+            - background: var(--ha-card-background, var(--card-background-color))
+          icon:
+            - color: "#f59e0b"
+            - width: 28px
+          name:
+            - font-size: 13px
+            - color: var(--secondary-text-color)
+          state:
+            - font-size: 26px
+            - font-weight: 700
+          label:
+            - font-size: 11px
+            - color: var(--secondary-text-color)
+        tap_action:
+          action: more-info
+
+      - type: custom:button-card
+        # Daily avg km — uses avg_trip_distance_30_days as the proxy the brief allows.
+        # (Computing total_km_90d / 90 from attributes would also work but the 30-day
+        #  rolling sensor is already exposed and more stable.)
+        entity: sensor.__DEVICE___avg_trip_distance_30_days
+        name: Media diaria
+        show_state: true
+        show_label: true
+        label: km/día (30 d)
+        icon: mdi:speedometer
+        styles:
+          card:
+            - padding: 12px
+            - border-radius: 18px
+            - background: var(--ha-card-background, var(--card-background-color))
+          icon:
+            - color: "#10b981"
+            - width: 28px
+          name:
+            - font-size: 13px
+            - color: var(--secondary-text-color)
+          state:
+            - font-size: 26px
+            - font-weight: 700
+          label:
+            - font-size: 11px
+            - color: var(--secondary-text-color)
+        tap_action:
+          action: more-info
+
+  # ===== By Hour — 24-bar histogram from attrs.by_hour =====
+  - type: custom:apexcharts-card
+    header:
+      show: true
+      title: Por hora
+      show_states: false
+    chart_type: bar
+    graph_span: 1d
+    apex_config:
+      chart:
+        height: 240
+        toolbar:
+          show: false
+      plotOptions:
+        bar:
+          borderRadius: 4
+          columnWidth: 70%
+      dataLabels:
+        enabled: false
+      xaxis:
+        labels:
+          style:
+            fontSize: 10px
+          rotate: 0
+          hideOverlappingLabels: true
+        tickAmount: 12
+      yaxis:
+        labels:
+          style:
+            fontSize: 10px
+        decimalsInFloat: 0
+      grid:
+        borderColor: "rgba(255,255,255,0.08)"
+      tooltip:
+        x:
+          formatter: |
+            EVAL:function(val) { return val + ":00"; }
+      colors:
+        - "#f59e0b"
+    series:
+      - entity: sensor.__DEVICE___trip_patterns
+        name: Viajes
+        type: column
+        # Build [{x: hourLabel, y: count}, ...] for hours 0..23.
+        # The hour keys in by_hour are STRINGS ("0".."23"), so cast index to String.
+        data_generator: |
+          const by = entity.attributes.by_hour || {};
+          const out = [];
+          for (let i = 0; i < 24; i++) {
+            const k = String(i);
+            out.push({ x: (i < 10 ? "0" + i : "" + i) + "h", y: Number(by[k] || 0) });
+          }
+          return out;
+
+  # ===== By Day — radar chart from attrs.by_weekday =====
+  # Tricky bits:
+  #   * apexcharts-card accepts apex_config.chart.type = "radar".
+  #   * Series for a radar chart wants a flat [n0, n1, ...] array, with labels
+  #     coming from apex_config.xaxis.categories (NOT from {x,y} pairs).
+  #   * by_weekday is keyed "0".."6" with 0 = Monday, so we map L,M,X,J,V,S,D
+  #     in that order — no reshuffle needed.
+  #   * We still return an [{x,y}, ...] structure from data_generator because
+  #     apexcharts-card insists on it; Apex flattens the y values for radar.
+  - type: custom:apexcharts-card
+    header:
+      show: true
+      title: Por día
+      show_states: false
+    apex_config:
+      chart:
+        type: radar
+        height: 280
+        toolbar:
+          show: false
+      stroke:
+        width: 2
+      fill:
+        opacity: 0.35
+      markers:
+        size: 4
+      xaxis:
+        categories:
+          - L
+          - M
+          - X
+          - J
+          - V
+          - S
+          - D
+        labels:
+          style:
+            fontSize: 12px
+            fontWeight: 600
+      yaxis:
+        show: false
+      colors:
+        - "#6366f1"
+      tooltip:
+        y:
+          formatter: |
+            EVAL:function(val) { return val + " viajes"; }
+    series:
+      - entity: sensor.__DEVICE___trip_patterns
+        name: Viajes
+        # 0 = Mon, 6 = Sun. Iterate in order so the values line up with
+        # the L,M,X,J,V,S,D categories above. Keep the {x,y} shape because
+        # apexcharts-card requires it; Apex will use only the y values for
+        # the radar series and pull the labels from xaxis.categories.
+        data_generator: |
+          const labels = ["L","M","X","J","V","S","D"];
+          const by = entity.attributes.by_weekday || {};
+          const out = [];
+          for (let i = 0; i < 7; i++) {
+            out.push({ x: labels[i], y: Number(by[String(i)] || 0) });
+          }
+          return out;
+
+  # ===== Km per weekday — 7-cell horizontal strip from attrs.km_by_weekday =====
+  - type: horizontal-stack
+    cards:
+      - type: custom:mushroom-template-card
+        primary: L
+        secondary: >-
+          {{ (state_attr('sensor.__DEVICE___trip_patterns','km_by_weekday') or
+          {}).get('0', 0) | round(0) }} km
+        icon: mdi:calendar-today
+        icon_color: indigo
+        layout: vertical
+        fill_container: true
+        tap_action:
+          action: more-info
+          entity: sensor.__DEVICE___trip_patterns
+
+      - type: custom:mushroom-template-card
+        primary: M
+        secondary: >-
+          {{ (state_attr('sensor.__DEVICE___trip_patterns','km_by_weekday') or
+          {}).get('1', 0) | round(0) }} km
+        icon: mdi:calendar-today
+        icon_color: indigo
+        layout: vertical
+        fill_container: true
+        tap_action:
+          action: more-info
+          entity: sensor.__DEVICE___trip_patterns
+
+      - type: custom:mushroom-template-card
+        primary: X
+        secondary: >-
+          {{ (state_attr('sensor.__DEVICE___trip_patterns','km_by_weekday') or
+          {}).get('2', 0) | round(0) }} km
+        icon: mdi:calendar-today
+        icon_color: indigo
+        layout: vertical
+        fill_container: true
+        tap_action:
+          action: more-info
+          entity: sensor.__DEVICE___trip_patterns
+
+      - type: custom:mushroom-template-card
+        primary: J
+        secondary: >-
+          {{ (state_attr('sensor.__DEVICE___trip_patterns','km_by_weekday') or
+          {}).get('3', 0) | round(0) }} km
+        icon: mdi:calendar-today
+        icon_color: indigo
+        layout: vertical
+        fill_container: true
+        tap_action:
+          action: more-info
+          entity: sensor.__DEVICE___trip_patterns
+
+      - type: custom:mushroom-template-card
+        primary: V
+        secondary: >-
+          {{ (state_attr('sensor.__DEVICE___trip_patterns','km_by_weekday') or
+          {}).get('4', 0) | round(0) }} km
+        icon: mdi:calendar-today
+        icon_color: amber
+        layout: vertical
+        fill_container: true
+        tap_action:
+          action: more-info
+          entity: sensor.__DEVICE___trip_patterns
+
+      - type: custom:mushroom-template-card
+        primary: S
+        secondary: >-
+          {{ (state_attr('sensor.__DEVICE___trip_patterns','km_by_weekday') or
+          {}).get('5', 0) | round(0) }} km
+        icon: mdi:calendar-weekend
+        icon_color: orange
+        layout: vertical
+        fill_container: true
+        tap_action:
+          action: more-info
+          entity: sensor.__DEVICE___trip_patterns
+
+      - type: custom:mushroom-template-card
+        primary: D
+        secondary: >-
+          {{ (state_attr('sensor.__DEVICE___trip_patterns','km_by_weekday') or
+          {}).get('6', 0) | round(0) }} km
+        icon: mdi:calendar-weekend
+        icon_color: orange
+        layout: vertical
+        fill_container: true
+        tap_action:
+          action: more-info
+          entity: sensor.__DEVICE___trip_patterns

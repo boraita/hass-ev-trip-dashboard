@@ -1,0 +1,192 @@
+# =============================================================================
+# Resumen Vehicle — mirrors Pantalla 1 of the BYD app.
+# Hero (SoC + range) · ODO/ENERGY/SOH/SYSTEM strip · tire 2x2 · mini map ·
+# CONDITIONAL "charge live" popup overlay (only when charging).
+#
+# Placeholders substituted by the dashboard strategy:
+#   __DEVICE__   → ev-trip-logger device slug (battery_percent, range, etc.)
+#   __VEHICLE__  → BYD vehicle slug          (odometer, tires, location, …)
+#
+# TIRE PRESSURE SENSORS — substitute per car model if not BYD Sealion 7:
+#   sensor.__VEHICLE___front_left_tire_pressure
+#   sensor.__VEHICLE___front_right_tire_pressure
+#   sensor.__VEHICLE___rear_left_tire_pressure
+#   sensor.__VEHICLE___rear_right_tire_pressure
+# For BYD Sealion 7 these resolve to e.g.
+#   sensor.byd_sealion_7_front_left_tire_pressure
+#
+# Requires HACS: mushroom, button-card, mini-graph-card, apexcharts-card.
+# =============================================================================
+
+type: vertical-stack
+cards:
+  # ---------------------------------------------------------------------------
+  # HERO — car icon, name, SoC %, range chip. Uses secondary_info to fit both
+  # battery percent and range on one line.
+  # ---------------------------------------------------------------------------
+  - type: custom:mushroom-template-card
+    primary: "{{ state_attr('device_tracker.__VEHICLE___location', 'friendly_name') or 'Vehicle' }}"
+    secondary: >-
+      {{ states('sensor.__DEVICE___battery_percent') }}% ·
+      {{ states('sensor.__DEVICE___range_at_recent_efficiency') }} km
+    icon: mdi:car-electric
+    icon_color: >-
+      {% set p = states('sensor.__DEVICE___battery_percent') | float(0) %}
+      {% if p < 20 %}red{% elif p < 50 %}orange{% else %}green{% endif %}
+    badge_icon: >-
+      {% if is_state('sensor.__DEVICE___charge_in_progress', 'charging') %}
+        mdi:flash
+      {% endif %}
+    badge_color: amber
+    fill_container: true
+    multiline_secondary: false
+    tap_action:
+      action: more-info
+      entity: sensor.__DEVICE___battery_percent
+
+  # ---------------------------------------------------------------------------
+  # STRIP — ODO · ENERGY · SOH · SYSTEM. SOH and SYSTEM are guarded so the
+  # row keeps working on cars that don't expose those entities.
+  # ---------------------------------------------------------------------------
+  - type: custom:mushroom-chips-card
+    alignment: justify
+    chips:
+      - type: template
+        icon: mdi:counter
+        content: "{{ states('sensor.__VEHICLE___odometer') | round(0) }} km"
+        icon_color: blue
+      - type: template
+        icon: mdi:battery-charging-medium
+        content: "{{ states('sensor.__DEVICE___battery_energy') }} kWh"
+        icon_color: teal
+      # SOH — only renders if the state_of_health entity exists.
+      - type: conditional
+        conditions:
+          - condition: state
+            entity: sensor.__VEHICLE___state_of_health
+            state_not: unavailable
+        chip:
+          type: template
+          icon: mdi:heart-pulse
+          content: "SOH {{ states('sensor.__VEHICLE___state_of_health') }}%"
+          icon_color: pink
+      # SYSTEM — power system status; same guard pattern.
+      - type: conditional
+        conditions:
+          - condition: state
+            entity: binary_sensor.__VEHICLE___power_system
+            state_not: unavailable
+        chip:
+          type: template
+          icon: mdi:power
+          content: >-
+            {{ 'ON' if is_state('binary_sensor.__VEHICLE___power_system', 'on') else 'OFF' }}
+          icon_color: >-
+            {{ 'green' if is_state('binary_sensor.__VEHICLE___power_system', 'on') else 'grey' }}
+
+  # ---------------------------------------------------------------------------
+  # TIRE PRESSURES — 2x2 grid via button-card. Color rule:
+  #   < 2.2 bar → orange (low), 2.2–2.8 → green (ok), > 2.8 → orange (high)
+  # ---------------------------------------------------------------------------
+  - type: grid
+    columns: 2
+    square: false
+    cards:
+      - type: custom:button-card
+        entity: sensor.__VEHICLE___front_left_tire_pressure
+        name: Front Left
+        icon: mdi:car-tire-alert
+        show_state: true
+        styles:
+          card:
+            - padding: 8px
+          icon:
+            - color: >-
+                [[[
+                  const v = parseFloat(entity.state);
+                  return (v >= 2.2 && v <= 2.8) ? 'var(--success-color)' : 'var(--warning-color)';
+                ]]]
+      - type: custom:button-card
+        entity: sensor.__VEHICLE___front_right_tire_pressure
+        name: Front Right
+        icon: mdi:car-tire-alert
+        show_state: true
+        styles:
+          card:
+            - padding: 8px
+          icon:
+            - color: >-
+                [[[
+                  const v = parseFloat(entity.state);
+                  return (v >= 2.2 && v <= 2.8) ? 'var(--success-color)' : 'var(--warning-color)';
+                ]]]
+      - type: custom:button-card
+        entity: sensor.__VEHICLE___rear_left_tire_pressure
+        name: Rear Left
+        icon: mdi:car-tire-alert
+        show_state: true
+        styles:
+          card:
+            - padding: 8px
+          icon:
+            - color: >-
+                [[[
+                  const v = parseFloat(entity.state);
+                  return (v >= 2.2 && v <= 2.8) ? 'var(--success-color)' : 'var(--warning-color)';
+                ]]]
+      - type: custom:button-card
+        entity: sensor.__VEHICLE___rear_right_tire_pressure
+        name: Rear Right
+        icon: mdi:car-tire-alert
+        show_state: true
+        styles:
+          card:
+            - padding: 8px
+          icon:
+            - color: >-
+                [[[
+                  const v = parseFloat(entity.state);
+                  return (v >= 2.2 && v <= 2.8) ? 'var(--success-color)' : 'var(--warning-color)';
+                ]]]
+
+  # ---------------------------------------------------------------------------
+  # MINI MAP — current vehicle location.
+  # ---------------------------------------------------------------------------
+  - type: map
+    entities:
+      - entity: device_tracker.__VEHICLE___location
+    hours_to_show: 6
+    default_zoom: 14
+    aspect_ratio: "16:9"
+
+  # ---------------------------------------------------------------------------
+  # CHARGE LIVE POPUP — only visible while actively charging.
+  # Shows power · soc · type · kwh added · duration · ETA to 100%.
+  # ETA = energy_to_full_charge (kWh) / current_charge_power (kW), in minutes.
+  # ---------------------------------------------------------------------------
+  - type: conditional
+    conditions:
+      - condition: state
+        entity: sensor.__DEVICE___charge_in_progress
+        state: charging
+    card:
+      type: custom:mushroom-template-card
+      primary: "Charging · {{ states('sensor.__DEVICE___current_charge_type') | upper }}"
+      secondary: >-
+        {{ states('sensor.__DEVICE___current_charge_power') }} kW ·
+        SoC {{ states('sensor.__DEVICE___battery_percent') }}% ·
+        +{{ states('sensor.__DEVICE___current_charge_kwh') }} kWh ·
+        {{ states('sensor.__DEVICE___current_charge_duration') }} ·
+        ETA
+        {% set kwh = states('sensor.__DEVICE___energy_to_full_charge') | float(0) %}
+        {% set kw  = states('sensor.__DEVICE___current_charge_power')  | float(0) %}
+        {% if kw > 0 %}
+          {{ ((kwh / kw) * 60) | round(0) }} min
+        {% else %}—{% endif %}
+      icon: mdi:ev-station
+      icon_color: amber
+      fill_container: true
+      multiline_secondary: true
+      tap_action:
+        action: more-info
+        entity: sensor.__DEVICE___current_charge_power

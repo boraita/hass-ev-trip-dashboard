@@ -1,0 +1,208 @@
+# =============================================================================
+# Charges V2 — mirrors Pantalla 9 of the BYD app.
+# Title · 4 KPI tiles (Avg kWh · Avg Cost · Avg €/kWh · Total Charges) ·
+# Per-charge list (last 10) with date, time, kWh, source, cost, SoC delta ·
+# Floating "+" button (bottom-right) to log a manual charge.
+#
+# Placeholders substituted by the dashboard strategy:
+#   __DEVICE__   → ev-trip-logger device slug
+#
+# Sensors expected (sensor.__DEVICE___*):
+#   - avg_charge_kwh_30_days
+#   - avg_charge_cost_30_days
+#   - avg_charge_price_30_days
+#   - charges_this_month
+#   - recent_charges        (state=count, attrs.charges=[...])
+#
+# Each item in recent_charges.attributes.charges:
+#   { charge_id, started_at, ended_at, kwh, price_per_kwh, total_cost,
+#     currency, soc_start, soc_end, location, notes, is_dcfc }
+#
+# Requires HACS:
+#   custom:mushroom-template-card
+#   custom:mushroom-title-card
+#   custom:button-card
+# =============================================================================
+
+type: vertical-stack
+cards:
+  # ---------------------------------------------------------------------------
+  # TITLE — "Cargas" + battery-charging icon, last 30-days framing.
+  # ---------------------------------------------------------------------------
+  - type: custom:mushroom-title-card
+    title: Cargas
+    subtitle: Últimos 30 días
+    icon: mdi:battery-charging
+
+  # ---------------------------------------------------------------------------
+  # KPI GRID — 2x2 tiles. Each is a button-card sized for at-a-glance reading.
+  # ---------------------------------------------------------------------------
+  - type: grid
+    columns: 2
+    square: false
+    cards:
+      # Avg kWh per charge (last 30 days)
+      - type: custom:button-card
+        entity: sensor.__DEVICE___avg_charge_kwh_30_days
+        name: Avg kWh
+        icon: mdi:flash
+        show_state: true
+        show_name: true
+        show_icon: true
+        styles:
+          card:
+            - padding: 12px
+            - height: 96px
+          name:
+            - font-size: 12px
+            - color: var(--secondary-text-color)
+          state:
+            - font-size: 22px
+            - font-weight: 600
+          icon:
+            - color: var(--info-color)
+            - width: 28px
+
+      # Avg cost per charge (€)
+      - type: custom:button-card
+        entity: sensor.__DEVICE___avg_charge_cost_30_days
+        name: Avg Cost
+        icon: mdi:currency-eur
+        show_state: true
+        show_name: true
+        show_icon: true
+        styles:
+          card:
+            - padding: 12px
+            - height: 96px
+          name:
+            - font-size: 12px
+            - color: var(--secondary-text-color)
+          state:
+            - font-size: 22px
+            - font-weight: 600
+          icon:
+            - color: var(--warning-color)
+            - width: 28px
+
+      # Avg €/kWh
+      - type: custom:button-card
+        entity: sensor.__DEVICE___avg_charge_price_30_days
+        name: Avg €/kWh
+        icon: mdi:tag-outline
+        show_state: true
+        show_name: true
+        show_icon: true
+        styles:
+          card:
+            - padding: 12px
+            - height: 96px
+          name:
+            - font-size: 12px
+            - color: var(--secondary-text-color)
+          state:
+            - font-size: 22px
+            - font-weight: 600
+          icon:
+            - color: var(--accent-color)
+            - width: 28px
+
+      # Total charges this month (proxy for "Total Charges")
+      - type: custom:button-card
+        entity: sensor.__DEVICE___charges_this_month
+        name: Total Charges
+        icon: mdi:counter
+        show_state: true
+        show_name: true
+        show_icon: true
+        styles:
+          card:
+            - padding: 12px
+            - height: 96px
+          name:
+            - font-size: 12px
+            - color: var(--secondary-text-color)
+          state:
+            - font-size: 22px
+            - font-weight: 600
+          icon:
+            - color: var(--success-color)
+            - width: 28px
+
+  # ---------------------------------------------------------------------------
+  # CHARGES LIST — Jinja iterates recent_charges.attributes.charges (last 10),
+  # newest first. Each block: date · time / kWh + source / cost · SoC delta.
+  # source_label: is_dcfc==true → "Carga ultrarrápida"
+  #               is_dcfc==false → "AC Doméstico"
+  #               None / missing → "Desconocida"
+  # Wrapped in a scroll container via card_mod-style inline CSS on the card.
+  # ---------------------------------------------------------------------------
+  - type: custom:mushroom-template-card
+    primary: Historial de cargas
+    secondary: >-
+      {% set chs = state_attr('sensor.__DEVICE___recent_charges', 'charges') or [] %}
+      {{ chs | length }} cargas registradas
+    icon: mdi:format-list-bulleted
+    icon_color: blue
+    fill_container: true
+    multiline_secondary: false
+
+  - type: markdown
+    content: >-
+      {% set chs = state_attr('sensor.__DEVICE___recent_charges', 'charges') or [] %}
+      {% if chs | length == 0 %}
+      _No hay cargas recientes._
+      {% else %}
+      {% for c in chs[:10] %}
+      {% set started = c.started_at %}
+      {% set dt = as_datetime(started) if started else None %}
+      {% set date_s = dt.strftime('%d/%m/%Y') if dt else '—' %}
+      {% set time_s = dt.strftime('%H:%M') if dt else '—' %}
+      {% set kwh = c.kwh | float(0) | round(2) %}
+      {% set dcfc = c.is_dcfc %}
+      {% set src = 'Carga ultrarrápida' if dcfc is true else ('AC Doméstico' if dcfc is false else 'Desconocida') %}
+      {% set cost = c.total_cost | float(0) | round(2) %}
+      {% set cur = c.currency or '€' %}
+      {% set s0 = c.soc_start | int(0) %}
+      {% set s1 = c.soc_end | int(0) %}
+
+      ### {{ date_s }} · {{ time_s }}
+      **{{ kwh }} kWh** · {{ src }}
+
+      {{ cost }} {{ cur }} · {{ s0 }}% → {{ s1 }}%
+
+      ---
+      {% endfor %}
+      {% endif %}
+
+  # ---------------------------------------------------------------------------
+  # FLOATING "+" BUTTON — bottom-right, fixed. Calls ev_trip_logger.log_charge
+  # via more-info on the recent_charges sensor (user can wire a custom popup).
+  # ---------------------------------------------------------------------------
+  - type: custom:button-card
+    name: ""
+    icon: mdi:plus
+    show_name: false
+    show_icon: true
+    tap_action:
+      action: call-service
+      service: ev_trip_logger.log_charge
+      service_data: {}
+    hold_action:
+      action: more-info
+      entity: sensor.__DEVICE___recent_charges
+    styles:
+      card:
+        - position: fixed
+        - bottom: 24px
+        - right: 24px
+        - width: 56px
+        - height: 56px
+        - border-radius: 50%
+        - background-color: var(--primary-color)
+        - box-shadow: 0 4px 12px rgba(0,0,0,0.3)
+        - z-index: 1000
+        - padding: 0
+      icon:
+        - color: white
+        - width: 28px
