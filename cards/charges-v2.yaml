@@ -8,7 +8,7 @@
 #   __DEVICE__   → ev-trip-logger device slug
 #
 # Sensors expected (sensor.__DEVICE___*):
-#   - avg_charge_kwh_30_days
+#   - avg_charge_energy_30_days
 #   - avg_charge_cost_30_days
 #   - avg_charge_price_30_days
 #   - charges_this_month
@@ -43,7 +43,7 @@ cards:
     cards:
       # Avg kWh per charge (last 30 days)
       - type: custom:button-card
-        entity: sensor.__DEVICE___avg_charge_kwh_30_days
+        entity: sensor.__DEVICE___avg_charge_energy_30_days
         name: Avg kWh
         icon: mdi:flash
         show_state: true
