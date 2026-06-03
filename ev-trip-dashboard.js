@@ -1188,6 +1188,11 @@ function cargasView(D, hass) {
     });
   }
 
+  // ---- Last charge: full power-vs-time curve (from recorder history) ----
+  if (has(hass, `sensor.${D}_current_charge_power`)) {
+    cards.push({ type: "custom:ev-charge-graph-card", device: D });
+  }
+
   // ---- KPI grid (2x2) --------------------------------------------------
   // Each tile is a button-card with 96px height so the grid feels denser
   // than the default tile spacing.
@@ -3043,6 +3048,135 @@ class EvTripRecordsCard extends HTMLElement {
 customElements.define("ev-trip-records-card", EvTripRecordsCard);
 window.customCards = window.customCards || [];
 window.customCards.push({ type: "ev-trip-records-card", name: "EV Trip — records board", description: "All-time record leaders with expandable top-9 (sensor.<device>_tops)." });
+
+// ==========================================================================
+// Custom card: the full charging-power curve (kW vs time) of the most recent
+// charge. The logger doesn't store a per-charge power curve, so we fetch the
+// recorder history of sensor.<device>_current_charge_power across the charge's
+// [started_at, ended_at] window and draw it as an SVG line.
+// ==========================================================================
+class EvChargeGraphCard extends HTMLElement {
+  setConfig(config) {
+    this._config = config || {};
+    this._device = this._config.device || null;
+  }
+  set hass(hass) {
+    const first = !this._hass;
+    this._hass = hass;
+    if (first) this._maybeFetch();
+    else this._maybeFetch();
+  }
+  getCardSize() {
+    return 4;
+  }
+  _lastCharge() {
+    const D = this._device || detectDevice(this._hass);
+    this._device = D;
+    const st = this._hass.states[`sensor.${D}_recent_charges`];
+    const arr = (st && st.attributes && Array.isArray(st.attributes.charges) && st.attributes.charges) || [];
+    return arr[0] || null;
+  }
+  _maybeFetch() {
+    const ch = this._lastCharge();
+    const key = ch ? `${ch.started_at}|${ch.ended_at}` : null;
+    if (!key) { this._render(); return; }
+    if (key === this._key) { this._render(); return; }
+    this._key = key;
+    this._points = null; // loading
+    this._charge = ch;
+    this._render();
+    const D = this._device;
+    const ent = `sensor.${D}_current_charge_power`;
+    let start, end;
+    try {
+      start = new Date(new Date(ch.started_at).getTime() - 30000).toISOString();
+      end = new Date(new Date(ch.ended_at || Date.now()).getTime() + 30000).toISOString();
+    } catch (_e) { this._points = []; this._render(); return; }
+    const path = `history/period/${start}?end_time=${end}&filter_entity_id=${ent}&minimal_response&no_attributes`;
+    Promise.resolve(this._hass.callApi("GET", path))
+      .then((res) => {
+        const ser = Array.isArray(res) && res[0] ? res[0] : [];
+        this._points = ser
+          .map((p) => ({ t: new Date(p.last_changed || p.lu || p.lc).getTime(), v: parseFloat(p.state) }))
+          .filter((p) => !isNaN(p.t) && !isNaN(p.v));
+        this._render();
+      })
+      .catch(() => { this._points = []; this._render(); });
+  }
+  _render() {
+    if (!this._hass) return;
+    const ch = this._charge;
+    const DASH = "—";
+    const head = (body) => `
+      <ha-card>
+        <div class="cg-head">Charging process${ch && ch.location ? ` · ${_esc(ch.location)}` : ""}
+          ${ch && ch.ended_at ? `<span class="cg-date">${_fmtDate(ch.ended_at, true)}</span>` : ""}</div>
+        ${body}
+        <style>
+          .cg-head{display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;
+                   gap:4px;padding:14px 16px 6px;font-weight:600;font-size:1.05em;}
+          .cg-date{color:var(--secondary-text-color);font-weight:400;font-size:.78em;
+                   font-variant-numeric:tabular-nums;}
+          .cg-msg{padding:18px 16px 22px;text-align:center;color:var(--secondary-text-color);}
+          .cg-svg{display:block;width:100%;height:160px;padding:0 8px;box-sizing:border-box;}
+          .cg-axis{stroke:var(--divider-color);stroke-width:1;}
+          .cg-grid{stroke:var(--divider-color);stroke-width:.5;stroke-dasharray:3 3;opacity:.6;}
+          .cg-line{fill:none;stroke:var(--info-color,#039be5);stroke-width:2.5;
+                   stroke-linejoin:round;stroke-linecap:round;}
+          .cg-area{fill:var(--info-color,#039be5);opacity:.12;}
+          .cg-lbl{fill:var(--secondary-text-color);font-size:8px;}
+          .cg-foot{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;padding:6px 16px 16px;}
+          .cg-stat{text-align:center;}
+          .cg-sv{font-size:1.15em;font-weight:800;font-variant-numeric:tabular-nums;}
+          .cg-sl{font-size:.62em;text-transform:uppercase;letter-spacing:.04em;color:var(--secondary-text-color);}
+        </style>
+      </ha-card>`;
+
+    if (!ch) { this.innerHTML = head(`<div class="cg-msg">No charges recorded yet.</div>`); return; }
+    if (this._points == null) { this.innerHTML = head(`<div class="cg-msg">Loading charge curve…</div>`); return; }
+    const pts = this._points;
+    if (pts.length < 2) {
+      this.innerHTML = head(`<div class="cg-msg">No power history recorded for this charge.</div>`);
+      return;
+    }
+
+    const VB_W = 320, VB_H = 160, PL = 32, PR = 8, PT = 10, PB = 22;
+    const x0 = PL, x1 = VB_W - PR, y0 = PT, y1 = VB_H - PB;
+    const t0 = Math.min(...pts.map((p) => p.t)), t1 = Math.max(...pts.map((p) => p.t));
+    const maxKw = Math.max(...pts.map((p) => p.v)) * 1.12 || 1;
+    const sx = (t) => x0 + (t1 > t0 ? (t - t0) / (t1 - t0) : 0) * (x1 - x0);
+    const sy = (v) => y1 - (v / maxKw) * (y1 - y0);
+    const fmtT = (ms) => { const d = new Date(ms); const p = (n) => String(n).padStart(2, "0"); return `${p(d.getHours())}:${p(d.getMinutes())}`; };
+    const line = pts.map((p, i) => `${i ? "L" : "M"}${sx(p.t).toFixed(1)},${sy(p.v).toFixed(1)}`).join(" ");
+    const area = `M${sx(pts[0].t).toFixed(1)},${y1} ` + pts.map((p) => `L${sx(p.t).toFixed(1)},${sy(p.v).toFixed(1)}`).join(" ") + ` L${sx(pts[pts.length - 1].t).toFixed(1)},${y1} Z`;
+    const peak = Math.max(...pts.map((p) => p.v));
+    const durMin = (t1 - t0) / 60000;
+    const durStr = durMin >= 60 ? `${Math.floor(durMin / 60)}h ${Math.round(durMin % 60)}m` : `${Math.round(durMin)} min`;
+    const avg = pts.reduce((a, p) => a + p.v, 0) / pts.length;
+    const kwh = ch.kwh != null ? Number(ch.kwh).toFixed(2) : DASH;
+    const yTicks = [0, maxKw / 2, maxKw];
+
+    const body = `
+      <svg viewBox="0 0 ${VB_W} ${VB_H}" class="cg-svg" preserveAspectRatio="none">
+        ${yTicks.map((v) => `<line x1="${x0}" y1="${sy(v).toFixed(1)}" x2="${x1}" y2="${sy(v).toFixed(1)}" class="cg-grid"/><text x="${x0 - 3}" y="${(sy(v) + 3).toFixed(1)}" text-anchor="end" class="cg-lbl">${v.toFixed(0)}</text>`).join("")}
+        <line x1="${x0}" y1="${y1}" x2="${x1}" y2="${y1}" class="cg-axis"/>
+        <path d="${area}" class="cg-area"/>
+        <path d="${line}" class="cg-line"/>
+        <text x="${x0}" y="${VB_H - 6}" text-anchor="start" class="cg-lbl">${fmtT(t0)}</text>
+        <text x="${x1}" y="${VB_H - 6}" text-anchor="end" class="cg-lbl">${fmtT(t1)}</text>
+      </svg>
+      <div class="cg-foot">
+        <div class="cg-stat"><div class="cg-sv">${kwh}</div><div class="cg-sl">kWh</div></div>
+        <div class="cg-stat"><div class="cg-sv">${peak.toFixed(1)}</div><div class="cg-sl">peak kW</div></div>
+        <div class="cg-stat"><div class="cg-sv">${avg.toFixed(1)}</div><div class="cg-sl">avg kW</div></div>
+        <div class="cg-stat"><div class="cg-sv">${durStr}</div><div class="cg-sl">duration</div></div>
+      </div>`;
+    this.innerHTML = head(body);
+  }
+}
+customElements.define("ev-charge-graph-card", EvChargeGraphCard);
+window.customCards = window.customCards || [];
+window.customCards.push({ type: "ev-charge-graph-card", name: "EV Trip — charge power curve", description: "Power-vs-time curve of the last charge (from recorder history)." });
 
 // ==========================================================================
 // RESTORED from v1.5.0 (user favourites, pre-2.0): Driving + Trips views.
