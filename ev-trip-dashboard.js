@@ -77,29 +77,25 @@ function drivingView(D, V, hass) {
   if (has(hass, `sensor.${V}_cabin_temperature`))
     status.push({ type: "tile", entity: `sensor.${V}_cabin_temperature`, name: "Cabin", color: "orange" });
 
-  // Live-trip glance. Always-available metrics first; the source-dependent
-  // ones (speed/power/temperature/regen) are gated on the matching last_trip
-  // metric ever having a value, so installs without a speed/power/temp sensor
-  // don't get a wall of "Unknown" tiles during a drive.
+  // Live-trip glance — shown only while a trip is actively tracked, so these
+  // metrics populate live (they're sampled when vehicle_on is on). Include any
+  // that the logger exposes; synthetic/backfilled trips never open this card.
   const liveEnts = [
     { entity: `sensor.${D}_current_trip_distance`, name: "km" },
     { entity: `sensor.${D}_current_trip_duration`, name: "min" },
     { entity: `sensor.${D}_current_trip_energy`, name: "kWh" },
     { entity: `sensor.${D}_current_trip_consumption`, name: "kWh/100" },
+    { entity: `sensor.${D}_current_trip_average_speed`, name: "km/h" },
     { entity: `sensor.${D}_current_trip_battery_used`, name: "% used" },
   ];
-  for (const [cur, proxy, n] of [
-    ["current_trip_average_speed", "last_trip_average_speed", "km/h"],
-    ["current_trip_max_speed", "last_trip_max_speed", "km/h max"],
-    ["current_trip_max_power", "last_trip_max_power", "kW max"],
-    ["current_trip_avg_temperature", "last_trip_avg_temperature", "°C"],
-    ["current_trip_regen_energy", "last_trip_regen_energy", "regen"],
+  for (const [s, n] of [
+    ["current_trip_max_speed", "km/h max"],
+    ["current_trip_max_power", "kW max"],
+    ["current_trip_avg_temperature", "°C"],
+    ["current_trip_regen_energy", "regen"],
+    ["current_trip_cost", "cost"],
+    ["current_trip_score", "score"],
   ]) {
-    if (has(hass, `sensor.${D}_${cur}`) && hasVal(hass, `sensor.${D}_${proxy}`))
-      liveEnts.push({ entity: `sensor.${D}_${cur}`, name: n });
-  }
-  // Cost & score are computed by the logger, so keep them whenever present.
-  for (const [s, n] of [["current_trip_cost", "cost"], ["current_trip_score", "score"]]) {
     if (has(hass, `sensor.${D}_${s}`)) liveEnts.push({ entity: `sensor.${D}_${s}`, name: n });
   }
 
