@@ -808,6 +808,10 @@ function eficienciaView(D, hass) {
       "[[[ const n = entity && Number(entity.state); return (n==null||isNaN(n)) ? '—' : `${n.toFixed(1)} kWh/100km`; ]]]",
   });
 
+  // ---- NEW: robust efficiency-vs-distance scatter (works on existing data) --
+  // Additive: above the apex scatter below; retire the apex once validated.
+  cards.push({ type: "custom:ev-trip-efficiency-card", device: D });
+
   // ---- Monthly avg consumption (LINE) -----------------------------------
   // Walk monthly_history.attributes.months, compute kWh/100km per month with
   // a divide-by-zero guard, parse "YYYY-MM" → ms timestamp for datetime x-axis.
@@ -2791,6 +2795,139 @@ class EvTripCalendarCard extends HTMLElement {
 customElements.define("ev-trip-calendar-card", EvTripCalendarCard);
 window.customCards = window.customCards || [];
 window.customCards.push({ type: "ev-trip-calendar-card", name: "EV Trip — activity calendar", description: "Monthly trips/charges calendar from recent_trips + recent_charges." });
+
+// ==========================================================================
+// Custom card: efficiency-vs-distance SVG scatter from EXISTING data —
+// sensor.<device>_recent_trips.trips (distance_km, consumption_kwh_100km,
+// score). Points colored by score band; dashed line = mean consumption.
+// Works today on logger v0.4.9. Robust vanilla-JS alternative to the apex
+// scatter. An optional temperature-bucket bar shows when by_bucket has data.
+// ==========================================================================
+class EvTripEfficiencyCard extends HTMLElement {
+  setConfig(config) {
+    this._config = config || {};
+    this._device = this._config.device || null;
+  }
+  set hass(hass) {
+    this._hass = hass;
+    this._render();
+  }
+  getCardSize() {
+    return 4;
+  }
+  _render() {
+    if (!this._hass) return;
+    const D = this._device || detectDevice(this._hass);
+    this._device = D;
+    const st = this._hass.states[`sensor.${D}_recent_trips`];
+    const trips = (st && st.attributes && Array.isArray(st.attributes.trips) && st.attributes.trips) || [];
+    const pts = trips
+      .map((t) => ({
+        x: Number(t.distance_km),
+        y: Number(t.consumption_kwh_100km),
+        s: t.score == null ? null : Number(t.score),
+      }))
+      .filter((p) => !isNaN(p.x) && !isNaN(p.y) && p.x >= 0 && p.y >= 0);
+
+    if (pts.length < 2) {
+      this.innerHTML = `
+        <ha-card>
+          <div class="ef-head">Efficiency vs distance</div>
+          <div class="ef-empty">Not enough trips with consumption data yet.</div>
+          <style>
+            .ef-head{padding:14px 16px 4px;font-weight:600;font-size:1.05em;}
+            .ef-empty{padding:18px 16px 22px;text-align:center;color:var(--secondary-text-color);}
+          </style>
+        </ha-card>`;
+      return;
+    }
+
+    // Plot geometry (viewBox units).
+    const VB_W = 320, VB_H = 200, PL = 36, PR = 10, PT = 10, PB = 26;
+    const x0 = PL, x1 = VB_W - PR, y0 = PT, y1 = VB_H - PB;
+    const xMax = Math.max(...pts.map((p) => p.x)) * 1.08 || 1;
+    const yVals = pts.map((p) => p.y);
+    const yMin = Math.max(0, Math.min(...yVals) * 0.9);
+    const yMax = Math.max(...yVals) * 1.08 || 1;
+    const sx = (v) => x0 + (v / xMax) * (x1 - x0);
+    const sy = (v) => y1 - ((v - yMin) / (yMax - yMin || 1)) * (y1 - y0);
+    const fmt = (v) => (Math.round(v * 10) / 10).toString();
+
+    const mean = yVals.reduce((a, b) => a + b, 0) / yVals.length;
+    const meanY = sy(mean);
+
+    // Gridlines + labels (3 on each axis).
+    const yTicks = [yMin, (yMin + yMax) / 2, yMax];
+    const xTicks = [0, xMax / 2, xMax];
+    const grid =
+      yTicks
+        .map(
+          (v) =>
+            `<line x1="${x0}" y1="${sy(v).toFixed(1)}" x2="${x1}" y2="${sy(v).toFixed(1)}" class="ef-grid"/>` +
+            `<text x="${x0 - 4}" y="${(sy(v) + 3).toFixed(1)}" class="ef-yl">${fmt(v)}</text>`
+        )
+        .join("") +
+      xTicks
+        .map(
+          (v) =>
+            `<text x="${sx(v).toFixed(1)}" y="${VB_H - 8}" class="ef-xl">${fmt(v)}</text>`
+        )
+        .join("");
+
+    const dots = pts
+      .map(
+        (p) =>
+          `<circle cx="${sx(p.x).toFixed(1)}" cy="${sy(p.y).toFixed(1)}" r="4" fill="${_scoreColor(p.s)}" fill-opacity="0.85" stroke="var(--card-background-color)" stroke-width="0.7"><title>${fmt(p.x)} km · ${fmt(p.y)} kWh/100${p.s != null ? ` · score ${p.s}` : ""}</title></circle>`
+      )
+      .join("");
+
+    const best = Math.min(...yVals);
+    const worst = Math.max(...yVals);
+
+    this.innerHTML = `
+      <ha-card>
+        <div class="ef-head">Efficiency vs distance
+          <span class="ef-sub">${pts.length} trips · lower is better</span>
+        </div>
+        <svg viewBox="0 0 ${VB_W} ${VB_H}" class="ef-svg" preserveAspectRatio="none">
+          <line x1="${x0}" y1="${y0}" x2="${x0}" y2="${y1}" class="ef-axis"/>
+          <line x1="${x0}" y1="${y1}" x2="${x1}" y2="${y1}" class="ef-axis"/>
+          ${grid}
+          <line x1="${x0}" y1="${meanY.toFixed(1)}" x2="${x1}" y2="${meanY.toFixed(1)}" class="ef-mean"/>
+          <text x="${x1}" y="${(meanY - 3).toFixed(1)}" class="ef-meanl">avg ${fmt(mean)}</text>
+          ${dots}
+        </svg>
+        <div class="ef-axislbls"><span>Distance (km) →</span><span>↑ kWh/100km</span></div>
+        <div class="ef-foot">
+          <div class="ef-stat"><div class="ef-sv" style="color:var(--success-color,#43a047)">${fmt(best)}</div><div class="ef-sl">best</div></div>
+          <div class="ef-stat"><div class="ef-sv">${fmt(mean)}</div><div class="ef-sl">average</div></div>
+          <div class="ef-stat"><div class="ef-sv" style="color:var(--error-color,#e53935)">${fmt(worst)}</div><div class="ef-sl">worst</div></div>
+        </div>
+        <style>
+          .ef-head{display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;
+                   gap:4px;padding:14px 16px 6px;font-weight:600;font-size:1.05em;}
+          .ef-sub{color:var(--secondary-text-color);font-weight:400;font-size:.78em;}
+          .ef-svg{display:block;width:100%;height:200px;padding:0 8px;box-sizing:border-box;}
+          .ef-axis{stroke:var(--divider-color);stroke-width:1;}
+          .ef-grid{stroke:var(--divider-color);stroke-width:.5;stroke-dasharray:3 3;opacity:.6;}
+          .ef-mean{stroke:var(--primary-color);stroke-width:1;stroke-dasharray:5 3;opacity:.8;}
+          .ef-meanl{fill:var(--primary-color);font-size:8px;text-anchor:end;}
+          .ef-yl{fill:var(--secondary-text-color);font-size:8px;text-anchor:end;}
+          .ef-xl{fill:var(--secondary-text-color);font-size:8px;text-anchor:middle;}
+          .ef-axislbls{display:flex;justify-content:space-between;padding:0 18px 4px;
+                       font-size:.66em;color:var(--secondary-text-color);}
+          .ef-foot{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;padding:6px 16px 16px;}
+          .ef-stat{text-align:center;}
+          .ef-sv{font-size:1.3em;font-weight:800;font-variant-numeric:tabular-nums;}
+          .ef-sl{font-size:.66em;text-transform:uppercase;letter-spacing:.04em;
+                 color:var(--secondary-text-color);}
+        </style>
+      </ha-card>`;
+  }
+}
+customElements.define("ev-trip-efficiency-card", EvTripEfficiencyCard);
+window.customCards = window.customCards || [];
+window.customCards.push({ type: "ev-trip-efficiency-card", name: "EV Trip — efficiency scatter", description: "Efficiency-vs-distance SVG scatter from recent_trips (score-colored)." });
 
 // ==========================================================================
 // RESTORED from v1.5.0 (user favourites, pre-2.0): Driving + Trips views.
