@@ -1,0 +1,32 @@
+# Optional helper for cars that don't expose a binary on/off sensor
+# (Tesla Fleet, Renault Z.E., Audi Connect, MG iSmart, …). Drops a template
+# binary_sensor that's ON when the car shows signs of being active — either
+# the speed sensor > 0 OR the power sensor abs > 0.1 kW.
+#
+# Replace __VEHICLE__ with your car-integration slug. Examples:
+#   Tesla Fleet  → portunol
+#   BYD          → byd_sealion_7   (you already have binary_sensor.byd_sealion_7_vehicle_on
+#                                   so you DO NOT need this template — use the BYD entity directly)
+#   Renault      → my_zoe
+#
+# After dropping the file into config/packages/ and restarting HA, point
+# EV Trip Logger's "Vehicle on" config field to:
+#   binary_sensor.__VEHICLE___vehicle_on
+#
+# Tunable: the abs-power floor of 0.1 kW filters HVAC / sentry / preconditioning
+# (which can draw 0.5-2 kW while parked). Raise to 1.0 if your car is twitchy.
+
+template:
+  - binary_sensor:
+      - name: __VEHICLE__ Vehicle on
+        unique_id: __VEHICLE___vehicle_on
+        # ON when actively moving OR significant power flow. False otherwise.
+        # We avoid `not_to` 0 alone because most cars idle with HVAC and would
+        # never be "off". availability=true means the sensor renders even when
+        # both source sensors are unknown (sleep state) — defaulting to False.
+        state: >-
+          {% set s = states('sensor.__VEHICLE___speed') | float(0) %}
+          {% set p = states('sensor.__VEHICLE___power') | float(0) | abs %}
+          {{ s > 0 or p > 0.1 }}
+        device_class: power
+        icon: mdi:car
