@@ -2802,7 +2802,10 @@ class EvTripRecordsCard extends HTMLElement {
       { key: "longest_duration", icon: "mdi:timer-outline", label: "Longest drive", color: "#8b5cf6", val: (t) => _recDur(t.duration_min) },
       { key: "top_efficiency", icon: "mdi:leaf", label: "Most efficient", color: "#22c55e", val: (t) => `${(Number(t.consumption_kwh_100km) || 0).toFixed(1)} kWh/100` },
       { key: "top_speed", icon: "mdi:speedometer", label: "Fastest avg", color: "#f59e0b", val: (t) => `${(Number(t.avg_speed_kmh) || 0).toFixed(0)} km/h` },
-      { key: "cheapest", icon: "mdi:cash-multiple", label: "Cheapest", color: "#10b981", val: (t) => `${(Number(t.cost) || 0).toFixed(2)} ${cur[t.currency] || t.currency || "€"}` },
+      // Skip cost<=0 entries: a 0 here is a mis-costed trip (charge price was
+      // stale at trip-close), not a genuinely free trip — surface the real
+      // cheapest paid trip instead. (Logger should fix the root cost bug.)
+      { key: "cheapest", icon: "mdi:cash-multiple", label: "Cheapest", color: "#10b981", filter: (t) => Number(t.cost) > 0, val: (t) => `${(Number(t.cost) || 0).toFixed(2)} ${cur[t.currency] || t.currency || "€"}` },
     ];
   }
   _render() {
@@ -2812,7 +2815,9 @@ class EvTripRecordsCard extends HTMLElement {
     this._device = D;
     const st = this._hass.states[`sensor.${D}_tops`];
     const a = (st && st.attributes) || {};
-    const cats = this._cats().filter((c) => Array.isArray(a[c.key]) && a[c.key].length);
+    const cats = this._cats()
+      .map((c) => ({ ...c, list: c.filter ? (a[c.key] || []).filter(c.filter) : a[c.key] || [] }))
+      .filter((c) => c.list.length);
 
     if (!cats.length) {
       this.innerHTML = `
@@ -2830,13 +2835,13 @@ class EvTripRecordsCard extends HTMLElement {
 
     const rows = cats
       .map((c) => {
-        const top = a[c.key][0];
+        const top = c.list[0];
         const open = this._openCat === c.key;
         let sub = "";
         if (open) {
           sub =
             `<div class="rec-sub">` +
-            a[c.key]
+            c.list
               .map(
                 (t, i) =>
                   `<div class="rec-li"><span class="rec-rank">${i + 1}</span>` +
