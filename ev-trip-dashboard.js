@@ -54,6 +54,67 @@ function hasVal(hass, entity) {
   return !!s && !["unknown", "unavailable", "none", ""].includes(String(s.state).toLowerCase());
 }
 
+// Resolve a "vehicle concept" to a concrete entity across car integrations
+// (BYD/Tesla/…), so the Driving view isn't hard-wired to BYD entity names.
+// Order: explicit config override (e.g. range_entity:) → known name candidates
+// → device_class/keyword auto-detect among the vehicle slug's own entities.
+function pickVehicleEntity(hass, V, concept, cfg) {
+  cfg = cfg || {};
+  const ovr = cfg[`${concept}_entity`];
+  if (ovr && has(hass, ovr)) return ovr;
+  const NAMES = {
+    range: [`sensor.${V}_range`, `sensor.${V}_battery_range`],
+    odometer: [`sensor.${V}_odometer`],
+    outside_temp: [`sensor.${V}_exterior_temperature`, `sensor.${V}_outside_temperature`],
+    cabin_temp: [`sensor.${V}_cabin_temperature`, `sensor.${V}_inside_temperature`],
+    soh: [`sensor.${V}_state_of_health`, `sensor.${V}_battery_health`],
+    location: [`device_tracker.${V}_location`, `device_tracker.${V}`],
+  };
+  for (const e of NAMES[concept] || []) if (hasVal(hass, e)) return e;
+  const ids = Object.keys(hass.states).filter((id) => id.includes(`.${V}_`) || id.endsWith(`.${V}`));
+  const dc = (id) => (hass.states[id].attributes || {}).device_class;
+  const find = (pred) => ids.find((id) => { try { return pred(id); } catch (_e) { return false; } });
+  switch (concept) {
+    case "range": return find((id) => id.startsWith("sensor.") && dc(id) === "distance" && /range/.test(id)) || null;
+    case "odometer": return find((id) => id.startsWith("sensor.") && dc(id) === "distance" && /odo/.test(id)) || null;
+    case "outside_temp": return find((id) => id.startsWith("sensor.") && dc(id) === "temperature" && /(out|exter|ambient)/.test(id)) || null;
+    case "cabin_temp": return find((id) => id.startsWith("sensor.") && dc(id) === "temperature" && /(in|cabin|interior)/.test(id)) || null;
+    case "soh": return find((id) => id.startsWith("sensor.") && /(state_of_health|_soh|battery_health)/.test(id)) || null;
+    case "location": return find((id) => id.startsWith("device_tracker.")) || null;
+    default: return null;
+  }
+}
+
+// All four TPMS corners in display order; [] if the car exposes no tire sensors.
+function pickTireEntities(hass, V, cfg) {
+  cfg = cfg || {};
+  if (Array.isArray(cfg.tire_pressure_entities) && cfg.tire_pressure_entities.length)
+    return cfg.tire_pressure_entities.filter((e) => has(hass, e)).map((e, i) => [e, ["Front Left", "Front Right", "Rear Left", "Rear Right"][i] || "Tire"]);
+  const press = Object.keys(hass.states).filter(
+    (id) => id.startsWith("sensor.") && (id.includes(`.${V}_`)) &&
+      ((hass.states[id].attributes || {}).device_class === "pressure" || /tire|tyre|tpms/.test(id))
+  );
+  const out = [];
+  for (const [re, name] of [[/(front.*left|_fl)/, "Front Left"], [/(front.*right|_fr)/, "Front Right"], [/(rear.*left|_rl)/, "Rear Left"], [/(rear.*right|_rr)/, "Rear Right"]]) {
+    const m = press.find((id) => re.test(id));
+    if (m) out.push([m, name]);
+  }
+  return out;
+}
+
+// Resolve the charging-power entity (for the live graph + per-charge curve)
+// generically: config override → logger's own → a detected *charger_power*.
+function resolveChargePower(hass, D, cfg) {
+  cfg = cfg || {};
+  if (cfg.charge_power_entity && has(hass, cfg.charge_power_entity)) return cfg.charge_power_entity;
+  const own = `sensor.${D}_current_charge_power`;
+  if (has(hass, own)) return own;
+  const cand = Object.keys(hass.states).find(
+    (id) => id.startsWith("sensor.") && (hass.states[id].attributes || {}).device_class === "power" && /charg/.test(id)
+  );
+  return cand || own;
+}
+
 // ---- card builders (shared between views) --------------------------------
 
 // A mushroom-title-card for section headings — mirrors the YAML cards' header
@@ -371,62 +432,8 @@ function calendarioView(D, hass) {
     { type: "custom:ev-trip-calendar-card", device: D },
   ];
 
-  // Additive: keep calendar-card-pro alongside when the v0.5.0 calendar entity
-  // exists, so we can compare and retire one later.
-  if (has(hass, `calendar.${D}_activity`)) {
-    cards.push({
-      type: "custom:calendar-card-pro",
-      entities: [
-        // Two entries on the SAME calendar give calendar-card-pro two
-        // color/icon rules; "carga" → blue lightning, "viaje" → green car.
-        // The first matching rule wins.
-        {
-          entity: `calendar.${D}_activity`,
-          color: "#1976d2",
-          icon: "mdi:lightning-bolt",
-          accumulate_by: "day",
-          label: "charge",
-        },
-        {
-          entity: `calendar.${D}_activity`,
-          color: "#2e7d32",
-          icon: "mdi:car",
-          accumulate_by: "day",
-          label: "trip",
-        },
-      ],
-      view: "month",
-      show_navigation: true,
-      show_today: true,
-      first_day_of_week: "monday",
-      language: "es",
-      time_format: 24,
-      max_events_to_show: 4,
-      compact_events_to_show: 2,
-      show_empty_days: true,
-      // Tap a day → browser_mod popup if available; otherwise calendar-card-pro
-      // falls back to its built-in detail view.
-      tap_action: {
-        action: "fire-dom-event",
-        browser_mod: {
-          service: "browser_mod.popup",
-          data: {
-            title: "Day activity",
-            size: "normal",
-            content: {
-              type: "markdown",
-              content:
-                `{% set events = state_attr('calendar.${D}_activity', 'all_events') or [] %}\n` +
-                `{% set today = states('sensor.date') %}\n` +
-                `{% set todays = events | selectattr('start', 'search', today) | list %}\n` +
-                `{% if todays | length == 0 %}\n_No activity recorded for today._\n` +
-                `{% else %}\n{% for ev in todays %}\n**{{ ev.summary }}**\n{{ ev.description or '' }}\n{% endfor %}\n{% endif %}`,
-            },
-          },
-        },
-      },
-    });
-  }
+  // calendar-card-pro removed — the custom ev-trip-calendar-card above is the
+  // generic, working calendar (no v0.5.0 calendar entity required).
 
   return {
     title: "Calendar",
@@ -3254,7 +3261,7 @@ window.customCards.push({ type: "ev-charge-graph-card", name: "EV Trip — charg
 // RESTORED from v1.5.0 (user favourites, pre-2.0): Driving + Trips views.
 // Additive — the 9-view equivalents stay until these are validated.
 // ==========================================================================
-function drivingView(D, V, hass) {
+function drivingView(D, V, hass, cfg) {
   const status = [heading("Status", "mdi:car-electric")];
 
   // Optional mushroom chips strip — battery %, charging state, range — a quick
@@ -3280,9 +3287,7 @@ function drivingView(D, V, hass) {
     }
     const rangeEnt = has(hass, `sensor.${D}_range_at_recent_efficiency`)
       ? `sensor.${D}_range_at_recent_efficiency`
-      : has(hass, `sensor.${V}_range`)
-      ? `sensor.${V}_range`
-      : null;
+      : pickVehicleEntity(hass, V, "range", cfg);
     if (rangeEnt) {
       chips.push({
         type: "template",
@@ -3329,17 +3334,17 @@ function drivingView(D, V, hass) {
   ];
   if (has(hass, `sensor.${D}_range_at_recent_efficiency`))
     kpis.push({ entity: `sensor.${D}_range_at_recent_efficiency`, name: "Real range", icon: "mdi:map-marker-distance", color: "teal" });
-  if (has(hass, `sensor.${V}_range`))
-    kpis.push({ entity: `sensor.${V}_range`, name: "Range", icon: "mdi:map-marker-radius", color: "teal" });
-  if (has(hass, `sensor.${V}_odometer`))
-    kpis.push({ entity: `sensor.${V}_odometer`, name: "Odometer", icon: "mdi:counter", color: "grey" });
+  const vRange = pickVehicleEntity(hass, V, "range", cfg);
+  if (vRange) kpis.push({ entity: vRange, name: "Range", icon: "mdi:map-marker-radius", color: "teal" });
+  const vOdo = pickVehicleEntity(hass, V, "odometer", cfg);
+  if (hasVal(hass, vOdo)) kpis.push({ entity: vOdo, name: "Odometer", icon: "mdi:counter", color: "grey" });
   // Mushroom template tiles (one per KPI) when available, else native tiles.
   for (const k of kpis) status.push(kpiTile(k.entity, k.name, k.icon, k.color));
 
-  if (has(hass, `sensor.${V}_exterior_temperature`))
-    status.push(kpiTile(`sensor.${V}_exterior_temperature`, "Outside", "mdi:thermometer", "orange"));
-  if (has(hass, `sensor.${V}_cabin_temperature`))
-    status.push(kpiTile(`sensor.${V}_cabin_temperature`, "Cabin", "mdi:car-seat", "orange"));
+  const vOut = pickVehicleEntity(hass, V, "outside_temp", cfg);
+  if (vOut) status.push(kpiTile(vOut, "Outside", "mdi:thermometer", "orange"));
+  const vCab = pickVehicleEntity(hass, V, "cabin_temp", cfg);
+  if (vCab) status.push(kpiTile(vCab, "Cabin", "mdi:car-seat", "orange"));
 
   // Live-trip glance — shown only while a trip is actively tracked, so these
   // metrics populate live (they're sampled when vehicle_on is on). Include any
@@ -3488,7 +3493,28 @@ function recordsCard(D) {
   );
 }
 
-function tripsView(D) {
+function tripsView(D, hass) {
+  // Right column: records, plus the helper-backed Search & filter card ONLY
+  // when the input helpers exist (input_text.<D>_trip_search is the canary).
+  // Without them the ev-trip-list-card still shows all trips, newest-first —
+  // so on a clean install we just omit the (otherwise broken) filter card.
+  const rightCards = [heading("Records", "mdi:trophy-variant"), recordsCard(D)];
+  if (hass && has(hass, `input_text.${D}_trip_search`)) {
+    rightCards.push(heading("Search & filter", "mdi:filter-variant"), {
+      type: "entities",
+      show_header_toggle: false,
+      entities: [
+        { entity: `input_text.${D}_trip_search`, name: "Search (destination / date)" },
+        { entity: `input_select.${D}_trip_sort`, name: "Sort by" },
+        { entity: `input_select.${D}_trip_window`, name: "Period" },
+        { type: "divider" },
+        { entity: `input_number.${D}_trip_min_distance`, name: "Min distance (km)" },
+        { entity: `input_number.${D}_trip_min_score`, name: "Min score" },
+        { entity: `input_number.${D}_trip_max_cost`, name: "Max cost" },
+        { entity: `input_number.${D}_trip_max_consumption`, name: "Max kWh/100" },
+      ],
+    });
+  }
   return {
     title: "Trips",
     path: "trips",
@@ -3496,37 +3522,9 @@ function tripsView(D) {
     type: "sections",
     max_columns: 2,
     sections: [
-      // TOP — 30-day average KPI strip, full width so the tiles breathe.
-      {
-        type: "grid",
-        column_span: 2,
-        cards: [heading("Last 30 days", "mdi:calendar-range"), trips30dKpis(D)],
-      },
-      // LEFT column — the trip list.
-      grid([
-        heading("Trips", "mdi:map-marker-path"),
-        { type: "custom:ev-trip-list-card", device: D, title: "Trips" },
-      ]),
-      // RIGHT column — records on top, search & filter below.
-      grid([
-        heading("Records", "mdi:trophy-variant"),
-        recordsCard(D),
-        heading("Search & filter", "mdi:filter-variant"),
-        {
-          type: "entities",
-          show_header_toggle: false,
-          entities: [
-            { entity: `input_text.${D}_trip_search`, name: "Search (destination / date)" },
-            { entity: `input_select.${D}_trip_sort`, name: "Sort by" },
-            { entity: `input_select.${D}_trip_window`, name: "Period" },
-            { type: "divider" },
-            { entity: `input_number.${D}_trip_min_distance`, name: "Min distance (km)" },
-            { entity: `input_number.${D}_trip_min_score`, name: "Min score" },
-            { entity: `input_number.${D}_trip_max_cost`, name: "Max cost" },
-            { entity: `input_number.${D}_trip_max_consumption`, name: "Max kWh/100" },
-          ],
-        },
-      ]),
+      { type: "grid", column_span: 2, cards: [heading("Last 30 days", "mdi:calendar-range"), trips30dKpis(D)] },
+      grid([heading("Trips", "mdi:map-marker-path"), { type: "custom:ev-trip-list-card", device: D, title: "Trips" }]),
+      grid(rightCards),
     ],
   };
 }
@@ -3563,8 +3561,8 @@ class EvTripDashboardStrategy {
       title: "EV Trips",
       views: [
         // Restored pre-2.0 favourites first (Driving + Trips with records/search).
-        drivingView(D, V, hass),
-        tripsView(D),
+        drivingView(D, V, hass, config),
+        tripsView(D, hass),
         calendarioView(D, hass),
         tendenciasView(D, hass),
         patternsView(D, hass),
