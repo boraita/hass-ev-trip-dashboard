@@ -115,6 +115,64 @@ function resolveChargePower(hass, D, cfg) {
   return cand || own;
 }
 
+// ---- graceful degradation when HACS frontend cards aren't installed --------
+// The dashboard uses custom:button-card / mushroom-* / apexcharts-card /
+// mini-graph-card. If a user hasn't installed one, those cards throw
+// "Configuration error". We post-process the generated card tree and swap any
+// custom:<x> whose element isn't registered for a native equivalent. Our own
+// bundled ev-trip-* cards are always registered, so they're never touched.
+function nativeFallback(c, bare) {
+  switch (bare) {
+    case "mushroom-title-card":
+      return { type: "heading", heading: c.title || c.subtitle || "", ...(c.icon ? { icon: c.icon } : {}) };
+    case "mushroom-chips-card":
+      return null; // chips have no clean native equal — drop
+    case "mushroom-template-card": {
+      const parts = [];
+      if (c.primary) parts.push(`### ${c.primary}`);
+      if (c.secondary) parts.push(c.secondary);
+      const content = parts.join("\n\n") || (c.entity ? `{{ states('${c.entity}') }}` : "");
+      return content ? { type: "markdown", content } : null;
+    }
+    case "button-card":
+      if (c.entity) return { type: "tile", entity: c.entity, ...(c.name ? { name: c.name } : {}) };
+      return c.name ? { type: "markdown", content: `**${c.name}**` } : null;
+    case "apexcharts-card":
+      return null; // the bundled ev-trip-* cards already render this data
+    case "mini-graph-card": {
+      const ents = (c.entities || []).map((e) => (typeof e === "string" ? e : e && e.entity)).filter(Boolean);
+      return ents.length ? { type: "history-graph", entities: ents, hours_to_show: c.hours_to_show || 24 } : null;
+    }
+    default:
+      return null; // unknown, uninstalled custom card → drop rather than error
+  }
+}
+function degradeCard(node) {
+  if (Array.isArray(node)) return node.map(degradeCard).filter((x) => x != null);
+  if (!node || typeof node !== "object") return node;
+  let n = node;
+  const t = typeof n.type === "string" ? n.type : null;
+  if (t && t.indexOf("custom:") === 0) {
+    const bare = t.slice(7);
+    if (!hasCard(bare)) {
+      const fb = nativeFallback(n, bare);
+      if (fb == null) return null;
+      n = fb;
+    }
+  }
+  const out = { ...n };
+  if (Array.isArray(out.cards)) out.cards = out.cards.map(degradeCard).filter((x) => x != null);
+  if (out.card) out.card = degradeCard(out.card);
+  if (Array.isArray(out.sections)) {
+    out.sections = out.sections.map((s) => {
+      const sd = { ...s };
+      if (Array.isArray(sd.cards)) sd.cards = sd.cards.map(degradeCard).filter((x) => x != null);
+      return sd;
+    });
+  }
+  return out;
+}
+
 // ---- card builders (shared between views) --------------------------------
 
 // A mushroom-title-card for section headings — mirrors the YAML cards' header
@@ -3557,20 +3615,20 @@ class EvTripDashboardStrategy {
         ],
       };
     }
-    return {
-      title: "EV Trips",
-      views: [
-        // Restored pre-2.0 favourites first (Driving + Trips with records/search).
-        drivingView(D, V, hass, config),
-        tripsView(D, hass),
-        calendarioView(D, hass),
-        tendenciasView(D, hass),
-        patternsView(D, hass),
-        eficienciaView(D, hass),
-        topsView(D, hass),
-        cargasView(D, hass),
-      ],
-    };
+    const views = [
+      // Restored pre-2.0 favourites first (Driving + Trips with records/search).
+      drivingView(D, V, hass, config),
+      tripsView(D, hass),
+      calendarioView(D, hass),
+      tendenciasView(D, hass),
+      patternsView(D, hass),
+      eficienciaView(D, hass),
+      topsView(D, hass),
+      cargasView(D, hass),
+    ];
+    // Swap any uninstalled HACS custom card (button-card/mushroom/apex/mini-graph)
+    // for a native fallback so the dashboard never shows "Configuration error".
+    return { title: "EV Trips", views: views.map(degradeCard) };
   }
 }
 
