@@ -538,7 +538,7 @@ function tendenciasView(D, hass) {
       // NO graphSpan/span: the data_generator emits category labels ("YYYY-MM"),
       // and a datetime time-window would filter every string point out → blank.
       apexConfig: {
-        chart: { type: "bar", height: "280px", stacked: false },
+        chart: { height: "280px", stacked: false },
         legend: { position: "bottom" },
         xaxis: { type: "category", labels: { rotate: -45, style: { fontSize: "11px" } } },
         plotOptions: { bar: { columnWidth: "60%", borderRadius: 4 } },
