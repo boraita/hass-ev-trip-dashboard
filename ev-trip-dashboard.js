@@ -41,7 +41,9 @@ function hasCard(type) {
     /* customElements may be unavailable in non-browser contexts */
   }
   const cc = (typeof window !== "undefined" && window.customCards) || [];
-  return cc.some((c) => c && c.type === type);
+  // window.customCards entries may carry the bare element name or a "custom:"-
+  // prefixed type, depending on the plugin — match either.
+  return cc.some((c) => c && (c.type === type || c.type === `custom:${type}`));
 }
 
 // The fancy HACS cards register asynchronously, often AFTER this strategy's
@@ -1007,6 +1009,16 @@ class EvTripDashboardStrategy {
     // Give the installed fancy cards a moment to register so hasCard() sees
     // them (otherwise we'd fall back to native and the dashboard "looks the same").
     await awaitFancyCards();
+    try {
+      const diag = _FANCY_CARDS.map((t) => {
+        let ce = false;
+        try { ce = !!(customElements.get && customElements.get(t)); } catch (_e) {}
+        const cc = (typeof window !== "undefined" && window.customCards) || [];
+        const wc = cc.some((c) => c && (c.type === t || c.type === `custom:${t}`));
+        return `${t}[ce=${ce} wc=${wc}]`;
+      }).join("  ");
+      console.info("%c EV-TRIP detect ", "background:#06c;color:#fff;border-radius:3px", diag);
+    } catch (_e) {}
     return {
       title: "EV Trip",
       views: [drivingView(D, V, hass), tripsView(D), historyView(D), chartsView(D, hass), statsView(D, hass)],
