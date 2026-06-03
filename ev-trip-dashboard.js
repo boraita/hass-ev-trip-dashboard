@@ -479,6 +479,11 @@ function tendenciasView(D, hass) {
     cards: [longTrip, avgTrip, drivingTime, monthlyCost],
   });
 
+  // ---- NEW (v0.5.0): robust monthly history card -----------------------
+  // Additive: rendered above the apex version below. Once logger v0.5.0
+  // ships and this is validated, remove the apex "Monthly Km & kWh" card.
+  cards.push({ type: "custom:ev-trip-monthly-card", device: D });
+
   // ---- Dual-axis bar chart — Monthly Km & kWh ---------------------------
   // data_generator walks monthly_history.attributes.months and emits
   // [month-label, value] pairs. Two series share the x-axis but use separate
@@ -629,6 +634,13 @@ function patternsView(D, hass) {
       },
     ])
   );
+
+  // ---- NEW (v0.5.0): robust patterns card ------------------------------
+  // Additive: consolidates by-hour + weekday km/trips into one vanilla-JS
+  // card, rendered above the apex by-hour/radar + mushroom strip below.
+  // Once validated against logger v0.5.0, remove those three apex/mushroom
+  // cards.
+  cards.push({ type: "custom:ev-trip-patterns-card", device: D });
 
   // ---- By Hour — 24-bar histogram --------------------------------------
   // by_hour keys are STRINGS "0".."23"; we emit {x, y} pairs so apex labels
@@ -2246,6 +2258,215 @@ class EvTripJourneyCard extends HTMLElement {
 customElements.define("ev-trip-journey-card", EvTripJourneyCard);
 window.customCards = window.customCards || [];
 window.customCards.push({ type: "ev-trip-journey-card", name: "EV Trip — journey status", description: "Current or last journey status with live stats." });
+
+// ==========================================================================
+// Custom card: monthly history as proportional bars (no apexcharts).
+// Reads sensor.<device>_monthly_history.attributes.months =
+//   [{month:"YYYY-MM", distance_km, energy_kwh, cost, trips}] (chronological).
+// Robust vanilla-JS alternative to the apex dual-axis bar — degrades to a
+// friendly "needs logger v0.5.0" note when the sensor is absent.
+// ==========================================================================
+const _MONTHS_ABBR = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const _fmtMonth = (ym) => {
+  const [y, m] = String(ym || "").split("-").map(Number);
+  return y && m ? `${_MONTHS_ABBR[m - 1]} '${String(y).slice(-2)}` : String(ym || "—");
+};
+class EvTripMonthlyCard extends HTMLElement {
+  setConfig(config) {
+    this._config = config || {};
+    this._device = this._config.device || null;
+  }
+  set hass(hass) {
+    this._hass = hass;
+    this._render();
+  }
+  getCardSize() {
+    return 4;
+  }
+  _render() {
+    if (!this._hass) return;
+    const D = this._device || detectDevice(this._hass);
+    this._device = D;
+    const cur = { EUR: "€", USD: "$", GBP: "£" };
+    const st = this._hass.states[`sensor.${D}_monthly_history`];
+    const months = (st && st.attributes && Array.isArray(st.attributes.months) && st.attributes.months) || [];
+    const sym = cur[st && st.attributes && st.attributes.currency] || "€";
+
+    if (!months.length) {
+      this.innerHTML = `
+        <ha-card>
+          <div class="mh-head">Monthly history</div>
+          <div class="mh-empty">No monthly data yet.<br><span>Provided by <code>sensor.${_esc(D)}_monthly_history</code> (logger v0.5.0).</span></div>
+          <style>
+            .mh-head{padding:14px 16px 4px;font-weight:600;font-size:1.05em;}
+            .mh-empty{padding:18px 16px 22px;text-align:center;color:var(--secondary-text-color);line-height:1.5;}
+            .mh-empty span{font-size:.85em;opacity:.8;}
+          </style>
+        </ha-card>`;
+      return;
+    }
+
+    const maxKm = Math.max(1, ...months.map((m) => Number(m.distance_km) || 0));
+    const totKm = months.reduce((a, m) => a + (Number(m.distance_km) || 0), 0);
+    const totKwh = months.reduce((a, m) => a + (Number(m.energy_kwh) || 0), 0);
+    const rows = months
+      .slice()
+      .reverse()
+      .map((m) => {
+        const km = Number(m.distance_km) || 0;
+        const kwh = Number(m.energy_kwh) || 0;
+        const cost = Number(m.cost) || 0;
+        const pct = Math.round((km / maxKm) * 100);
+        const eff = km > 0 ? ((kwh / km) * 100).toFixed(1) : "—";
+        return `
+          <div class="mh-row">
+            <div class="mh-month">${_esc(_fmtMonth(m.month))}</div>
+            <div class="mh-track"><div class="mh-fill" style="width:${pct}%"></div></div>
+            <div class="mh-vals"><b>${km.toFixed(0)}</b> km · ${kwh.toFixed(1)} kWh · ${cost.toFixed(2)} ${_esc(sym)} · <span class="mh-eff">${eff}</span> kWh/100</div>
+          </div>`;
+      })
+      .join("");
+
+    this.innerHTML = `
+      <ha-card>
+        <div class="mh-head">Monthly history
+          <span class="mh-tot">${totKm.toFixed(0)} km · ${totKwh.toFixed(0)} kWh</span>
+        </div>
+        <div class="mh-list">${rows}</div>
+        <style>
+          .mh-head{display:flex;justify-content:space-between;align-items:baseline;
+                   padding:14px 16px 10px;font-weight:600;font-size:1.05em;}
+          .mh-tot{color:var(--secondary-text-color);font-weight:400;font-size:.8em;}
+          .mh-list{display:flex;flex-direction:column;gap:8px;padding:0 16px 16px;}
+          .mh-row{display:grid;grid-template-columns:62px 1fr;grid-template-rows:auto auto;
+                  column-gap:10px;row-gap:3px;align-items:center;}
+          .mh-month{grid-row:1 / span 2;font-weight:600;font-variant-numeric:tabular-nums;}
+          .mh-track{height:10px;border-radius:6px;background:var(--divider-color);overflow:hidden;}
+          .mh-fill{height:100%;border-radius:6px;
+                   background:linear-gradient(90deg,var(--info-color,#039be5),var(--primary-color));}
+          .mh-vals{font-size:.8em;color:var(--secondary-text-color);font-variant-numeric:tabular-nums;}
+          .mh-eff{color:var(--success-color,#43a047);font-weight:600;}
+        </style>
+      </ha-card>`;
+  }
+}
+customElements.define("ev-trip-monthly-card", EvTripMonthlyCard);
+window.customCards = window.customCards || [];
+window.customCards.push({ type: "ev-trip-monthly-card", name: "EV Trip — monthly history", description: "Per-month km/kWh/cost bars (logger v0.5.0)." });
+
+// ==========================================================================
+// Custom card: trip patterns — by-hour bars + weekday km/count strip.
+// Reads sensor.<device>_trip_patterns.attributes:
+//   by_hour {"0".."23": count}, by_weekday {"0".."6": count} (0=Mon),
+//   km_by_weekday {"0".."6": km}, sample_count.
+// Consolidates the apex by-hour bars + radar + mushroom km strip into one
+// robust vanilla-JS card.
+// ==========================================================================
+const _WD_ABBR = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+class EvTripPatternsCard extends HTMLElement {
+  setConfig(config) {
+    this._config = config || {};
+    this._device = this._config.device || null;
+  }
+  set hass(hass) {
+    this._hass = hass;
+    this._render();
+  }
+  getCardSize() {
+    return 4;
+  }
+  _render() {
+    if (!this._hass) return;
+    const D = this._device || detectDevice(this._hass);
+    this._device = D;
+    const st = this._hass.states[`sensor.${D}_trip_patterns`];
+    const a = (st && st.attributes) || {};
+    const byHour = a.by_hour || {};
+    const byWd = a.by_weekday || {};
+    const kmWd = a.km_by_weekday || {};
+    const total = Number(a.sample_count) || 0;
+
+    if (!st || total === 0) {
+      this.innerHTML = `
+        <ha-card>
+          <div class="tp-head">Driving patterns</div>
+          <div class="tp-empty">No pattern data yet.<br><span>Provided by <code>sensor.${_esc(D)}_trip_patterns</code> (logger v0.5.0).</span></div>
+          <style>
+            .tp-head{padding:14px 16px 4px;font-weight:600;font-size:1.05em;}
+            .tp-empty{padding:18px 16px 22px;text-align:center;color:var(--secondary-text-color);line-height:1.5;}
+            .tp-empty span{font-size:.85em;opacity:.8;}
+          </style>
+        </ha-card>`;
+      return;
+    }
+
+    const maxHour = Math.max(1, ...Array.from({ length: 24 }, (_, h) => Number(byHour[String(h)]) || 0));
+    const hourBars = Array.from({ length: 24 }, (_, h) => {
+      const v = Number(byHour[String(h)]) || 0;
+      const pct = Math.round((v / maxHour) * 100);
+      const lbl = h % 6 === 0 ? `${h}h` : "";
+      return `<div class="tp-hbar" title="${h}:00 — ${v} trips"><div class="tp-hfill" style="height:${pct}%"></div><div class="tp-hlbl">${lbl}</div></div>`;
+    }).join("");
+
+    const maxKm = Math.max(1, ...Array.from({ length: 7 }, (_, w) => Number(kmWd[String(w)]) || 0));
+    const wdCells = Array.from({ length: 7 }, (_, w) => {
+      const km = Number(kmWd[String(w)]) || 0;
+      const n = Number(byWd[String(w)]) || 0;
+      const pct = Math.round((km / maxKm) * 100);
+      const weekend = w >= 5 ? " tp-weekend" : "";
+      return `
+        <div class="tp-wd${weekend}" title="${_WD_ABBR[w]} — ${km.toFixed(0)} km, ${n} trips">
+          <div class="tp-wtrack"><div class="tp-wfill" style="height:${pct}%"></div></div>
+          <div class="tp-wkm">${km.toFixed(0)}</div>
+          <div class="tp-wlbl">${_WD_ABBR[w]}</div>
+          <div class="tp-wn">${n}</div>
+        </div>`;
+    }).join("");
+
+    this.innerHTML = `
+      <ha-card>
+        <div class="tp-head">Driving patterns <span class="tp-tot">${total} trips · 90 d</span></div>
+        <div class="tp-section">By hour of day</div>
+        <div class="tp-hours">${hourBars}</div>
+        <div class="tp-section">By weekday <span class="tp-legend">km · trips</span></div>
+        <div class="tp-week">${wdCells}</div>
+        <style>
+          .tp-head{display:flex;justify-content:space-between;align-items:baseline;
+                   padding:14px 16px 6px;font-weight:600;font-size:1.05em;}
+          .tp-tot{color:var(--secondary-text-color);font-weight:400;font-size:.8em;}
+          .tp-section{padding:8px 16px 4px;font-size:.78em;font-weight:600;
+                      text-transform:uppercase;letter-spacing:.04em;
+                      color:var(--secondary-text-color);
+                      display:flex;justify-content:space-between;}
+          .tp-legend{font-weight:400;text-transform:none;letter-spacing:0;}
+          .tp-hours{display:flex;align-items:flex-end;gap:2px;height:84px;padding:0 14px 2px;}
+          .tp-hbar{flex:1 1 0;height:100%;display:flex;flex-direction:column;
+                   justify-content:flex-end;align-items:center;position:relative;}
+          .tp-hfill{width:70%;min-height:2px;border-radius:3px 3px 0 0;
+                    background:var(--info-color,#039be5);}
+          .tp-hlbl{position:absolute;bottom:-15px;font-size:.6em;
+                   color:var(--secondary-text-color);}
+          .tp-hours{margin-bottom:16px;}
+          .tp-week{display:grid;grid-template-columns:repeat(7,1fr);gap:6px;padding:0 14px 16px;}
+          .tp-wd{display:flex;flex-direction:column;align-items:center;gap:2px;
+                 background:var(--secondary-background-color,var(--card-background-color));
+                 border:1px solid var(--divider-color);border-radius:10px;padding:8px 2px 6px;}
+          .tp-weekend{border-color:var(--warning-color,#fb8c00);}
+          .tp-wtrack{height:52px;width:10px;border-radius:6px;background:var(--divider-color);
+                     display:flex;align-items:flex-end;overflow:hidden;}
+          .tp-wfill{width:100%;border-radius:6px;background:var(--primary-color);}
+          .tp-weekend .tp-wfill{background:var(--warning-color,#fb8c00);}
+          .tp-wkm{font-weight:700;font-size:.9em;font-variant-numeric:tabular-nums;}
+          .tp-wlbl{font-size:.7em;color:var(--secondary-text-color);}
+          .tp-wn{font-size:.68em;color:var(--secondary-text-color);
+                 font-variant-numeric:tabular-nums;}
+        </style>
+      </ha-card>`;
+  }
+}
+customElements.define("ev-trip-patterns-card", EvTripPatternsCard);
+window.customCards = window.customCards || [];
+window.customCards.push({ type: "ev-trip-patterns-card", name: "EV Trip — driving patterns", description: "By-hour bars + weekday km/trips strip (logger v0.5.0)." });
 
 // ---- strategy ------------------------------------------------------------
 // HACS deps are required — no per-card fallback. If a dep is missing the
