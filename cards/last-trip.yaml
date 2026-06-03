@@ -1,22 +1,236 @@
-# Last completed trip — distance, energy, consumption, cost, score, duration.
-# Replace __DEVICE__ with your device slug.
+# =============================================================================
+# Last trip — mirrors the BYD app's "last trip" detail screen.
+# Title · header chip (date · origin → destination) · KPI grid (distance,
+# duration, energy, consumption, cost) · score badge with color · optional
+# "pre-trip charge" row when a charge ended within ~12h before the trip start.
+#
+# Placeholders substituted by the dashboard strategy:
+#   __DEVICE__ → ev-trip-logger device slug
+#
+# Sensors expected (sensor.__DEVICE___*):
+#   - last_trip_distance, last_trip_duration, last_trip_energy,
+#     last_trip_consumption, last_trip_cost, last_trip_score
+#   - recent_charges (attrs.charges=[{started_at, ended_at, kwh,
+#     total_cost, price_per_kwh, is_dcfc, location}])
+#   The last_trip_* sensors expose started_at / ended_at / origin /
+#   destination as attributes — we read started_at from
+#   sensor.__DEVICE___last_trip_distance.
+#
+# Requires HACS:
+#   custom:mushroom-template-card
+#   custom:mushroom-title-card
+#   custom:button-card
+# =============================================================================
 
 type: vertical-stack
 cards:
-  - type: markdown
-    content: "### Last trip"
-  - type: glance
-    columns: 3
-    entities:
-      - entity: sensor.__DEVICE___last_trip_distance
-        name: km
-      - entity: sensor.__DEVICE___last_trip_duration
-        name: min
-      - entity: sensor.__DEVICE___last_trip_energy
-        name: kWh
-      - entity: sensor.__DEVICE___last_trip_consumption
-        name: kWh/100
-      - entity: sensor.__DEVICE___last_trip_cost
-        name: "€"
-      - entity: sensor.__DEVICE___last_trip_score
-        name: score
+  # ---------------------------------------------------------------------------
+  # TITLE — date of the last completed trip.
+  # ---------------------------------------------------------------------------
+  - type: custom:mushroom-title-card
+    title: Último viaje
+    subtitle: >-
+      {% set st = state_attr('sensor.__DEVICE___last_trip_distance', 'started_at') %}
+      {{ as_timestamp(st) | timestamp_custom('%d %b · %H:%M', true) if st else '—' }}
+    icon: mdi:car-arrow-right
+
+  # ---------------------------------------------------------------------------
+  # HEADER — origin → destination chip. Falls back to "—" when missing.
+  # ---------------------------------------------------------------------------
+  - type: custom:mushroom-template-card
+    primary: >-
+      {% set o = state_attr('sensor.__DEVICE___last_trip_distance', 'origin') %}
+      {% set d = state_attr('sensor.__DEVICE___last_trip_distance', 'destination') %}
+      {{ (o or '—') ~ '  →  ' ~ (d or '—') }}
+    secondary: >-
+      {% set st = state_attr('sensor.__DEVICE___last_trip_distance', 'started_at') %}
+      {% set en = state_attr('sensor.__DEVICE___last_trip_distance', 'ended_at') %}
+      {% if st and en %}
+        {{ as_timestamp(st) | timestamp_custom('%H:%M', true) }} → {{ as_timestamp(en) | timestamp_custom('%H:%M', true) }}
+      {% else %}—{% endif %}
+    icon: mdi:map-marker-path
+    icon_color: blue
+    fill_container: true
+    multiline_secondary: false
+
+  # ---------------------------------------------------------------------------
+  # KPI GRID — distance · duration · energy · consumption (2×2).
+  # ---------------------------------------------------------------------------
+  - type: grid
+    columns: 2
+    square: false
+    cards:
+      - type: custom:button-card
+        entity: sensor.__DEVICE___last_trip_distance
+        name: Distancia
+        icon: mdi:road-variant
+        show_state: true
+        styles:
+          card:
+            - padding: 12px
+            - height: 96px
+            - border-radius: 16px
+          name:
+            - font-size: 12px
+            - color: var(--secondary-text-color)
+          state:
+            - font-size: 22px
+            - font-weight: 600
+          icon:
+            - color: var(--info-color)
+            - width: 28px
+
+      - type: custom:button-card
+        entity: sensor.__DEVICE___last_trip_duration
+        name: Duración
+        icon: mdi:timer-outline
+        show_state: true
+        styles:
+          card:
+            - padding: 12px
+            - height: 96px
+            - border-radius: 16px
+          name:
+            - font-size: 12px
+            - color: var(--secondary-text-color)
+          state:
+            - font-size: 22px
+            - font-weight: 600
+          icon:
+            - color: var(--primary-color)
+            - width: 28px
+
+      - type: custom:button-card
+        entity: sensor.__DEVICE___last_trip_energy
+        name: Energía
+        icon: mdi:lightning-bolt
+        show_state: true
+        styles:
+          card:
+            - padding: 12px
+            - height: 96px
+            - border-radius: 16px
+          name:
+            - font-size: 12px
+            - color: var(--secondary-text-color)
+          state:
+            - font-size: 22px
+            - font-weight: 600
+          icon:
+            - color: var(--warning-color)
+            - width: 28px
+
+      - type: custom:button-card
+        entity: sensor.__DEVICE___last_trip_consumption
+        name: Eficiencia
+        icon: mdi:speedometer
+        show_state: true
+        styles:
+          card:
+            - padding: 12px
+            - height: 96px
+            - border-radius: 16px
+          name:
+            - font-size: 12px
+            - color: var(--secondary-text-color)
+          state:
+            - font-size: 22px
+            - font-weight: 600
+          icon:
+            - color: var(--accent-color)
+            - width: 28px
+
+  # ---------------------------------------------------------------------------
+  # COST — full-width emphasis row.
+  # ---------------------------------------------------------------------------
+  - type: custom:button-card
+    entity: sensor.__DEVICE___last_trip_cost
+    name: Coste del viaje
+    icon: mdi:cash-multiple
+    show_state: true
+    styles:
+      card:
+        - padding: 14px
+        - border-radius: 16px
+      name:
+        - font-size: 13px
+        - color: var(--secondary-text-color)
+      state:
+        - font-size: 26px
+        - font-weight: bold
+      icon:
+        - color: var(--success-color)
+
+  # ---------------------------------------------------------------------------
+  # SCORE — colored badge. <50 red · <75 amber · ≥75 green.
+  # ---------------------------------------------------------------------------
+  - type: custom:mushroom-template-card
+    primary: >-
+      Score · {{ states('sensor.__DEVICE___last_trip_score') }}
+    secondary: >-
+      {% set s = states('sensor.__DEVICE___last_trip_score') | float(0) %}
+      {% if s >= 90 %}Conducción excelente
+      {% elif s >= 75 %}Buena conducción
+      {% elif s >= 50 %}Conducción aceptable
+      {% else %}Margen de mejora{% endif %}
+    icon: mdi:trophy-variant
+    icon_color: >-
+      {% set s = states('sensor.__DEVICE___last_trip_score') | float(0) %}
+      {% if s >= 75 %}green{% elif s >= 50 %}amber{% else %}red{% endif %}
+    fill_container: true
+    multiline_secondary: false
+
+  # ---------------------------------------------------------------------------
+  # PRE-TRIP CHARGE — conditional row. Shows when the most-recent charge's
+  # ended_at is within 12 h BEFORE the trip's started_at, suggesting that
+  # charge's energy fueled this trip. The mushroom card is wrapped in a
+  # plain `conditional`-via-Jinja pattern: we render an empty markdown when
+  # there's no match (Lovelace shows nothing) and the chip otherwise.
+  # ---------------------------------------------------------------------------
+  - type: custom:mushroom-template-card
+    primary: >-
+      {% set chs = state_attr('sensor.__DEVICE___recent_charges', 'charges') or [] %}
+      {% set chs = chs | sort(attribute='ended_at', reverse=True) %}
+      {% set c = chs | first if chs else none %}
+      {% set tst = state_attr('sensor.__DEVICE___last_trip_distance', 'started_at') %}
+      {% if c and tst and c.ended_at %}
+        {% set delta_h = (as_timestamp(tst) - as_timestamp(c.ended_at)) / 3600 %}
+        {% if 0 <= delta_h <= 12 %}
+          Carga previa al viaje
+        {% endif %}
+      {% endif %}
+    secondary: >-
+      {% set chs = state_attr('sensor.__DEVICE___recent_charges', 'charges') or [] %}
+      {% set chs = chs | sort(attribute='ended_at', reverse=True) %}
+      {% set c = chs | first if chs else none %}
+      {% set tst = state_attr('sensor.__DEVICE___last_trip_distance', 'started_at') %}
+      {% if c and tst and c.ended_at %}
+        {% set delta_h = (as_timestamp(tst) - as_timestamp(c.ended_at)) / 3600 %}
+        {% if 0 <= delta_h <= 12 %}
+          {% set kwh = c.kwh | float(0) | round(2) %}
+          {% set ppk = c.price_per_kwh | float(0) | round(3) %}
+          {% set tot = c.total_cost | float(0) | round(2) %}
+          {% set src = 'DC rápida' if c.is_dcfc is true else ('AC doméstica' if c.is_dcfc is false else 'origen desconocido') %}
+          {{ kwh }} kWh · {{ ppk }} €/kWh · {{ tot }} € · {{ src }}
+          ({{ delta_h | round(1) }} h antes)
+        {% endif %}
+      {% endif %}
+    icon: mdi:battery-charging-70
+    icon_color: amber
+    fill_container: true
+    multiline_secondary: true
+    # card_mod hides the whole card when both primary and secondary are blank.
+    card_mod:
+      style: |
+        ha-card {
+          {% set chs = state_attr('sensor.__DEVICE___recent_charges', 'charges') or [] %}
+          {% set chs = chs | sort(attribute='ended_at', reverse=True) %}
+          {% set c = chs | first if chs else none %}
+          {% set tst = state_attr('sensor.__DEVICE___last_trip_distance', 'started_at') %}
+          {% set show = false %}
+          {% if c and tst and c.ended_at %}
+            {% set delta_h = (as_timestamp(tst) - as_timestamp(c.ended_at)) / 3600 %}
+            {% if 0 <= delta_h <= 12 %}{% set show = true %}{% endif %}
+          {% endif %}
+          {% if not show %}display: none;{% endif %}
+        }

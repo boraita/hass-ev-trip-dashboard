@@ -93,10 +93,13 @@ cards:
 
   # ===== Dual-axis bar chart — Monthly Km & kWh =====
   # data_generator walks `monthly_history.attributes.months` (array of
-  # {month: "YYYY-MM", distance_km, energy_kwh, ...}) and emits [timestamp, value]
-  # pairs. Month strings are parsed as the 1st day of the month so apex aligns
-  # bars on a datetime x-axis. Two series share the x-axis but use separate
-  # y-axes (left=km, right=kWh).
+  # {month: "YYYY-MM", distance_km, energy_kwh, ...}) and emits
+  # [timestamp_ms, value] pairs. When `graph_span` is set, apexcharts-card
+  # interprets `data_generator` output as a time series and filters by
+  # timestamp — string keys like "2026-05" get dropped, which is why the
+  # original card rendered empty. We parse "YYYY-MM" as the 1st of the month
+  # (UTC) so bars align on a datetime x-axis. Two series share the x-axis but
+  # use separate y-axes (left=km, right=kWh).
   - type: custom:apexcharts-card
     header:
       show: true
@@ -104,7 +107,7 @@ cards:
       show_states: false
     graph_span: 365d
     span:
-      end: month
+      end: day
     apex_config:
       chart:
         height: 280px
@@ -112,17 +115,23 @@ cards:
       legend:
         position: bottom
       xaxis:
-        type: category
+        type: datetime
         labels:
           rotate: -45
           style:
             fontSize: 11px
+          datetimeFormatter:
+            year: "yyyy"
+            month: "MMM 'yy"
+            day: "MMM 'yy"
       plotOptions:
         bar:
           columnWidth: 60%
           borderRadius: 4
       tooltip:
         shared: true
+        x:
+          format: "MMM yyyy"
     yaxis:
       - id: km
         decimals: 0
@@ -147,10 +156,14 @@ cards:
         type: column
         yaxis_id: km
         color: "#ef5350"
-        # Emit one [label, km] pair per month from attrs.months.
+        # Parse "YYYY-MM" as 1st of month UTC -> ms timestamp; emit [ts, km].
         data_generator: |
           const months = entity.attributes.months || [];
-          return months.map(m => [m.month, m.distance_km]);
+          return months.map(m => {
+            const [y, mo] = String(m.month).split('-').map(Number);
+            const ts = Date.UTC(y, (mo || 1) - 1, 1);
+            return [ts, Number(m.distance_km) || 0];
+          });
       - entity: sensor.__DEVICE___monthly_history
         name: Energy (kWh)
         type: column
@@ -159,7 +172,11 @@ cards:
         # Same source array, but project the kWh field.
         data_generator: |
           const months = entity.attributes.months || [];
-          return months.map(m => [m.month, m.energy_kwh]);
+          return months.map(m => {
+            const [y, mo] = String(m.month).split('-').map(Number);
+            const ts = Date.UTC(y, (mo || 1) - 1, 1);
+            return [ts, Number(m.energy_kwh) || 0];
+          });
 
   # ===== Line chart — Km driven in last 60 days =====
   # data_generator walks `daily_km_60d.attributes.days` (array of

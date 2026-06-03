@@ -48,194 +48,272 @@ cards:
       [[[ return `${entity.state} kWh/100km`; ]]]
 
   # ===== Monthly avg consumption (LINE) =====
-  # data_generator: read attrs.months from sensor.__DEVICE___monthly_history.
-  # For each month object compute kWh/100km = energy_kwh / distance_km * 100
-  # (guard divide-by-zero). x = first day of the month, y = consumption.
-  - type: custom:apexcharts-card
-    header:
-      show: true
-      title: Avg consumption per month (kWh/100km)
-      show_states: false
-    graph_span: 365d
-    span:
-      end: month
-    apex_config:
-      chart:
-        height: 260
-      stroke:
-        curve: smooth
-        width: 3
-      markers:
-        size: 4
-      dataLabels:
-        enabled: false
-      grid:
-        borderColor: rgba(255,255,255,0.08)
-      tooltip:
-        x:
-          format: MMM yyyy
-      xaxis:
-        type: datetime
-        labels:
-          datetimeFormatter:
-            year: yyyy
-            month: "MMM 'yy"
-      yaxis:
-        decimalsInFloat: 1
-        title:
-          text: kWh/100km
-    series:
-      - entity: sensor.__DEVICE___monthly_history
-        name: Consumo
-        color: '#2ea043'
-        type: line
-        # Walk attrs.months, parse "YYYY-MM" into a timestamp, compute kWh/100km.
-        data_generator: |
-          const months = entity.attributes.months || [];
-          return months.map((m) => {
-            const km = Number(m.distance_km) || 0;
-            const kwh = Number(m.energy_kwh) || 0;
-            const cons = km > 0 ? (kwh / km) * 100 : null;
-            const [y, mo] = String(m.month || '').split('-').map(Number);
-            const ts = (y && mo) ? new Date(y, mo - 1, 1).getTime() : new Date(m.month).getTime();
-            return [ts, cons];
-          }).filter((p) => p[1] !== null);
+  # Show chart only if attrs.months has entries; otherwise placeholder.
+  # data_generator: walk attrs.months, parse "YYYY-MM" -> first-of-month timestamp,
+  # compute kWh/100km = energy_kwh / distance_km * 100 (guard /0).
+  - type: conditional
+    conditions:
+      - condition: template
+        value_template: >-
+          {{ (state_attr('sensor.__DEVICE___monthly_history', 'months') | default([]) | list | length) > 0 }}
+    card:
+      type: custom:apexcharts-card
+      header:
+        show: true
+        title: Avg consumption per month (kWh/100km)
+        show_states: false
+      graph_span: 730d
+      span:
+        end: month
+      apex_config:
+        chart:
+          height: 260
+          type: line
+        stroke:
+          curve: smooth
+          width: 3
+        markers:
+          size: 4
+        dataLabels:
+          enabled: false
+        grid:
+          borderColor: rgba(255,255,255,0.08)
+        tooltip:
+          x:
+            format: MMM yyyy
+        xaxis:
+          type: datetime
+          labels:
+            datetimeFormatter:
+              year: yyyy
+              month: "MMM 'yy"
+        yaxis:
+          decimalsInFloat: 1
+          title:
+            text: kWh/100km
+      series:
+        - entity: sensor.__DEVICE___monthly_history
+          name: Consumo
+          color: '#2ea043'
+          type: line
+          float_precision: 1
+          data_generator: |
+            const months = (entity.attributes && entity.attributes.months) || [];
+            return months.map((m) => {
+              const km = Number(m.distance_km) || 0;
+              const kwh = Number(m.energy_kwh) || 0;
+              if (km <= 0) return null;
+              const cons = (kwh / km) * 100;
+              let ts = null;
+              const raw = String(m.month || '');
+              const parts = raw.split('-').map(Number);
+              if (parts.length >= 2 && parts[0] && parts[1]) {
+                ts = new Date(parts[0], parts[1] - 1, 1).getTime();
+              } else {
+                const d = new Date(raw);
+                ts = isNaN(d.getTime()) ? null : d.getTime();
+              }
+              if (ts == null) return null;
+              return [ts, Math.round(cons * 10) / 10];
+            }).filter((p) => p !== null);
+  - type: conditional
+    conditions:
+      - condition: template
+        value_template: >-
+          {{ (state_attr('sensor.__DEVICE___monthly_history', 'months') | default([]) | list | length) == 0 }}
+    card:
+      type: custom:mushroom-template-card
+      primary: Avg consumption per month
+      secondary: Aún no hay meses con datos.
+      icon: mdi:chart-line
+      icon_color: grey
+      fill_container: true
 
   # ===== Efficiency vs Distance (SCATTER) =====
-  # data_generator: read attrs.trips from sensor.__DEVICE___recent_trips.
-  # Each trip becomes one point: x = distance_km, y = consumption_kwh_100km.
-  # We split into 3 series so apex colors dots by score range:
-  #   - green  for score >= 7
-  #   - orange for 4 <= score < 7
-  #   - red    for score < 4 (or missing)
-  - type: custom:apexcharts-card
-    header:
-      show: true
-      title: Efficiency vs Distance
-      show_states: false
-    graph_span: 90d
-    chart_type: scatter
-    apex_config:
-      chart:
-        height: 280
-      dataLabels:
-        enabled: false
-      grid:
-        borderColor: rgba(255,255,255,0.08)
-      legend:
+  # x = distance_km, y = consumption_kwh_100km.
+  # Three series split by score band (score is 0-10 from the integration).
+  # NOTE: graph_span set huge so apexcharts-card's time-window filter never
+  # discards numeric x values (km values would otherwise be read as epoch ms
+  # and filtered out).
+  - type: conditional
+    conditions:
+      - condition: template
+        value_template: >-
+          {{ (state_attr('sensor.__DEVICE___recent_trips', 'trips') | default([]) | list | length) > 0 }}
+    card:
+      type: custom:apexcharts-card
+      header:
         show: true
-        position: bottom
-      tooltip:
-        shared: false
-        intersect: true
-        x:
-          formatter: |
-            EVAL:function(val){ return val.toFixed(1) + ' km'; }
-        y:
-          formatter: |
-            EVAL:function(val){ return val.toFixed(1) + ' kWh/100km'; }
-      xaxis:
-        type: numeric
-        title:
-          text: Distance (km)
-        decimalsInFloat: 0
-      yaxis:
-        title:
-          text: kWh/100km
-        decimalsInFloat: 1
-    series:
-      - entity: sensor.__DEVICE___recent_trips
-        name: Score ≥ 7
-        color: '#2ea043'
-        type: scatter
-        # Keep only trips with score >= 7 and valid x/y values.
-        data_generator: |
-          const trips = entity.attributes.trips || [];
-          return trips
-            .filter((t) => Number(t.score) >= 7
-              && t.distance_km != null
-              && t.consumption_kwh_100km != null)
-            .map((t) => [Number(t.distance_km), Number(t.consumption_kwh_100km)]);
-      - entity: sensor.__DEVICE___recent_trips
-        name: Score 4–7
-        color: '#f0883e'
-        type: scatter
-        # Mid-tier trips (score between 4 inclusive and 7 exclusive).
-        data_generator: |
-          const trips = entity.attributes.trips || [];
-          return trips
-            .filter((t) => {
-              const s = Number(t.score);
-              return s >= 4 && s < 7
-                && t.distance_km != null
-                && t.consumption_kwh_100km != null;
-            })
-            .map((t) => [Number(t.distance_km), Number(t.consumption_kwh_100km)]);
-      - entity: sensor.__DEVICE___recent_trips
-        name: Score < 4
-        color: '#f85149'
-        type: scatter
-        # Low-score trips + trips where score is missing/NaN.
-        data_generator: |
-          const trips = entity.attributes.trips || [];
-          return trips
-            .filter((t) => {
-              const s = Number(t.score);
-              return (isNaN(s) || s < 4)
-                && t.distance_km != null
-                && t.consumption_kwh_100km != null;
-            })
-            .map((t) => [Number(t.distance_km), Number(t.consumption_kwh_100km)]);
+        title: Efficiency vs Distance
+        show_states: false
+      chart_type: scatter
+      graph_span: 30000d
+      apex_config:
+        chart:
+          height: 280
+          type: scatter
+          zoom:
+            enabled: false
+        dataLabels:
+          enabled: false
+        grid:
+          borderColor: rgba(255,255,255,0.08)
+        legend:
+          show: true
+          position: bottom
+        markers:
+          size: 6
+          strokeWidth: 0
+        tooltip:
+          shared: false
+          intersect: true
+          x:
+            formatter: |
+              EVAL:function(val){ return (val != null ? val.toFixed(1) : '') + ' km'; }
+          y:
+            formatter: |
+              EVAL:function(val){ return (val != null ? val.toFixed(1) : '') + ' kWh/100km'; }
+        xaxis:
+          type: numeric
+          title:
+            text: Distance (km)
+          decimalsInFloat: 0
+          min: 0
+          labels:
+            formatter: |
+              EVAL:function(val){ return Math.round(val) + ''; }
+        yaxis:
+          title:
+            text: kWh/100km
+          decimalsInFloat: 1
+          min: 0
+      series:
+        - entity: sensor.__DEVICE___recent_trips
+          name: Score ≥ 7
+          color: '#2ea043'
+          type: scatter
+          data_generator: |
+            const trips = (entity.attributes && entity.attributes.trips) || [];
+            return trips
+              .filter((t) => {
+                const s = Number(t.score);
+                return !isNaN(s) && s >= 7
+                  && t.distance_km != null
+                  && t.consumption_kwh_100km != null;
+              })
+              .map((t) => [Number(t.distance_km), Number(t.consumption_kwh_100km)]);
+        - entity: sensor.__DEVICE___recent_trips
+          name: Score 4–7
+          color: '#f0883e'
+          type: scatter
+          data_generator: |
+            const trips = (entity.attributes && entity.attributes.trips) || [];
+            return trips
+              .filter((t) => {
+                const s = Number(t.score);
+                return !isNaN(s) && s >= 4 && s < 7
+                  && t.distance_km != null
+                  && t.consumption_kwh_100km != null;
+              })
+              .map((t) => [Number(t.distance_km), Number(t.consumption_kwh_100km)]);
+        - entity: sensor.__DEVICE___recent_trips
+          name: Score < 4
+          color: '#f85149'
+          type: scatter
+          data_generator: |
+            const trips = (entity.attributes && entity.attributes.trips) || [];
+            return trips
+              .filter((t) => {
+                const s = Number(t.score);
+                return (isNaN(s) || s < 4)
+                  && t.distance_km != null
+                  && t.consumption_kwh_100km != null;
+              })
+              .map((t) => [Number(t.distance_km), Number(t.consumption_kwh_100km)]);
+  - type: conditional
+    conditions:
+      - condition: template
+        value_template: >-
+          {{ (state_attr('sensor.__DEVICE___recent_trips', 'trips') | default([]) | list | length) == 0 }}
+    card:
+      type: custom:mushroom-template-card
+      primary: Efficiency vs Distance
+      secondary: Sin trayectos recientes para mostrar.
+      icon: mdi:scatter-plot
+      icon_color: grey
+      fill_container: true
 
   # ===== Consumption by temperature bucket (BAR) =====
-  # data_generator: read attrs.by_bucket from sensor.__DEVICE___consumption_by_temperature.
-  # Object shape: {"-5": 22.1, "0": 19.4, "5": 17.8, ...}
-  # Sort keys numerically ascending so the x-axis goes cold -> hot.
-  - type: custom:apexcharts-card
-    header:
-      show: true
-      title: Consumption by temperature (kWh/100km)
-      show_states: false
-    chart_type: bar
-    apex_config:
-      chart:
-        height: 240
-      plotOptions:
-        bar:
-          borderRadius: 4
-          columnWidth: 60%
-          distributed: true
-      dataLabels:
-        enabled: true
-        formatter: |
-          EVAL:function(val){ return val ? val.toFixed(1) : ''; }
-        style:
-          fontSize: 11px
-      legend:
-        show: false
-      grid:
-        borderColor: rgba(255,255,255,0.08)
-      xaxis:
-        type: category
-        title:
-          text: Temperature bucket (°C)
-      yaxis:
-        title:
-          text: kWh/100km
-        decimalsInFloat: 1
-    series:
-      - entity: sensor.__DEVICE___consumption_by_temperature
-        name: Consumo
-        type: bar
-        # Build [label, value] pairs sorted by bucket key parsed as int.
-        # Each label gets a "°C" suffix for the x-axis category.
-        data_generator: |
-          const buckets = entity.attributes.by_bucket || {};
-          return Object.keys(buckets)
-            .map((k) => [parseInt(k, 10), Number(buckets[k])])
-            .filter((p) => !isNaN(p[0]) && !isNaN(p[1]))
-            .sort((a, b) => a[0] - b[0])
-            .map(([k, v]) => [`${k}°C`, v]);
+  # Reads attrs.by_bucket from sensor.__DEVICE___consumption_by_temperature.
+  # Object shape: {"-5": 22.1, "0": 19.4, ...} sorted numerically.
+  # Most users have no trips with avg_temp_c yet, so by_bucket is often {} —
+  # in that case we show a placeholder instead of an empty chart.
+  # NOTE: graph_span huge to bypass time-window filtering on category x-axis.
+  - type: conditional
+    conditions:
+      - condition: template
+        value_template: >-
+          {{ (state_attr('sensor.__DEVICE___consumption_by_temperature', 'by_bucket') | default({}) | dictsort | length) > 0 }}
+    card:
+      type: custom:apexcharts-card
+      header:
+        show: true
+        title: Consumption by temperature (kWh/100km)
+        show_states: false
+      chart_type: bar
+      graph_span: 30000d
+      apex_config:
+        chart:
+          height: 240
+          type: bar
+        plotOptions:
+          bar:
+            borderRadius: 4
+            columnWidth: 60%
+            distributed: true
+        dataLabels:
+          enabled: true
+          formatter: |
+            EVAL:function(val){ return val != null ? val.toFixed(1) : ''; }
+          style:
+            fontSize: 11px
+        legend:
+          show: false
+        grid:
+          borderColor: rgba(255,255,255,0.08)
+        xaxis:
+          type: category
+          title:
+            text: Temperature bucket (°C)
+        yaxis:
+          title:
+            text: kWh/100km
+          decimalsInFloat: 1
+      series:
+        - entity: sensor.__DEVICE___consumption_by_temperature
+          name: Consumo
+          type: bar
+          data_generator: |
+            const buckets = (entity.attributes && entity.attributes.by_bucket) || {};
+            return Object.keys(buckets)
+              .map((k) => [parseInt(k, 10), Number(buckets[k])])
+              .filter((p) => !isNaN(p[0]) && !isNaN(p[1]))
+              .sort((a, b) => a[0] - b[0])
+              .map(([k, v]) => [`${k}°C`, Math.round(v * 10) / 10]);
+  - type: conditional
+    conditions:
+      - condition: template
+        value_template: >-
+          {{ (state_attr('sensor.__DEVICE___consumption_by_temperature', 'by_bucket') | default({}) | dictsort | length) == 0 }}
+    card:
+      type: custom:mushroom-template-card
+      primary: Consumption by temperature
+      secondary: >-
+        Sin datos de temperatura todavía — necesita trayectos con
+        temperatura media registrada.
+      icon: mdi:thermometer-off
+      icon_color: grey
+      fill_container: true
 
   # ===== Footer hint =====
   - type: custom:mushroom-template-card

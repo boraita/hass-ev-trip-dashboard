@@ -1,18 +1,159 @@
-# Current journey — running totals across all stages of the in-progress journey.
+# Current journey — rich tile with departure point/time, live progress,
+# trip aggregates and charge-during-journey indicator.
 # Replace __DEVICE__ with your device slug.
 
-type: markdown
-content: |
-  ### Journey in progress
-  {% set s = states('sensor.__DEVICE___current_journey') | int(0) %}
-  {% if s > 0 %}
-  - **{{ s }} {% if s == 1 %}stage{% else %}stages{% endif %}** so far
-  - Distance: **{{ state_attr('sensor.__DEVICE___current_journey', 'distance_km') | default('—', true) }} km**
-  - Energy: **{{ state_attr('sensor.__DEVICE___current_journey', 'energy_kwh') | default('—', true) }} kWh**
-  - Cost: **{{ state_attr('sensor.__DEVICE___current_journey', 'cost') | default('—', true) }} €**
-  {% if state_attr('sensor.__DEVICE___current_journey', 'stage_active') %}
-  - _Stage in progress right now_
-  {% endif %}
-  {% else %}
-  _Vehicle is home — no journey in progress._
-  {% endif %}
+type: vertical-stack
+cards:
+  # ---------------------------------------------------------------------------
+  # HERO — departure summary. "🏠 Salida: Casa a las 15:09 · En curso"
+  # ---------------------------------------------------------------------------
+  - type: custom:mushroom-template-card
+    primary: >-
+      {% set s = states('sensor.__DEVICE___current_journey') | int(0) %}
+      {% if s > 0 %}
+        Journey en curso
+      {% else %}
+        Sin journey activo
+      {% endif %}
+    secondary: >-
+      {% set st = state_attr('sensor.__DEVICE___current_journey', 'started_at') %}
+      {% set trips = state_attr('sensor.__DEVICE___recent_trips', 'trips') or [] %}
+      {% set jid = state_attr('sensor.__DEVICE___current_journey', 'journey_id') %}
+      {% set jtrips = trips | selectattr('journey_id', 'equalto', jid) | list %}
+      {% set first = jtrips | sort(attribute='started_at') | first if jtrips else None %}
+      {% if st %}
+        🏠 Salida: {{ first.origin if first and first.origin else 'Casa' }}
+        a las {{ as_timestamp(st) | timestamp_custom('%H:%M') }}
+        · {{ (((as_timestamp(now()) - as_timestamp(st))/60) | round(0)) }} min
+      {% else %}
+        Vehículo en casa — sin movimiento
+      {% endif %}
+    icon: mdi:car-arrow-right
+    icon_color: >-
+      {% set s = states('sensor.__DEVICE___current_journey') | int(0) %}
+      {{ 'green' if s > 0 else 'grey' }}
+    badge_icon: >-
+      {% if state_attr('sensor.__DEVICE___current_journey', 'stage_active') %}
+        mdi:play
+      {% endif %}
+    badge_color: amber
+    fill_container: true
+    multiline_secondary: true
+
+  # ---------------------------------------------------------------------------
+  # AGGREGATES strip — stages · km · kWh · €
+  # Only renders while a journey is in progress.
+  # ---------------------------------------------------------------------------
+  - type: conditional
+    conditions:
+      - condition: numeric_state
+        entity: sensor.__DEVICE___current_journey
+        above: 0
+    card:
+      type: custom:mushroom-chips-card
+      alignment: justify
+      chips:
+        - type: template
+          icon: mdi:map-marker-path
+          content: >-
+            {{ states('sensor.__DEVICE___current_journey') }} stages
+          icon_color: indigo
+        - type: template
+          icon: mdi:map-marker-distance
+          content: >-
+            {{ state_attr('sensor.__DEVICE___current_journey', 'distance_km')
+               | default('—', true) }} km
+          icon_color: blue
+        - type: template
+          icon: mdi:lightning-bolt
+          content: >-
+            {{ state_attr('sensor.__DEVICE___current_journey', 'energy_kwh')
+               | default('—', true) }} kWh
+          icon_color: teal
+        - type: template
+          icon: mdi:cash
+          content: >-
+            {{ state_attr('sensor.__DEVICE___current_journey', 'cost')
+               | default('—', true) }} €
+          icon_color: green
+
+  # ---------------------------------------------------------------------------
+  # CHARGE-DURING-JOURNEY — searches recent_charges for any charge whose
+  # ended_at falls between journey started_at and now.
+  # ---------------------------------------------------------------------------
+  - type: conditional
+    conditions:
+      - condition: numeric_state
+        entity: sensor.__DEVICE___current_journey
+        above: 0
+    card:
+      type: custom:mushroom-template-card
+      primary: >-
+        {% set st = state_attr('sensor.__DEVICE___current_journey', 'started_at') %}
+        {% set charges = state_attr('sensor.__DEVICE___recent_charges', 'charges') or [] %}
+        {% set ns = namespace(kwh=0.0, cost=0.0, count=0, loc='') %}
+        {% if st %}
+          {% set jstart = as_timestamp(st) %}
+          {% for c in charges %}
+            {% set cend = as_timestamp(c.ended_at) if c.ended_at else 0 %}
+            {% if cend >= jstart %}
+              {% set ns.kwh = ns.kwh + (c.kwh | float(0)) %}
+              {% set ns.cost = ns.cost + (c.total_cost | float(0)) %}
+              {% set ns.count = ns.count + 1 %}
+              {% set ns.loc = c.location or ns.loc %}
+            {% endif %}
+          {% endfor %}
+        {% endif %}
+        {% if ns.count > 0 %}
+          ⚡ Carga durante el journey
+        {% else %}
+          Sin cargas en este journey
+        {% endif %}
+      secondary: >-
+        {% set st = state_attr('sensor.__DEVICE___current_journey', 'started_at') %}
+        {% set charges = state_attr('sensor.__DEVICE___recent_charges', 'charges') or [] %}
+        {% set ns = namespace(kwh=0.0, cost=0.0, count=0, loc='') %}
+        {% if st %}
+          {% set jstart = as_timestamp(st) %}
+          {% for c in charges %}
+            {% set cend = as_timestamp(c.ended_at) if c.ended_at else 0 %}
+            {% if cend >= jstart %}
+              {% set ns.kwh = ns.kwh + (c.kwh | float(0)) %}
+              {% set ns.cost = ns.cost + (c.total_cost | float(0)) %}
+              {% set ns.count = ns.count + 1 %}
+              {% set ns.loc = c.location or ns.loc %}
+            {% endif %}
+          {% endfor %}
+        {% endif %}
+        {% if ns.count > 0 %}
+          {{ ns.count }}× · {{ ns.kwh | round(2) }} kWh ·
+          {{ ns.cost | round(2) }} €{% if ns.loc %} · {{ ns.loc }}{% endif %}
+        {% else %}
+          Aún no se ha cargado en este trayecto
+        {% endif %}
+      icon: >-
+        {% set st = state_attr('sensor.__DEVICE___current_journey', 'started_at') %}
+        {% set charges = state_attr('sensor.__DEVICE___recent_charges', 'charges') or [] %}
+        {% set ns = namespace(count=0) %}
+        {% if st %}
+          {% set jstart = as_timestamp(st) %}
+          {% for c in charges %}
+            {% set cend = as_timestamp(c.ended_at) if c.ended_at else 0 %}
+            {% if cend >= jstart %}{% set ns.count = ns.count + 1 %}{% endif %}
+          {% endfor %}
+        {% endif %}
+        {{ 'mdi:ev-station' if ns.count > 0 else 'mdi:ev-plug-type2' }}
+      icon_color: >-
+        {% set st = state_attr('sensor.__DEVICE___current_journey', 'started_at') %}
+        {% set charges = state_attr('sensor.__DEVICE___recent_charges', 'charges') or [] %}
+        {% set ns = namespace(count=0) %}
+        {% if st %}
+          {% set jstart = as_timestamp(st) %}
+          {% for c in charges %}
+            {% set cend = as_timestamp(c.ended_at) if c.ended_at else 0 %}
+            {% if cend >= jstart %}{% set ns.count = ns.count + 1 %}{% endif %}
+          {% endfor %}
+        {% endif %}
+        {{ 'amber' if ns.count > 0 else 'grey' }}
+      fill_container: true
+      multiline_secondary: true
