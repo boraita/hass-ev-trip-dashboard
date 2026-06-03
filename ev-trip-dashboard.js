@@ -151,26 +151,29 @@ function drivingView(D, V, hass) {
     status.push({ type: "custom:mushroom-chips-card", alignment: "center", chips });
   }
 
-  status.push({
-    type: "gauge",
-    entity: `sensor.${D}_battery_percent`,
-    name: "Battery",
-    min: 0,
-    max: 100,
-    needle: true,
-    severity: { green: 50, yellow: 20, red: 0 },
-  });
-
-  // Battery 24h sparkline under the gauge (mini-graph-card when installed).
+  // Battery: a mini-graph 24h curve (preferred — shows the trend) and only
+  // fall back to the half-moon gauge when mini-graph-card isn't installed.
   if (hasCard("mini-graph-card")) {
     status.push({
       type: "custom:mini-graph-card",
-      name: "Battery (24h)",
+      name: "Battery",
+      icon: "mdi:battery-charging",
       hours_to_show: 24,
-      points_per_hour: 1,
-      line_width: 3,
+      points_per_hour: 2,
+      line_width: 4,
       smoothing: true,
-      entities: [{ entity: `sensor.${D}_battery_percent`, name: "SoC" }],
+      show: { fill: "fade", state: true, name: true },
+      entities: [{ entity: `sensor.${D}_battery_percent`, name: "Battery" }],
+    });
+  } else {
+    status.push({
+      type: "gauge",
+      entity: `sensor.${D}_battery_percent`,
+      name: "Battery",
+      min: 0,
+      max: 100,
+      needle: true,
+      severity: { green: 50, yellow: 20, red: 0 },
     });
   }
 
@@ -259,32 +262,7 @@ function drivingView(D, V, hass) {
         ],
       },
     },
-    md(
-      `{%- set CUR = ${CUR_MAP} %}\n` +
-      `{%- set s = states('sensor.${D}_current_journey') | int(0) %}\n` +
-      `{%- if s > 0 %}\n` +
-      `### 🟢 Journey in progress\n` +
-      `- **{{ s }} {% if s == 1 %}stage{% else %}stages{% endif %}** so far\n` +
-      `- Distance: **{{ state_attr('sensor.${D}_current_journey', 'distance_km') | default('—', true) }} km**\n` +
-      `- Energy: **{{ state_attr('sensor.${D}_current_journey', 'energy_kwh') | default('—', true) }} kWh**\n` +
-      `- Cost: **{{ state_attr('sensor.${D}_current_journey', 'cost') | default('—', true) }} €**\n` +
-      `{%- if state_attr('sensor.${D}_current_journey', 'stage_active') %}\n` +
-      `- _Stage moving right now_\n` +
-      `{%- endif %}\n` +
-      `{%- else %}\n` +
-      `{%- set ls = states('sensor.${D}_last_journey') %}\n` +
-      `{%- if ls in ('unknown', 'unavailable', '0', 'None') %}\n` +
-      `### Last journey\n_No completed journeys yet._\n` +
-      `{%- else %}\n` +
-      `### Last journey\n` +
-      `{%- set ended = state_attr('sensor.${D}_last_journey', 'ended_at') %}\n` +
-      `{%- if ended %}\n_Ended {{ as_timestamp(ended) | timestamp_custom('%d/%m %H:%M') }}_\n{%- endif %}\n` +
-      `- **{{ ls }} stages**\n` +
-      `- Distance: **{{ state_attr('sensor.${D}_last_journey', 'distance_km') | default('—', true) }} km**\n` +
-      `- Energy: **{{ state_attr('sensor.${D}_last_journey', 'energy_kwh') | default('—', true) }} kWh**\n` +
-      `- Cost: **{{ state_attr('sensor.${D}_last_journey', 'cost') | default('—', true) }} €**\n` +
-      `{%- endif %}\n{%- endif %}`
-    ),
+    { type: "custom:ev-trip-journey-card", device: D },
   ];
 
   // Charging-now card from the logger's live charge sensors.
@@ -363,8 +341,15 @@ function tripsView(D) {
     type: "sections",
     max_columns: 2,
     sections: [
-      grid([heading("Records", "mdi:trophy"), recordsCard(D)]),
+      // LEFT column — the trip list.
       grid([
+        heading("Trips", "mdi:map-marker-path"),
+        { type: "custom:ev-trip-list-card", device: D, title: "Trips" },
+      ]),
+      // RIGHT column — records on top, search & filter below.
+      grid([
+        heading("Records", "mdi:trophy-variant"),
+        recordsCard(D),
         heading("Search & filter", "mdi:filter-variant"),
         {
           type: "entities",
@@ -380,7 +365,6 @@ function tripsView(D) {
             { entity: `input_number.${D}_trip_max_consumption`, name: "Max kWh/100" },
           ],
         },
-        { type: "custom:ev-trip-list-card", device: D, title: "Trips" },
       ]),
     ],
   };
@@ -849,12 +833,23 @@ class EvTripHistoryCard extends HTMLElement {
     if (this._clickBound) return;
     this._clickBound = true;
     this.addEventListener("click", (ev) => {
-      const j = ev.target && ev.target.closest && ev.target.closest(".journey[data-journey-id]");
-      if (!j || !this.contains(j)) return;
-      const id = j.getAttribute("data-journey-id");
-      if (id == null) return;
-      this._openId = String(this._openId) === String(id) ? null : id;
-      this._render();
+      const tgt = ev.target;
+      if (!tgt || !tgt.closest) return;
+      const j = tgt.closest(".journey[data-journey-id]");
+      if (j && this.contains(j)) {
+        const id = j.getAttribute("data-journey-id");
+        if (id == null) return;
+        this._openId = String(this._openId) === String(id) ? null : id;
+        this._render();
+        return;
+      }
+      const cd = tgt.closest(".chargeday[data-day]");
+      if (cd && this.contains(cd)) {
+        const day = cd.getAttribute("data-day");
+        if (day == null) return;
+        this._openId = String(this._openId) === String(day) ? null : day;
+        this._render();
+      }
     });
   }
   _render() {
@@ -885,12 +880,13 @@ class EvTripHistoryCard extends HTMLElement {
           .empty{padding:24px 16px;text-align:center;color:var(--secondary-text-color);}
 
           /* ---- mushroom-like row ---- */
-          .row{display:flex;align-items:center;gap:12px;
+          .row,.chargeday{display:flex;align-items:center;gap:12px;
                background:var(--secondary-background-color, var(--card-background-color));
                border:1px solid var(--divider-color);border-radius:14px;padding:12px;}
-          .journey{cursor:pointer;transition:border-color .15s ease;}
-          .journey:hover{border-color:var(--primary-color);}
-          .journey--open{border-color:var(--primary-color);}
+          .journey,.chargeday{cursor:pointer;transition:border-color .15s ease;}
+          .journey:hover,.chargeday:hover{border-color:var(--primary-color);}
+          .journey--open,.chargeday--open{border-color:var(--primary-color);}
+          .chargeday--open .caret{transform:rotate(180deg);}
           .badge{flex:0 0 auto;width:42px;height:42px;border-radius:50%;
                  display:flex;align-items:center;justify-content:center;}
           .badge ha-icon{--mdc-icon-size:22px;}
@@ -943,6 +939,21 @@ class EvTripHistoryCard extends HTMLElement {
                       font-variant-numeric:tabular-nums;font-size:.9em;}
           .stage-empty{padding:8px 4px;color:var(--secondary-text-color);
                        font-size:.85em;font-style:italic;}
+
+          /* ---- expanded charge sessions ---- */
+          .session{display:flex;align-items:center;gap:10px;padding:8px 4px;}
+          .session + .session{border-top:1px dashed var(--divider-color);}
+          .session .sbody{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;gap:3px;}
+          .session .sroute{display:flex;align-items:center;gap:6px;flex-wrap:wrap;font-size:.9em;}
+          .session .stime{font-weight:700;color:var(--primary-text-color);
+                          font-variant-numeric:tabular-nums;}
+          .session .smetrics{font-size:.8em;color:var(--secondary-text-color);
+                             font-variant-numeric:tabular-nums;}
+          .session .smetrics b{color:var(--primary-text-color);font-weight:700;}
+          .chip--ac{color:var(--success-color, #43a047);
+                    border-color:var(--success-color, #43a047);}
+          .chip--dc{color:var(--warning-color, #fb8c00);
+                    border-color:var(--warning-color, #fb8c00);}
           .stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;}
           .stat{background:var(--secondary-background-color);border:1px solid var(--divider-color);
                 border-radius:12px;padding:10px 8px;display:flex;flex-direction:column;
@@ -1060,34 +1071,253 @@ class EvTripHistoryCard extends HTMLElement {
 
   _chargesHtml(charges, sym, DASH, fmtNum) {
     if (!charges.length) return `<div class="empty">No charges recorded yet.</div>`;
-    return charges
-      .map((c) => {
-        const type = c.type ? String(c.type).toUpperCase() : null;
-        const badgeMod = type === "DC" ? "dc" : type === "AC" ? "ac" : "ev";
-        const typeChip = type ? `<span class="chip">${_esc(type)}</span>` : "";
-        const total = c.total_cost != null ? `${fmtNum(c.total_cost, 2)} ${_esc(sym(c.currency))}` : DASH;
+
+    // Group sessions by calendar day (from ended_at). Day key is YYYY-MM-DD so
+    // it's stable + sortable; the label is a short "Mon 02/06".
+    const p = (n) => String(n).padStart(2, "0");
+    const dayKey = (iso) => {
+      if (!iso) return "unknown";
+      const d = new Date(iso);
+      if (isNaN(d)) return "unknown";
+      return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+    };
+    const dayLabel = (key) => {
+      if (key === "unknown") return "Unknown date";
+      const [, m, dd] = key.split("-");
+      const d = new Date(key + "T00:00:00");
+      const wd = isNaN(d) ? "" : ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][d.getDay()] + " ";
+      return `${wd}${dd}/${m}`;
+    };
+    const timeOf = (iso) => {
+      if (!iso) return DASH;
+      const d = new Date(iso);
+      if (isNaN(d)) return DASH;
+      return `${p(d.getHours())}:${p(d.getMinutes())}`;
+    };
+
+    // Preserve incoming order (newest first) when first seeing a day.
+    const order = [];
+    const byDay = {};
+    for (const c of charges) {
+      const k = dayKey(c.ended_at);
+      if (!byDay[k]) {
+        byDay[k] = [];
+        order.push(k);
+      }
+      byDay[k].push(c);
+    }
+    order.sort((a, b) => (a < b ? 1 : a > b ? -1 : 0)); // newest day first
+
+    return order
+      .map((key) => {
+        const sessions = byDay[key];
+        // Day totals.
+        let totKwh = 0;
+        let haveKwh = false;
+        let totCost = 0;
+        let haveCost = false;
+        let curSym = "€";
+        for (const c of sessions) {
+          if (c.kwh != null && !isNaN(c.kwh)) {
+            totKwh += Number(c.kwh);
+            haveKwh = true;
+          }
+          if (c.total_cost != null && !isNaN(c.total_cost)) {
+            totCost += Number(c.total_cost);
+            haveCost = true;
+          }
+          if (c.currency) curSym = sym(c.currency);
+        }
+        const kwhStr = haveKwh ? `${fmtNum(totKwh, 2)} kWh` : DASH;
+        const costStr = haveCost ? `${fmtNum(totCost, 2)} ${_esc(curSym)}` : DASH;
+        const n = sessions.length;
+        const isOpen = String(this._openId) === String(key);
+
+        const detail = isOpen ? this._chargeDayDetailHtml(sessions, sym, DASH, fmtNum, timeOf) : "";
+
         return `
-          <div class="row">
-            <div class="badge badge--${badgeMod}"><ha-icon icon="mdi:ev-station"></ha-icon></div>
+          <div class="chargeday${isOpen ? " chargeday--open" : ""}" data-day="${_esc(key)}">
+            <div class="badge badge--ev"><ha-icon icon="mdi:ev-station"></ha-icon></div>
             <div class="body">
               <div class="title-line">
-                <span class="title">${_fmtDate(c.ended_at)}</span>
-                <span class="id">${_esc(c.location || DASH)}</span>
+                <span class="title">${_esc(dayLabel(key))}</span>
+                <span class="chip"><ha-icon icon="mdi:counter"></ha-icon>${n} ${n === 1 ? "charge" : "charges"}</span>
+              </div>
+              <div class="sub"><b>${kwhStr}</b> · <b>${costStr}</b></div>
+            </div>
+            <div class="caret"><ha-icon icon="mdi:chevron-down"></ha-icon></div>
+          </div>
+          ${isOpen ? detail : ""}`;
+      })
+      .join("");
+  }
+
+  _chargeDayDetailHtml(sessions, sym, DASH, fmtNum, timeOf) {
+    const items = sessions
+      .map((c) => {
+        const type = c.type ? String(c.type).toUpperCase() : null;
+        const typeChip = type ? `<span class="chip chip--${type === "DC" ? "dc" : "ac"}">${_esc(type)}</span>` : "";
+        const total = c.total_cost != null ? `${fmtNum(c.total_cost, 2)} ${_esc(sym(c.currency))}` : DASH;
+        return `
+          <div class="session">
+            <div class="sbody">
+              <div class="sroute">
+                <span class="stime">${timeOf(c.ended_at)}</span>
+                <span class="chip">${_esc(c.location || DASH)}</span>
                 ${typeChip}
               </div>
-              <div class="sub"><b>${fmtNum(c.kwh)}</b> kWh · <b>${fmtNum(c.price_per_kwh)}</b> ${_esc(sym(c.currency))}/kWh</div>
+              <div class="smetrics"><b>${fmtNum(c.kwh)}</b> kWh · <b>${fmtNum(c.price_per_kwh)}</b> ${_esc(sym(c.currency))}/kWh</div>
             </div>
-            <div class="right">
-              <span class="big">${total}</span>
-            </div>
+            <div class="score-pill" style="background:var(--info-color, #039be5)">${total}</div>
           </div>`;
       })
       .join("");
+    return `
+      <div class="detail">
+        <div class="stages">${items}</div>
+      </div>`;
   }
 }
 customElements.define("ev-trip-history-card", EvTripHistoryCard);
 window.customCards = window.customCards || [];
 window.customCards.push({ type: "ev-trip-history-card", name: "EV Trip — journeys/charges", description: "Recent journeys or charges as a table." });
+
+// ==========================================================================
+// Custom card: current-or-last journey status. Replaces the Driving markdown
+// (markdown renders unreliably on this user's frontend). Reads
+// sensor.<device>_current_journey (live) and _last_journey (finished).
+// ==========================================================================
+class EvTripJourneyCard extends HTMLElement {
+  setConfig(config) {
+    this._config = config || {};
+    this._device = this._config.device || null;
+  }
+  set hass(hass) {
+    this._hass = hass;
+    this._render();
+  }
+  getCardSize() {
+    return 3;
+  }
+  _render() {
+    if (!this._hass) return;
+    const D = this._device || detectDevice(this._hass);
+    this._device = D;
+    const DASH = "—";
+    const fmtNum = (v, dp) => (v == null || isNaN(v) ? DASH : dp == null ? String(v) : Number(v).toFixed(dp));
+    const stOf = (id) => {
+      const e = this._hass.states[id];
+      return e ? e : null;
+    };
+
+    const cur = stOf(`sensor.${D}_current_journey`);
+    const last = stOf(`sensor.${D}_last_journey`);
+    const curStages = cur ? parseInt(cur.state, 10) : NaN;
+    const inProgress = !isNaN(curStages) && curStages > 0;
+
+    const lastState = last ? String(last.state).toLowerCase() : "";
+    const hasLast = last && !["unknown", "unavailable", "0", "none", ""].includes(lastState);
+
+    // status colors / glyph / label
+    let dotColor, badgeBg, icon, statusLabel, statusSub, a, stagesNum;
+    if (inProgress) {
+      const at = cur.attributes || {};
+      dotColor = "var(--success-color, #43a047)";
+      badgeBg = "rgba(67,160,71,.16)";
+      icon = "mdi:road-variant";
+      statusLabel = "🟢 En route";
+      statusSub = at.stage_active ? "In progress · stage moving now" : "In progress";
+      a = at;
+      stagesNum = curStages;
+    } else if (hasLast) {
+      const at = last.attributes || {};
+      dotColor = "var(--info-color, #039be5)";
+      badgeBg = "rgba(3,155,229,.16)";
+      icon = "mdi:flag-checkered";
+      statusLabel = "✅ Finished";
+      statusSub = at.ended_at ? `Ended ${_fmtDate(at.ended_at)}` : "Finished";
+      a = at;
+      stagesNum = parseInt(last.state, 10);
+    } else {
+      this.innerHTML = `
+        <ha-card>
+          <style>
+            .head{display:flex;align-items:center;gap:12px;padding:14px 16px;}
+            .badge{flex:0 0 auto;width:42px;height:42px;border-radius:50%;
+                   background:var(--divider-color);display:flex;align-items:center;
+                   justify-content:center;}
+            .badge ha-icon{--mdc-icon-size:22px;color:var(--secondary-text-color);}
+            .title{font-weight:700;color:var(--primary-text-color);}
+            .sub{color:var(--secondary-text-color);font-size:.85em;}
+          </style>
+          <div class="head">
+            <div class="badge"><ha-icon icon="mdi:road-variant"></ha-icon></div>
+            <div>
+              <div class="title">${_esc(this._config.title || "Journey")}</div>
+              <div class="sub">No completed journeys yet.</div>
+            </div>
+          </div>
+        </ha-card>`;
+      return;
+    }
+
+    const stageStr = `${isNaN(stagesNum) ? DASH : stagesNum} ${stagesNum === 1 ? "stage" : "stages"}`;
+    const tile = (tIcon, label, value, unit) => `
+      <div class="jt">
+        <ha-icon class="jt-icon" icon="${tIcon}"></ha-icon>
+        <div class="jt-label">${_esc(label)}</div>
+        <div class="jt-value">${value}<span class="jt-unit">${unit ? " " + _esc(unit) : ""}</span></div>
+      </div>`;
+
+    this.innerHTML = `
+      <ha-card>
+        <style>
+          .jhead{display:flex;align-items:center;gap:12px;padding:14px 16px 10px;}
+          .jbadge{flex:0 0 auto;width:44px;height:44px;border-radius:50%;
+                  background:${badgeBg};display:flex;align-items:center;justify-content:center;}
+          .jbadge ha-icon{--mdc-icon-size:24px;color:${dotColor};}
+          .jhead-body{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;gap:3px;}
+          .jtitle{font-weight:700;color:var(--primary-text-color);}
+          .jstatus{display:flex;align-items:center;gap:8px;flex-wrap:wrap;}
+          .jchip{display:inline-flex;align-items:center;gap:5px;border-radius:999px;
+                 padding:2px 10px;font-size:.8em;font-weight:700;
+                 background:${badgeBg};color:${dotColor};}
+          .jdot{width:8px;height:8px;border-radius:50%;background:${dotColor};
+                display:inline-block;}
+          .jsub{color:var(--secondary-text-color);font-size:.82em;
+                font-variant-numeric:tabular-nums;}
+          .jtiles{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;padding:4px 12px 14px;}
+          .jt{background:var(--secondary-background-color, var(--card-background-color));
+              border:1px solid var(--divider-color);border-radius:12px;padding:10px 8px;
+              display:flex;flex-direction:column;align-items:center;gap:3px;text-align:center;}
+          .jt-icon{--mdc-icon-size:20px;color:var(--secondary-text-color);}
+          .jt-label{font-size:.62em;letter-spacing:.05em;text-transform:uppercase;
+                    color:var(--secondary-text-color);line-height:1.2;}
+          .jt-value{font-size:1.25em;font-weight:800;color:var(--primary-text-color);
+                    font-variant-numeric:tabular-nums;line-height:1.1;}
+          .jt-unit{font-size:.55em;font-weight:600;color:var(--secondary-text-color);}
+        </style>
+        <div class="jhead">
+          <div class="jbadge"><ha-icon icon="${icon}"></ha-icon></div>
+          <div class="jhead-body">
+            <div class="jtitle">${_esc(this._config.title || "Journey")}</div>
+            <div class="jstatus">
+              <span class="jchip"><span class="jdot"></span>${_esc(statusLabel)}</span>
+              <span class="jsub">${_esc(stageStr)} · ${_esc(statusSub)}</span>
+            </div>
+          </div>
+        </div>
+        <div class="jtiles">
+          ${tile("mdi:map-marker-distance", "Distance", fmtNum(a.distance_km), "km")}
+          ${tile("mdi:lightning-bolt", "Energy", fmtNum(a.energy_kwh), "kWh")}
+          ${tile("mdi:currency-eur", "Cost", fmtNum(a.cost, a.cost != null ? 2 : undefined), "€")}
+        </div>
+      </ha-card>`;
+  }
+}
+customElements.define("ev-trip-journey-card", EvTripJourneyCard);
+window.customCards = window.customCards || [];
+window.customCards.push({ type: "ev-trip-journey-card", name: "EV Trip — journey status", description: "Current or last journey status with live stats." });
 
 // ---- strategy ------------------------------------------------------------
 class EvTripDashboardStrategy {
