@@ -30,6 +30,20 @@ function has(hass, entity) {
   return Object.prototype.hasOwnProperty.call(hass.states, entity);
 }
 
+// Progressive enhancement: is a HACS custom card available in this frontend?
+// `type` is the bare element name (no "custom:" prefix). When false we fall
+// back to a native Lovelace card so the strategy never emits a card that the
+// user hasn't installed (the module ships as a public HACS plugin).
+function hasCard(type) {
+  try {
+    if (typeof customElements !== "undefined" && customElements.get && customElements.get(type)) return true;
+  } catch (_e) {
+    /* customElements may be unavailable in non-browser contexts */
+  }
+  const cc = (typeof window !== "undefined" && window.customCards) || [];
+  return cc.some((c) => c && c.type === type);
+}
+
 // True only when the entity exists AND currently has a usable value — used to
 // drop optional metrics (max speed/power, regen, temperature) that are blank
 // because the logger has no speed/power/temperature source sensor configured.
@@ -38,44 +52,121 @@ function hasVal(hass, entity) {
   return !!s && !["unknown", "unavailable", "none", ""].includes(String(s.state).toLowerCase());
 }
 
-const heading = (h, icon) => ({ type: "heading", heading: h, icon });
+// Heading — uses mushroom-title-card when present (tighter, themed), else the
+// native section heading. mushroom-title-card has no icon slot, so we prefix
+// the title with the matching mdi glyph via a small inline-icon is not possible
+// in plain markdown there; instead we keep the icon on the native fallback and
+// fold the icon into a subtitle-free title for mushroom.
+const heading = (h, icon) =>
+  hasCard("mushroom-title-card")
+    ? { type: "custom:mushroom-title-card", title: h }
+    : { type: "heading", heading: h, icon };
 const md = (content) => ({ type: "markdown", content });
 const grid = (cards) => ({ type: "grid", cards });
 
+// A mushroom-template-card "tile" with a colored icon — used for the Driving
+// KPIs when mushroom is installed. Falls back to a native tile card otherwise.
+function kpiTile(entity, name, icon, color) {
+  if (hasCard("mushroom-template-card")) {
+    return {
+      type: "custom:mushroom-template-card",
+      entity,
+      primary: name,
+      secondary: "{{ states(entity) }}{{ ' ' ~ state_attr(entity,'unit_of_measurement') if state_attr(entity,'unit_of_measurement') else '' }}",
+      icon: icon || "{{ state_attr(entity,'icon') or 'mdi:information-outline' }}",
+      icon_color: color || "primary",
+      multiline_secondary: false,
+    };
+  }
+  const card = { type: "tile", entity, name };
+  if (color) card.color = color;
+  return card;
+}
+
 // ---- views ---------------------------------------------------------------
 function drivingView(D, V, hass) {
-  const status = [
-    heading("Status", "mdi:car-electric"),
-    {
-      type: "gauge",
-      entity: `sensor.${D}_battery_percent`,
-      name: "Battery",
-      min: 0,
-      max: 100,
-      needle: true,
-      severity: { green: 50, yellow: 20, red: 0 },
-    },
-  ];
+  const status = [heading("Status", "mdi:car-electric")];
+
+  // Optional mushroom chips strip — battery %, charging state, range — a quick
+  // at-a-glance header above the gauge. Only when mushroom-chips-card exists.
+  if (hasCard("mushroom-chips-card")) {
+    const chips = [
+      {
+        type: "template",
+        entity: `sensor.${D}_battery_percent`,
+        icon: "{% set b = states(entity)|int(0) %}{{ 'mdi:battery' if b>=95 else 'mdi:battery-' ~ ((b/10)|round*10|int) if b>=10 else 'mdi:battery-outline' }}",
+        icon_color: "{% set b = states(entity)|int(0) %}{{ 'red' if b<20 else 'amber' if b<50 else 'green' }}",
+        content: "{{ states(entity) }}%",
+      },
+    ];
+    if (has(hass, `sensor.${D}_charge_in_progress`)) {
+      chips.push({
+        type: "template",
+        entity: `sensor.${D}_charge_in_progress`,
+        icon: "{{ 'mdi:ev-station' if is_state(entity,'charging') else 'mdi:power-plug-off' }}",
+        icon_color: "{{ 'blue' if is_state(entity,'charging') else 'disabled' }}",
+        content: "{{ states(entity) }}",
+      });
+    }
+    const rangeEnt = has(hass, `sensor.${D}_range_at_recent_efficiency`)
+      ? `sensor.${D}_range_at_recent_efficiency`
+      : has(hass, `sensor.${V}_range`)
+      ? `sensor.${V}_range`
+      : null;
+    if (rangeEnt) {
+      chips.push({
+        type: "template",
+        entity: rangeEnt,
+        icon: "mdi:map-marker-distance",
+        icon_color: "teal",
+        content: "{{ states(entity)|round(0) }} km",
+      });
+    }
+    status.push({ type: "custom:mushroom-chips-card", alignment: "center", chips });
+  }
+
+  status.push({
+    type: "gauge",
+    entity: `sensor.${D}_battery_percent`,
+    name: "Battery",
+    min: 0,
+    max: 100,
+    needle: true,
+    severity: { green: 50, yellow: 20, red: 0 },
+  });
+
+  // Battery 24h sparkline under the gauge (mini-graph-card when installed).
+  if (hasCard("mini-graph-card")) {
+    status.push({
+      type: "custom:mini-graph-card",
+      name: "Battery (24h)",
+      hours_to_show: 24,
+      points_per_hour: 1,
+      line_width: 3,
+      smoothing: true,
+      entities: [{ entity: `sensor.${D}_battery_percent`, name: "SoC" }],
+    });
+  }
 
   // Battery / range / odometer. Logger gives a real-world range estimate;
   // the car integration (optional) gives its own range + odometer.
   const kpis = [
-    { entity: `sensor.${D}_battery_energy`, name: "In battery" },
-    { entity: `sensor.${D}_energy_to_full_charge`, name: "To 100%" },
+    { entity: `sensor.${D}_battery_energy`, name: "In battery", icon: "mdi:battery-charging", color: "green" },
+    { entity: `sensor.${D}_energy_to_full_charge`, name: "To 100%", icon: "mdi:battery-plus", color: "blue" },
   ];
   if (has(hass, `sensor.${D}_range_at_recent_efficiency`))
-    kpis.push({ entity: `sensor.${D}_range_at_recent_efficiency`, name: "Real range" });
+    kpis.push({ entity: `sensor.${D}_range_at_recent_efficiency`, name: "Real range", icon: "mdi:map-marker-distance", color: "teal" });
   if (has(hass, `sensor.${V}_range`))
-    kpis.push({ entity: `sensor.${V}_range`, name: "Range" });
+    kpis.push({ entity: `sensor.${V}_range`, name: "Range", icon: "mdi:map-marker-radius", color: "teal" });
   if (has(hass, `sensor.${V}_odometer`))
-    kpis.push({ entity: `sensor.${V}_odometer`, name: "Odometer" });
-  // Modern tile cards (one per KPI) instead of a flat glance.
-  for (const k of kpis) status.push({ type: "tile", entity: k.entity, name: k.name });
+    kpis.push({ entity: `sensor.${V}_odometer`, name: "Odometer", icon: "mdi:counter", color: "grey" });
+  // Mushroom template tiles (one per KPI) when available, else native tiles.
+  for (const k of kpis) status.push(kpiTile(k.entity, k.name, k.icon, k.color));
 
   if (has(hass, `sensor.${V}_exterior_temperature`))
-    status.push({ type: "tile", entity: `sensor.${V}_exterior_temperature`, name: "Outside", color: "orange" });
+    status.push(kpiTile(`sensor.${V}_exterior_temperature`, "Outside", "mdi:thermometer", "orange"));
   if (has(hass, `sensor.${V}_cabin_temperature`))
-    status.push({ type: "tile", entity: `sensor.${V}_cabin_temperature`, name: "Cabin", color: "orange" });
+    status.push(kpiTile(`sensor.${V}_cabin_temperature`, "Cabin", "mdi:car-seat", "orange"));
 
   // Live-trip glance — shown only while a trip is actively tracked, so these
   // metrics populate live (they're sampled when vehicle_on is on). Include any
@@ -289,17 +380,116 @@ function historyView(D) {
   };
 }
 
-function chartsView(D, hass) {
-  const monthly = [
-    heading("Monthly totals", "mdi:chart-bar"),
-    statBar("Distance per month", `sensor.${D}_distance_this_month`),
-    statBar("Energy consumed per month", `sensor.${D}_energy_this_month`),
-    statBar("Charging cost per month", `sensor.${D}_spent_on_charging_this_month`),
-  ];
+// ---- apexcharts helpers (used only when apexcharts-card is installed) -----
 
-  const trends = [
-    heading("Trends", "mdi:chart-line"),
-    {
+// Monthly bars over the last year — apex grouped by month with rounded bars and
+// a smooth color. `agg` is "sum" (totals) for these distance/energy/cost stats.
+function apexMonthlyBar(title, entity, color) {
+  return {
+    type: "custom:apexcharts-card",
+    header: { show: true, title, show_states: false },
+    graph_span: "1y",
+    span: { end: "month" },
+    chart_type: "bar",
+    series: [
+      {
+        entity,
+        type: "column",
+        statistics: { type: "sum", period: "month" },
+        group_by: { func: "last", duration: "1month" },
+        color,
+      },
+    ],
+    apex_config: {
+      chart: { height: 200 },
+      plotOptions: { bar: { columnWidth: "55%", borderRadius: 6 } },
+      dataLabels: { enabled: false },
+      xaxis: { labels: { format: "MMM" } },
+    },
+  };
+}
+
+// Smooth-gradient area/line trend over N days using statistics mean.
+function apexTrendLine(title, series, days) {
+  return {
+    type: "custom:apexcharts-card",
+    header: { show: true, title, show_states: true, colorize_states: true },
+    graph_span: `${days}d`,
+    chart_type: "line",
+    series: series.map((s) => ({
+      entity: s.entity,
+      name: s.name,
+      type: s.area ? "area" : "line",
+      curve: "smooth",
+      stroke_width: 2,
+      statistics: { type: "mean", period: "day" },
+      group_by: { func: "avg", duration: "1d" },
+      color: s.color,
+      ...(s.area ? { opacity: 0.25 } : {}),
+    })),
+    apex_config: { chart: { height: 220 }, dataLabels: { enabled: false }, stroke: { lineCap: "round" } },
+  };
+}
+
+// Battery 24h area — prefers apexcharts, then mini-graph, else history-graph.
+function batteryCard(D) {
+  if (hasCard("apexcharts-card")) {
+    return {
+      type: "custom:apexcharts-card",
+      header: { show: true, title: "Battery (24h)", show_states: true, colorize_states: true },
+      graph_span: "24h",
+      chart_type: "area",
+      series: [{ entity: `sensor.${D}_battery_percent`, name: "SoC %", type: "area", curve: "smooth", opacity: 0.3, stroke_width: 2, color: "var(--success-color)" }],
+      apex_config: { chart: { height: 200 }, yaxis: { min: 0, max: 100 }, dataLabels: { enabled: false } },
+    };
+  }
+  if (hasCard("mini-graph-card")) {
+    return {
+      type: "custom:mini-graph-card",
+      name: "Battery (24h)",
+      hours_to_show: 24,
+      points_per_hour: 1,
+      line_width: 3,
+      smoothing: true,
+      show: { fill: "fade" },
+      entities: [{ entity: `sensor.${D}_battery_percent`, name: "SoC %" }],
+    };
+  }
+  return {
+    type: "history-graph",
+    title: "Battery (24h)",
+    hours_to_show: 24,
+    entities: [{ entity: `sensor.${D}_battery_percent`, name: "SoC %" }],
+  };
+}
+
+function chartsView(D, hass) {
+  const monthly = [heading("Monthly totals", "mdi:chart-bar")];
+  if (hasCard("apexcharts-card")) {
+    monthly.push(
+      apexMonthlyBar("Distance per month", `sensor.${D}_distance_this_month`, "var(--info-color, #039be5)"),
+      apexMonthlyBar("Energy consumed per month", `sensor.${D}_energy_this_month`, "var(--success-color, #43a047)"),
+      apexMonthlyBar("Charging cost per month", `sensor.${D}_spent_on_charging_this_month`, "var(--warning-color, #fb8c00)")
+    );
+  } else {
+    monthly.push(
+      statBar("Distance per month", `sensor.${D}_distance_this_month`),
+      statBar("Energy consumed per month", `sensor.${D}_energy_this_month`),
+      statBar("Charging cost per month", `sensor.${D}_spent_on_charging_this_month`)
+    );
+  }
+
+  const trends = [heading("Trends", "mdi:chart-line")];
+  if (hasCard("apexcharts-card")) {
+    trends.push(
+      apexTrendLine(
+        "Avg consumption (kWh/100km, 30-day rolling)",
+        [{ entity: `sensor.${D}_avg_consumption_30_days`, name: "kWh/100km", area: true, color: "var(--info-color, #039be5)" }],
+        60
+      )
+    );
+  } else {
+    trends.push({
       type: "statistics-graph",
       title: "Avg consumption (kWh/100km, 30-day rolling)",
       entities: [`sensor.${D}_avg_consumption_30_days`],
@@ -307,24 +497,23 @@ function chartsView(D, hass) {
       period: "day",
       stat_types: ["mean"],
       days_to_show: 60,
-    },
-  ];
+    });
+  }
 
-  // AC vs DC charge price (both logger sensors, no state_class → history-graph).
-  const acdc = [];
+  // AC vs DC charge price.
+  const priceSeries = [];
   if (has(hass, `sensor.${D}_avg_ac_charge_price_30_days`))
-    acdc.push({ entity: `sensor.${D}_avg_ac_charge_price_30_days`, name: "AC €/kWh" });
+    priceSeries.push({ entity: `sensor.${D}_avg_ac_charge_price_30_days`, name: "AC €/kWh", color: "var(--success-color, #43a047)" });
   if (has(hass, `sensor.${D}_avg_dc_fast_charge_price_30_days`))
-    acdc.push({ entity: `sensor.${D}_avg_dc_fast_charge_price_30_days`, name: "DC €/kWh" });
-  acdc.push({ entity: `sensor.${D}_avg_charge_price_30_days`, name: "Avg €/kWh" });
-  trends.push({ type: "history-graph", title: "Charge price (€/kWh)", hours_to_show: 720, entities: acdc });
+    priceSeries.push({ entity: `sensor.${D}_avg_dc_fast_charge_price_30_days`, name: "DC €/kWh", color: "var(--warning-color, #fb8c00)" });
+  priceSeries.push({ entity: `sensor.${D}_avg_charge_price_30_days`, name: "Avg €/kWh", color: "var(--primary-color)" });
+  if (hasCard("apexcharts-card")) {
+    trends.push(apexTrendLine("Charge price (€/kWh)", priceSeries, 30));
+  } else {
+    trends.push({ type: "history-graph", title: "Charge price (€/kWh)", hours_to_show: 720, entities: priceSeries.map((s) => ({ entity: s.entity, name: s.name })) });
+  }
 
-  trends.push({
-    type: "history-graph",
-    title: "Battery (24h)",
-    hours_to_show: 24,
-    entities: [{ entity: `sensor.${D}_battery_percent`, name: "SoC %" }],
-  });
+  trends.push(batteryCard(D));
 
   // Consumption vs ambient temperature (from the by_bucket attribute).
   if (has(hass, `sensor.${D}_consumption_by_temperature`)) {
