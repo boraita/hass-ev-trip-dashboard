@@ -307,6 +307,29 @@ function resumenView(D, V, hass) {
 // shows up as one all-day event ("2 viajes · 23 km · 1 carga").
 // ==========================================================================
 function calendarioView(D, hass) {
+  // The calendar entity ships with logger v0.5.0. Until it exists, show a
+  // friendly placeholder instead of calendar-card-pro's "entity not found".
+  if (!has(hass, `calendar.${D}_activity`)) {
+    return {
+      title: "Calendario",
+      path: "calendar",
+      icon: "mdi:calendar",
+      type: "sections",
+      max_columns: 2,
+      sections: [
+        grid([
+          mushroomTitle("Actividad EV", null, "mdi:calendar"),
+          md(
+            "### 📅 Calendario de actividad\n\n" +
+              "Esta vista mostrará un calendario mensual con tus viajes y cargas por día.\n\n" +
+              "_Requiere `calendar." +
+              D +
+              "_activity`, que se añade al actualizar **hass-ev-trip-logger a v0.5.0**._"
+          ),
+        ]),
+      ],
+    };
+  }
   const cards = [
     mushroomTitle("Actividad EV", null, "mdi:calendar"),
     {
@@ -391,18 +414,23 @@ function tendenciasView(D, hass) {
     name: "Long trip",
     icon: "mdi:trophy-outline",
     show_state: true,
+    show_label: true,
     entity: `sensor.${D}_trip_records`,
+    // The records sensor exposes attributes.longest = {value, ended_at, ...};
+    // the state itself is the trip count, so render the distance explicitly.
+    state_display:
+      "[[[\n  const l = entity && entity.attributes && entity.attributes.longest;\n  return (l && l.value != null) ? `${l.value} km` : '—';\n]]]",
     state: [
       {
         operator: "template",
         value:
-          "[[[\n  const d = entity.attributes?.totals?.longest_trip_date;\n  if (!d) return false;\n  const days = Math.floor((Date.now() - new Date(d).getTime()) / 86400000);\n  return days <= 30;\n]]]",
+          "[[[\n  const d = entity.attributes && entity.attributes.longest && entity.attributes.longest.ended_at;\n  if (!d) return false;\n  const days = Math.floor((Date.now() - new Date(d).getTime()) / 86400000);\n  return days <= 30;\n]]]",
         color: "rgb(255, 152, 0)",
       },
       { operator: "default", color: "rgb(244, 67, 54)" },
     ],
     label:
-      "[[[\n  const d = entity.attributes?.totals?.longest_trip_date;\n  if (!d) return 'sin datos';\n  const days = Math.floor((Date.now() - new Date(d).getTime()) / 86400000);\n  return `hace ${days} día${days === 1 ? '' : 's'}`;\n]]]",
+      "[[[\n  const d = entity.attributes && entity.attributes.longest && entity.attributes.longest.ended_at;\n  if (!d) return 'sin datos';\n  const days = Math.floor((Date.now() - new Date(d).getTime()) / 86400000);\n  return `hace ${days} día${days === 1 ? '' : 's'}`;\n]]]",
     styles: {
       card: [{ padding: "12px" }, { "border-radius": "16px" }],
       name: [{ "font-size": "13px" }, { opacity: "0.75" }],
@@ -413,7 +441,11 @@ function tendenciasView(D, hass) {
 
   const avgTrip = mushroomTpl({
     primary: "Avg trip",
-    secondary: `{{ states('sensor.${D}_avg_trip_distance_30_days') }} km · {{ states('sensor.${D}_avg_trip_duration_30_days') }} min`,
+    secondary:
+      `{% set d = states('sensor.${D}_avg_trip_distance_30_days') %}` +
+      `{% set t = states('sensor.${D}_avg_trip_duration_30_days') %}` +
+      `{{ d if d not in ['unknown','unavailable','None'] else '—' }} km · ` +
+      `{{ t if t not in ['unknown','unavailable','None'] else '—' }} min`,
     icon: "mdi:road-variant",
     iconColor: "blue",
     fillContainer: true,
@@ -421,7 +453,9 @@ function tendenciasView(D, hass) {
 
   const drivingTime = mushroomTpl({
     primary: "Driving time",
-    secondary: `{{ states('sensor.${D}_driving_time_30_days') }} h (30d)`,
+    secondary:
+      `{% set t = states('sensor.${D}_driving_time_30_days') %}` +
+      `{{ t if t not in ['unknown','unavailable','None'] else '—' }} min (30d)`,
     icon: "mdi:steering",
     iconColor: "green",
     fillContainer: true,
@@ -429,7 +463,10 @@ function tendenciasView(D, hass) {
 
   const monthlyCost = mushroomTpl({
     primary: "Monthly cost",
-    secondary: `{{ states('sensor.${D}_cost_this_month') }} €`,
+    secondary:
+      `{% if has_value('sensor.${D}_cost_this_month') %}` +
+      `{{ states('sensor.${D}_cost_this_month') | float(0) | round(2) }} €` +
+      `{% else %}—{% endif %}`,
     icon: "mdi:cash-multiple",
     iconColor: "amber",
     fillContainer: true,
@@ -599,7 +636,6 @@ function patternsView(D, hass) {
   cards.push({
     type: "custom:apexcharts-card",
     header: { show: true, title: "Por hora", show_states: false },
-    chart_type: "bar",
     graph_span: "1d",
     apex_config: {
       chart: { height: 240, toolbar: { show: false } },
@@ -735,7 +771,8 @@ function eficienciaView(D, hass) {
         { color: "#2ea043" },
       ],
     },
-    state_display: "[[[ return `${entity.state} kWh/100km`; ]]]",
+    state_display:
+      "[[[ const n = entity && Number(entity.state); return (n==null||isNaN(n)) ? '—' : `${n.toFixed(1)} kWh/100km`; ]]]",
   });
 
   // ---- Monthly avg consumption (LINE) -----------------------------------
@@ -780,7 +817,6 @@ function eficienciaView(D, hass) {
     entity: `sensor.${D}_recent_trips`,
     name,
     color,
-    type: "scatter",
     data_generator:
       "const trips = entity.attributes.trips || [];\nreturn trips\n  .filter((t) => " +
       filterJs +
@@ -825,10 +861,14 @@ function eficienciaView(D, hass) {
   // ---- Consumption by temperature bucket (BAR) -------------------------
   // by_bucket keys are stringified ints; sort them numerically ascending so
   // the x-axis goes cold → hot. Each label gets a "°C" suffix.
-  cards.push({
+  // Only render when there is actually bucketed data — an empty by_bucket
+  // (no temp sensor yet / synthetic trips) would otherwise show bare axes.
+  const tempSt = hass && hass.states[`sensor.${D}_consumption_by_temperature`];
+  const tempBuckets = tempSt && tempSt.attributes && tempSt.attributes.by_bucket;
+  if (tempBuckets && Object.keys(tempBuckets).length > 0) {
+    cards.push({
     type: "custom:apexcharts-card",
     header: { show: true, title: "Consumption by temperature (kWh/100km)", show_states: false },
-    chart_type: "bar",
     apex_config: {
       chart: { height: 240 },
       plotOptions: { bar: { borderRadius: 4, columnWidth: "60%", distributed: true } },
@@ -846,12 +886,13 @@ function eficienciaView(D, hass) {
       {
         entity: `sensor.${D}_consumption_by_temperature`,
         name: "Consumo",
-        type: "bar",
+        type: "column",
         data_generator:
           "const buckets = entity.attributes.by_bucket || {};\nreturn Object.keys(buckets)\n  .map((k) => [parseInt(k, 10), Number(buckets[k])])\n  .filter((p) => !isNaN(p[0]) && !isNaN(p[1]))\n  .sort((a, b) => a[0] - b[0])\n  .map(([k, v]) => [`${k}°C`, v]);",
       },
     ],
-  });
+    });
+  }
 
   // ---- Footer hint — colored advice -------------------------------------
   cards.push(
@@ -1067,15 +1108,14 @@ function detalleView(D, V, hass) {
         type: "custom:button-card",
         // avg_speed_kmh is an attribute, not an entity — use a label template
         // and hide the (empty) state row.
-        template: "",
         name: "Velocidad media",
-        show_state: true,
+        show_state: false,
         show_icon: true,
         icon: "mdi:gauge",
         label:
-          "[[[\n  const v = states['sensor." +
+          "[[[\n  const s = states['sensor." +
           D +
-          "_last_trip'].attributes.avg_speed_kmh;\n  return (v == null) ? '—' : v.toFixed(1) + ' km/h';\n]]]",
+          "_last_trip'];\n  const v = s && s.attributes ? s.attributes.avg_speed_kmh : null;\n  return (v == null) ? '—' : Number(v).toFixed(1) + ' km/h';\n]]]",
         show_label: true,
         styles: {
           card: [{ padding: "12px" }, { "border-radius": "16px" }],
@@ -1224,7 +1264,8 @@ function viajesView(D, hass) {
         show_name: true,
         show_icon: true,
         styles: kpiStyles,
-        state_display: "[[[ return `${entity.state} km` ]]]",
+        state_display:
+          "[[[ const v = entity && entity.state; return (v==null||v==='unavailable'||v==='unknown') ? '—' : `${v} km` ]]]",
       },
       {
         type: "custom:button-card",
@@ -1253,7 +1294,8 @@ function viajesView(D, hass) {
         show_name: true,
         show_icon: true,
         styles: kpiStyles,
-        state_display: "[[[ return `${entity.state} kWh/100km` ]]]",
+        state_display:
+          "[[[ const v = entity && entity.state; return (v==null||v==='unavailable'||v==='unknown') ? '—' : `${v} kWh/100km` ]]]",
       },
       {
         type: "custom:button-card",
@@ -1264,7 +1306,8 @@ function viajesView(D, hass) {
         show_name: true,
         show_icon: true,
         styles: kpiStyles,
-        state_display: "[[[ return `${entity.state} min` ]]]",
+        state_display:
+          "[[[ const v = entity && entity.state; return (v==null||v==='unavailable'||v==='unknown') ? '—' : `${v} min` ]]]",
       },
       {
         type: "custom:button-card",
@@ -1275,7 +1318,8 @@ function viajesView(D, hass) {
         show_name: true,
         show_icon: true,
         styles: kpiStyles,
-        state_display: "[[[ return `${entity.state} km/h` ]]]",
+        state_display:
+          "[[[ const v = entity && entity.state; return (v==null||v==='unavailable'||v==='unknown') ? '—' : `${v} km/h` ]]]",
       },
     ],
   });
@@ -1323,7 +1367,7 @@ function cargasView(D, hass) {
     cards: [
       {
         type: "custom:button-card",
-        entity: `sensor.${D}_avg_charge_kwh_30_days`,
+        entity: `sensor.${D}_avg_charge_energy_30_days`,
         name: "Avg kWh",
         icon: "mdi:flash",
         show_state: true,
@@ -1353,12 +1397,18 @@ function cargasView(D, hass) {
       },
       {
         type: "custom:button-card",
-        entity: `sensor.${D}_charges_this_month`,
-        name: "Total Charges",
+        name: "Total cargas",
         icon: "mdi:counter",
         show_state: true,
         show_name: true,
         show_icon: true,
+        // Count the recent_charges window so it matches the list below
+        // ("9 charges"), instead of charges_this_month which only counts
+        // the current calendar month.
+        state_display:
+          "[[[\n  const s = states['sensor." +
+          D +
+          "_recent_charges'];\n  const arr = s && s.attributes && Array.isArray(s.attributes.charges) ? s.attributes.charges : null;\n  return arr ? String(arr.length) : '—';\n]]]",
         styles: chKpiStyles("var(--success-color)"),
       },
     ],
@@ -1369,39 +1419,11 @@ function cargasView(D, hass) {
   // expandable detail panels.
   cards.push({ type: "custom:ev-trip-history-card", device: D, kind: "charges", title: "Historial de cargas" });
 
-  // ---- Floating "+" button — log a manual charge -----------------------
-  // Position fixed → floats above the dashboard regardless of scroll.
-  cards.push({
-    type: "custom:button-card",
-    name: "",
-    icon: "mdi:plus",
-    show_name: false,
-    show_icon: true,
-    tap_action: {
-      action: "call-service",
-      service: "ev_trip_logger.log_charge",
-      service_data: {},
-    },
-    hold_action: {
-      action: "more-info",
-      entity: `sensor.${D}_recent_charges`,
-    },
-    styles: {
-      card: [
-        { position: "fixed" },
-        { bottom: "24px" },
-        { right: "24px" },
-        { width: "56px" },
-        { height: "56px" },
-        { "border-radius": "50%" },
-        { "background-color": "var(--primary-color)" },
-        { "box-shadow": "0 4px 12px rgba(0,0,0,0.3)" },
-        { "z-index": 1000 },
-        { padding: 0 },
-      ],
-      icon: [{ color: "white" }, { width: "28px" }],
-    },
-  });
+  // NOTE: a floating "+" to log a manual charge used to live here, but it
+  // fired ev_trip_logger.log_charge with empty service_data → the service
+  // rejects it ("required key 'kwh'"). Charges are auto-detected by the
+  // logger's charge_sensor anyway. To re-add manual logging, wire a
+  // browser_mod popup with input_number helpers for kwh + €/kWh.
 
   return {
     title: "Cargas",
