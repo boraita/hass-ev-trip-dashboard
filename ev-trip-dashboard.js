@@ -86,6 +86,29 @@ function hasCard(type) {
   return cc.some((c) => c && (c.type === type || c.type === `custom:${type}`));
 }
 
+// The fancy cards register asynchronously; await them (with a per-card timeout)
+// before generate() builds views so hasCard() reflects what's installed.
+const _FANCY_CARDS = [
+  "mushroom-template-card",
+  "mushroom-chips-card",
+  "mushroom-title-card",
+  "apexcharts-card",
+  "mini-graph-card",
+  "button-card",
+  "calendar-card-pro",
+];
+async function awaitFancyCards(timeoutMs = 2500) {
+  if (typeof customElements === "undefined" || !customElements.whenDefined) return;
+  await Promise.all(
+    _FANCY_CARDS.map((t) =>
+      Promise.race([
+        Promise.resolve(customElements.whenDefined(t)).catch(() => {}),
+        new Promise((resolve) => setTimeout(resolve, timeoutMs)),
+      ])
+    )
+  );
+}
+
 // A mushroom-template-card "tile" with a colored icon (Driving KPIs); falls
 // back to a native tile card when mushroom isn't installed.
 function kpiTile(entity, name, icon, color) {
@@ -463,8 +486,8 @@ function tendenciasView(D, hass) {
     secondary:
       `{% set d = states('sensor.${D}_avg_trip_distance_30_days') %}` +
       `{% set t = states('sensor.${D}_avg_trip_duration_30_days') %}` +
-      `{{ d if d not in ['unknown','unavailable','None'] else '—' }} km · ` +
-      `{{ t if t not in ['unknown','unavailable','None'] else '—' }} min`,
+      `{{ (d|float)|round(1) if d not in ['unknown','unavailable','None'] else '—' }} km · ` +
+      `{{ (t|float)|round(0) if t not in ['unknown','unavailable','None'] else '—' }} min`,
     icon: "mdi:road-variant",
     iconColor: "blue",
     fillContainer: true,
@@ -474,7 +497,7 @@ function tendenciasView(D, hass) {
     primary: "Driving time",
     secondary:
       `{% set t = states('sensor.${D}_driving_time_30_days') %}` +
-      `{{ t if t not in ['unknown','unavailable','None'] else '—' }} min (30d)`,
+      `{{ (t|float/60)|round(1) if t not in ['unknown','unavailable','None'] else '—' }} h (30d)`,
     icon: "mdi:steering",
     iconColor: "green",
     fillContainer: true,
@@ -973,6 +996,9 @@ function topsView(D, hass) {
 
   cards.push(mushroomTitle("Records", `{{ states('sensor.${D}_tops') }} ranked trips`, "mdi:trophy"));
 
+  // NEW: robust records board (leaders + expandable top-9) from sensor.<D>_tops.
+  cards.push({ type: "custom:ev-trip-records-card", device: D });
+
   // Common style block for the KPI tiles — name top-left, big label in middle.
   const recordTileStyles = (iconColor) => ({
     card: [{ padding: "12px" }, { "border-radius": "16px" }],
@@ -1302,7 +1328,7 @@ function viajesView(D, hass) {
         show_icon: true,
         styles: kpiStyles,
         state_display:
-          "[[[ const v = entity && entity.state; return (v==null||v==='unavailable'||v==='unknown') ? '—' : `${v} km` ]]]",
+          "[[[ const v = entity && entity.state; return (v==null||v==='unavailable'||v==='unknown') ? '—' : `${Number(v).toFixed(1)} km` ]]]",
       },
       {
         type: "custom:button-card",
@@ -1332,7 +1358,7 @@ function viajesView(D, hass) {
         show_icon: true,
         styles: kpiStyles,
         state_display:
-          "[[[ const v = entity && entity.state; return (v==null||v==='unavailable'||v==='unknown') ? '—' : `${v} kWh/100km` ]]]",
+          "[[[ const v = entity && entity.state; return (v==null||v==='unavailable'||v==='unknown') ? '—' : `${Number(v).toFixed(1)} kWh/100km` ]]]",
       },
       {
         type: "custom:button-card",
@@ -1344,7 +1370,7 @@ function viajesView(D, hass) {
         show_icon: true,
         styles: kpiStyles,
         state_display:
-          "[[[ const v = entity && entity.state; return (v==null||v==='unavailable'||v==='unknown') ? '—' : `${v} min` ]]]",
+          "[[[ const v = entity && entity.state; return (v==null||v==='unavailable'||v==='unknown') ? '—' : `${Number(v).toFixed(0)} min` ]]]",
       },
       {
         type: "custom:button-card",
@@ -1356,7 +1382,7 @@ function viajesView(D, hass) {
         show_icon: true,
         styles: kpiStyles,
         state_display:
-          "[[[ const v = entity && entity.state; return (v==null||v==='unavailable'||v==='unknown') ? '—' : `${v} km/h` ]]]",
+          "[[[ const v = entity && entity.state; return (v==null||v==='unavailable'||v==='unknown') ? '—' : `${Number(v).toFixed(1)} km/h` ]]]",
       },
     ],
   });
@@ -2412,7 +2438,11 @@ class EvTripPatternsCard extends HTMLElement {
     const byHour = a.by_hour || {};
     const byWd = a.by_weekday || {};
     const kmWd = a.km_by_weekday || {};
-    const total = Number(a.sample_count) || 0;
+    // Logger exposes window_days (not sample_count); derive the trip total from
+    // the weekday counts so the card fills whenever there is any data.
+    const _sum = (o) => Object.values(o || {}).reduce((s, v) => s + (Number(v) || 0), 0);
+    const total = _sum(byWd) || _sum(byHour);
+    const winDays = Number(a.window_days) || 90;
 
     if (!st || total === 0) {
       this.innerHTML = `
@@ -2453,7 +2483,7 @@ class EvTripPatternsCard extends HTMLElement {
 
     this.innerHTML = `
       <ha-card>
-        <div class="tp-head">Driving patterns <span class="tp-tot">${total} trips · 90 d</span></div>
+        <div class="tp-head">Driving patterns <span class="tp-tot">${total} trips · ${winDays} d</span></div>
         <div class="tp-section">By hour of day</div>
         <div class="tp-hours">${hourBars}</div>
         <div class="tp-section">By weekday <span class="tp-legend">km · trips</span></div>
@@ -2930,6 +2960,160 @@ window.customCards = window.customCards || [];
 window.customCards.push({ type: "ev-trip-efficiency-card", name: "EV Trip — efficiency scatter", description: "Efficiency-vs-distance SVG scatter from recent_trips (score-colored)." });
 
 // ==========================================================================
+// Custom card: all-time records board from sensor.<device>_tops. Each category
+// (longest / longest drive / most efficient / fastest / cheapest) shows its
+// leader with value + date + route; tap a row to expand its top-9 ranking.
+// ==========================================================================
+const _recDate = (iso) => {
+  const d = new Date(iso);
+  if (isNaN(d)) return "—";
+  const p = (n) => String(n).padStart(2, "0");
+  return `${p(d.getDate())}/${p(d.getMonth() + 1)}/${String(d.getFullYear()).slice(-2)}`;
+};
+const _recDur = (min) => {
+  const m = Math.round(Number(min) || 0);
+  return m >= 60 ? `${Math.floor(m / 60)}h ${m % 60}m` : `${m} min`;
+};
+class EvTripRecordsCard extends HTMLElement {
+  setConfig(config) {
+    this._config = config || {};
+    this._device = this._config.device || null;
+    this._openCat = null;
+  }
+  set hass(hass) {
+    this._hass = hass;
+    this._render();
+  }
+  getCardSize() {
+    return 5;
+  }
+  connectedCallback() {
+    if (this._clickBound) return;
+    this._clickBound = true;
+    this.addEventListener("click", (ev) => {
+      const r = ev.target && ev.target.closest && ev.target.closest(".rec-row[data-cat]");
+      if (r && this.contains(r)) {
+        const c = r.getAttribute("data-cat");
+        this._openCat = this._openCat === c ? null : c;
+        this._render();
+      }
+    });
+  }
+  _cats() {
+    const cur = { EUR: "€", USD: "$", GBP: "£" };
+    return [
+      { key: "longest", icon: "mdi:map-marker-distance", label: "Longest", color: "#3b82f6", val: (t) => `${(Number(t.distance_km) || 0).toFixed(0)} km` },
+      { key: "longest_duration", icon: "mdi:timer-outline", label: "Longest drive", color: "#8b5cf6", val: (t) => _recDur(t.duration_min) },
+      { key: "top_efficiency", icon: "mdi:leaf", label: "Most efficient", color: "#22c55e", val: (t) => `${(Number(t.consumption_kwh_100km) || 0).toFixed(1)} kWh/100` },
+      { key: "top_speed", icon: "mdi:speedometer", label: "Fastest avg", color: "#f59e0b", val: (t) => `${(Number(t.avg_speed_kmh) || 0).toFixed(0)} km/h` },
+      { key: "cheapest", icon: "mdi:cash-multiple", label: "Cheapest", color: "#10b981", val: (t) => `${(Number(t.cost) || 0).toFixed(2)} ${cur[t.currency] || t.currency || "€"}` },
+    ];
+  }
+  _render() {
+    if (!this._hass) return;
+    if (!this._clickBound && typeof this.addEventListener === "function") this.connectedCallback();
+    const D = this._device || detectDevice(this._hass);
+    this._device = D;
+    const st = this._hass.states[`sensor.${D}_tops`];
+    const a = (st && st.attributes) || {};
+    const cats = this._cats().filter((c) => Array.isArray(a[c.key]) && a[c.key].length);
+
+    if (!cats.length) {
+      this.innerHTML = `
+        <ha-card>
+          <div class="rec-head">Records</div>
+          <div class="rec-empty">No records yet.<br><span>Provided by <code>sensor.${_esc(D)}_tops</code> (logger v0.5.0).</span></div>
+          <style>
+            .rec-head{padding:14px 16px 4px;font-weight:600;font-size:1.05em;}
+            .rec-empty{padding:18px 16px 22px;text-align:center;color:var(--secondary-text-color);line-height:1.5;}
+            .rec-empty span{font-size:.85em;opacity:.8;}
+          </style>
+        </ha-card>`;
+      return;
+    }
+
+    const rows = cats
+      .map((c) => {
+        const top = a[c.key][0];
+        const open = this._openCat === c.key;
+        let sub = "";
+        if (open) {
+          sub =
+            `<div class="rec-sub">` +
+            a[c.key]
+              .map(
+                (t, i) =>
+                  `<div class="rec-li"><span class="rec-rank">${i + 1}</span>` +
+                  `<span class="rec-lmain">${_esc(t.origin || "?")} → ${_esc(t.destination || "?")}</span>` +
+                  `<span class="rec-ldate">${_recDate(t.started_at || t.ended_at)}</span>` +
+                  `<span class="rec-lval">${c.val(t)}</span></div>`
+              )
+              .join("") +
+            `</div>`;
+        }
+        return `
+          <div class="rec-row${open ? " rec-open" : ""}" data-cat="${c.key}">
+            <div class="rec-main">
+              <span class="rec-badge" style="background:${c.color}22;color:${c.color}"><ha-icon icon="${c.icon}"></ha-icon></span>
+              <span class="rec-body">
+                <span class="rec-label">${c.label}</span>
+                <span class="rec-meta">${_recDate(top.started_at || top.ended_at)} · ${_esc(top.origin || "?")} → ${_esc(top.destination || "?")}</span>
+              </span>
+              <span class="rec-val" style="color:${c.color}">${c.val(top)}</span>
+              <ha-icon class="rec-caret" icon="mdi:chevron-down"></ha-icon>
+            </div>
+            ${sub}
+          </div>`;
+      })
+      .join("");
+
+    this.innerHTML = `
+      <ha-card>
+        <div class="rec-head">🏆 Records <span class="rec-tot">${st.state} trips all-time</span></div>
+        <div class="rec-list">${rows}</div>
+        <style>
+          .rec-head{display:flex;justify-content:space-between;align-items:baseline;
+                    padding:14px 16px 10px;font-weight:600;font-size:1.05em;}
+          .rec-tot{color:var(--secondary-text-color);font-weight:400;font-size:.8em;}
+          .rec-list{display:flex;flex-direction:column;gap:8px;padding:0 12px 14px;}
+          .rec-row{border:1px solid var(--divider-color);border-radius:14px;overflow:hidden;
+                   cursor:pointer;transition:border-color .12s;
+                   background:var(--secondary-background-color,var(--card-background-color));}
+          .rec-row:hover{border-color:var(--primary-color);}
+          .rec-open{border-color:var(--primary-color);}
+          .rec-main{display:flex;align-items:center;gap:12px;padding:11px 12px;}
+          .rec-badge{flex:0 0 auto;width:40px;height:40px;border-radius:50%;
+                     display:flex;align-items:center;justify-content:center;}
+          .rec-badge ha-icon{--mdc-icon-size:22px;}
+          .rec-body{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;gap:2px;}
+          .rec-label{font-weight:700;}
+          .rec-meta{font-size:.78em;color:var(--secondary-text-color);
+                    overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+                    font-variant-numeric:tabular-nums;}
+          .rec-val{flex:0 0 auto;font-size:1.15em;font-weight:800;
+                   font-variant-numeric:tabular-nums;}
+          .rec-caret{flex:0 0 auto;--mdc-icon-size:20px;color:var(--secondary-text-color);
+                     transition:transform .15s;}
+          .rec-open .rec-caret{transform:rotate(180deg);}
+          .rec-sub{display:flex;flex-direction:column;border-top:1px solid var(--divider-color);}
+          .rec-li{display:flex;align-items:center;gap:10px;padding:7px 14px;font-size:.84em;
+                  border-top:1px solid var(--divider-color);}
+          .rec-li:first-child{border-top:none;}
+          .rec-rank{flex:0 0 auto;width:20px;height:20px;border-radius:50%;font-size:.8em;
+                    font-weight:700;display:flex;align-items:center;justify-content:center;
+                    background:var(--divider-color);color:var(--secondary-text-color);}
+          .rec-lmain{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+          .rec-ldate{flex:0 0 auto;color:var(--secondary-text-color);font-variant-numeric:tabular-nums;}
+          .rec-lval{flex:0 0 auto;font-weight:700;font-variant-numeric:tabular-nums;}
+        </style>
+      </ha-card>`;
+  }
+}
+customElements.define("ev-trip-records-card", EvTripRecordsCard);
+window.customCards = window.customCards || [];
+window.customCards.push({ type: "ev-trip-records-card", name: "EV Trip — records board", description: "All-time record leaders with expandable top-9 (sensor.<device>_tops)." });
+
+// ==========================================================================
 // RESTORED from v1.5.0 (user favourites, pre-2.0): Driving + Trips views.
 // Additive — the 9-view equivalents stay until these are validated.
 // ==========================================================================
@@ -3199,6 +3383,10 @@ function tripsView(D) {
 // user will see one broken card, not a degraded dashboard.
 class EvTripDashboardStrategy {
   static async generate(config, hass) {
+    // Fancy HACS cards register asynchronously, often AFTER generate() first
+    // runs — without this wait hasCard() sees them as missing and the Driving
+    // view falls back to the native gauge/tiles instead of mini-graph/mushroom.
+    await awaitFancyCards();
     const D = config.device || detectDevice(hass);
     const V = config.vehicle || D;
     if (!D) {
