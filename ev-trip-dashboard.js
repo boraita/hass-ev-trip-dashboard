@@ -1153,6 +1153,41 @@ function cargasView(D, hass) {
 
   cards.push(mushroomTitle("Charges", "Last 30 days", "mdi:battery-charging"));
 
+  // ---- Live charging session — kW curve + elapsed time -----------------
+  // Only while a charge is in progress: a mini-graph of the charging power
+  // (kW being added over time) plus energy / duration / current kW.
+  if (has(hass, `sensor.${D}_current_charge_power`) && hasCard("mini-graph-card")) {
+    cards.push({
+      type: "conditional",
+      conditions: [{ condition: "state", entity: `sensor.${D}_charge_in_progress`, state: "charging" }],
+      card: {
+        type: "vertical-stack",
+        cards: [
+          {
+            type: "custom:mini-graph-card",
+            name: "Charging power",
+            icon: "mdi:ev-station",
+            hours_to_show: 6,
+            points_per_hour: 60,
+            line_width: 4,
+            smoothing: true,
+            show: { fill: "fade", state: true, name: true },
+            entities: [{ entity: `sensor.${D}_current_charge_power`, name: "kW" }],
+          },
+          {
+            type: "glance",
+            columns: 3,
+            entities: [
+              { entity: `sensor.${D}_current_charge_energy`, name: "Added" },
+              { entity: `sensor.${D}_current_charge_duration`, name: "Time" },
+              { entity: `sensor.${D}_current_charge_power`, name: "kW now" },
+            ],
+          },
+        ],
+      },
+    });
+  }
+
   // ---- KPI grid (2x2) --------------------------------------------------
   // Each tile is a button-card with 96px height so the grid feels denser
   // than the default tile spacing.
@@ -1463,15 +1498,19 @@ class EvTripListCard extends HTMLElement {
           `<span class="d-cmp-val">${(t.cost / t.energy_kwh).toFixed(3)} ${_esc(sym)}/kWh</span></div>`
         );
       }
-      // The charge that powered this trip (last charge ending before it started).
+      // The charge that powered this trip (last charge ending before it
+      // started) — rendered as its own boxes below: amount + €/kWh.
       const ch = chargeForTrip(t);
+      let chargeBox = "";
       if (ch) {
         const cp = cur[ch.currency] || ch.currency || "€";
-        const loc = ch.location ? ` · ${_esc(ch.location)}` : "";
-        cmpRows.push(
-          `<div class="d-cmp-row"><span class="d-cmp-label">Charge before trip</span>` +
-          `<span class="d-cmp-val" style="color:var(--info-color, #039be5)">${fmtNum(ch.kwh, 2)} kWh @ ${fmtNum(ch.price_per_kwh, 3)} ${_esc(cp)}/kWh${loc}</span></div>`
-        );
+        const loc = ch.location ? `<div class="d-charge-loc">${_esc(ch.location)}</div>` : "";
+        chargeBox = `
+          <div class="d-charge-head"><ha-icon icon="mdi:ev-station"></ha-icon> Charge powering this trip${loc}</div>
+          <div class="d-grid">
+            ${tile("mdi:battery-charging", "Charged", fmtNum(ch.kwh, 2), "kWh")}
+            ${tile("mdi:tag-outline", "Charge price", fmtNum(ch.price_per_kwh, 3), `${cp}/kWh`)}
+          </div>`;
       }
 
       return `
@@ -1495,6 +1534,7 @@ class EvTripListCard extends HTMLElement {
             <div class="d-tile-label">Avg speed</div>
             <div class="d-tile-value">${speed}<span class="d-tile-unit"> km/h</span></div>
           </div>
+          ${chargeBox}
           ${cmpRows.length ? `<div class="d-cmp">${cmpRows.join("")}</div>` : ""}
         </div>`;
     };
@@ -1582,6 +1622,12 @@ class EvTripListCard extends HTMLElement {
           .d-tile-value{font-size:1.4em;font-weight:800;color:var(--primary-text-color);
                         font-variant-numeric:tabular-nums;line-height:1.1;}
           .d-tile-unit{font-size:.55em;font-weight:600;color:var(--secondary-text-color);}
+          .d-charge-head{display:flex;align-items:center;gap:6px;font-size:.78em;
+                         font-weight:700;text-transform:uppercase;letter-spacing:.04em;
+                         color:var(--info-color,#039be5);margin-top:4px;}
+          .d-charge-head ha-icon{--mdc-icon-size:16px;}
+          .d-charge-loc{margin-left:auto;font-weight:400;text-transform:none;letter-spacing:0;
+                        color:var(--secondary-text-color);}
           .d-cmp{display:flex;flex-direction:column;gap:8px;margin-top:2px;}
           .d-cmp-row{display:flex;justify-content:space-between;align-items:center;
                      font-size:.95em;}
@@ -1962,9 +2008,22 @@ class EvTripHistoryCard extends HTMLElement {
   _chargeDayDetailHtml(sessions, sym, DASH, fmtNum, timeOf) {
     const items = sessions
       .map((c) => {
-        const type = c.type ? String(c.type).toUpperCase() : null;
+        const type = c.type ? String(c.type).toUpperCase() : (c.is_dcfc ? "DC" : null);
         const typeChip = type ? `<span class="chip chip--${type === "DC" ? "dc" : "ac"}">${_esc(type)}</span>` : "";
         const total = c.total_cost != null ? `${fmtNum(c.total_cost, 2)} ${_esc(sym(c.currency))}` : DASH;
+        // Duration (time the charge took) + average power, derived from the
+        // timestamps + kWh (no per-sample curve is stored for past charges).
+        let durMin = null;
+        if (c.started_at && c.ended_at) {
+          const d = (new Date(c.ended_at) - new Date(c.started_at)) / 60000;
+          if (!isNaN(d) && d >= 0) durMin = d;
+        }
+        const durStr =
+          durMin == null ? null : durMin >= 60 ? `${Math.floor(durMin / 60)}h ${Math.round(durMin % 60)}m` : `${Math.round(durMin)} min`;
+        const avgKw = c.kwh != null && durMin && durMin > 0 ? Number(c.kwh) / (durMin / 60) : null;
+        const extra =
+          (durStr ? ` · <ha-icon class="s-mini" icon="mdi:timer-outline"></ha-icon>${durStr}` : "") +
+          (avgKw != null ? ` · <b>${avgKw.toFixed(1)}</b> kW avg` : "");
         return `
           <div class="session">
             <div class="sbody">
@@ -1973,7 +2032,7 @@ class EvTripHistoryCard extends HTMLElement {
                 <span class="chip">${_esc(c.location || DASH)}</span>
                 ${typeChip}
               </div>
-              <div class="smetrics"><b>${fmtNum(c.kwh)}</b> kWh · <b>${fmtNum(c.price_per_kwh)}</b> ${_esc(sym(c.currency))}/kWh</div>
+              <div class="smetrics"><b>${fmtNum(c.kwh)}</b> kWh · <b>${fmtNum(c.price_per_kwh)}</b> ${_esc(sym(c.currency))}/kWh${extra}</div>
             </div>
             <div class="score-pill" style="background:var(--info-color, #039be5)">${total}</div>
           </div>`;
