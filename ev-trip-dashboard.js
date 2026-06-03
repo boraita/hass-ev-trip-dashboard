@@ -3358,9 +3358,19 @@ function drivingView(D, V, hass, cfg) {
     status.push({ type: "custom:mushroom-chips-card", alignment: "center", chips });
   }
 
-  // Battery: a mini-graph 24h curve (preferred — shows the trend) and only
-  // fall back to the half-moon gauge when mini-graph-card isn't installed.
-  if (hasCard("mini-graph-card")) {
+  // Battery: a mini-graph 24h curve (preferred — shows the trend), the
+  // half-moon gauge when mini-graph-card isn't installed, and — when the
+  // battery has no numeric value yet (e.g. the car is asleep/offline, so the
+  // sensor is 'unknown') — a plain tile that shows "Unknown" instead of the
+  // mini-graph's "NaN %" / the gauge's "non-numeric" error.
+  if (!hasVal(hass, `sensor.${D}_battery_percent`)) {
+    status.push({
+      type: "tile",
+      entity: `sensor.${D}_battery_percent`,
+      name: "Battery",
+      icon: "mdi:battery-off-outline",
+    });
+  } else if (hasCard("mini-graph-card")) {
     status.push({
       type: "custom:mini-graph-card",
       name: "Battery",
