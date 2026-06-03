@@ -1,8 +1,11 @@
 # EV Trip Dashboard
 
-A polished 9-view dashboard inspired by the BYD mobile app, powered by
-[hass-ev-trip-logger](https://github.com/boraita/hass-ev-trip-logger) **v0.5.0+**
-— works with any car integration that publishes the same sensor names.
+A polished 8-view dashboard inspired by the BYD mobile app, powered by
+[hass-ev-trip-logger](https://github.com/boraita/hass-ev-trip-logger) **v0.5.0+**.
+It is **car-agnostic**: the trip/charge data comes from the logger, and the
+optional car-integration tiles (range, temperatures, tires, location, charge
+power) are resolved generically by name + `device_class` (BYD, Tesla, …), with
+config overrides if auto-detection misses. See **[Works with any car](#works-with-any-car-integration)**.
 
 ## ⚠️ Required HACS frontend cards (v0.2.0)
 
@@ -24,22 +27,24 @@ Optional but recommended:
 - `custom:browser_mod` — click-on-day popups in the Calendar view
 - `custom:atomic-calendar-revive` — fallback if you don't want calendar-card-pro
 
-## 9 views — one per BYD-app pantalla
+## 8 views
+
+The HACS strategy generates these 8 views (in order). The first two — **Driving**
+and **Trips** — are the original, most-used screens; the rest are analytics.
 
 | # | View | What's on it |
 |---|---|---|
-| 1 | **Resumen** | Vehicle hero + SoC + range + ODO/Energy/SOH/System chips + tire pressures (2×2) + location map + conditional live-charge popup |
-| 2 | **Calendario** | Monthly calendar with per-day badges — `mdi:lightning-bolt` for charges, `mdi:car` for trips. Powered by the new `calendar.<device>_activity` entity |
-| 3 | **Tendencias** | 4 KPI tiles (long trip, avg trip, driving time, monthly cost) + dual-axis Monthly Km vs kWh bar chart + 60-day km line |
-| 4 | **Patrones** | Trips KPI + daily-avg + 24-hour distribution bars + radar by weekday + 7-day Mon-Sun strip with km totals |
-| 5 | **Eficiencia** | Avg consumption hero + monthly avg consumption line + Efficiency vs Distance scatter (score-colored dots) + temperature bucket bars |
-| 6 | **Récords** | 4 record KPI tiles (longest, max duration, cheapest, best efficiency) + top-9 lists (distance, consumption, efficiency, speed) |
-| 7 | **Detalle** | Single-trip drilldown: 4 KPIs (distance, consumption, efficiency, avg speed) + delta vs personal average + percentile + estimated cost + route map placeholder (uses GPS samples from `trip_positions`) |
-| 8 | **Viajes** | 5 KPI averages (last 30 days) + trip cards with date·time / distance / consumption / efficiency / cost / score color-coded |
-| 9 | **Cargas** | 4 KPI tiles (avg kWh / avg cost / avg €/kWh / total charges) + charge cards with date / kWh / source label AC/DC / cost / SoC delta + floating "+" button for manual log |
+| 1 | **Driving** | Battery chips + a **mini-graph battery trend** + Range/Odometer/Temperature KPIs (auto-resolved per car) + a live **trip-in-progress** / **last-trip** glance (with percentile) + the **journey-of-the-day** card (left-home → arrived, with a charge chip) |
+| 2 | **Trips** | 30-day average KPI strip + the reactive **trip list** with charge rows woven into the timeline (tap a trip for detail incl. the €/kWh applied) + all-time **records** + (optional) search/filter |
+| 3 | **Calendar** | A built-in monthly calendar (`ev-trip-calendar-card`) of trips + charges per day, built from `recent_trips`/`recent_charges` — tap a day to expand |
+| 4 | **Trends** | Long-trip / avg-trip / driving-time / monthly-cost KPIs + **Monthly Km & kWh** + **60-day daily-km** charts |
+| 5 | **Patterns** | Trips & daily-avg KPIs + **by-hour** bars + **weekday** km/trips strip (`ev-trip-patterns-card`) |
+| 6 | **Efficiency** | Avg-consumption hero + **Efficiency-vs-Distance scatter** (score-colored) + monthly consumption line + temperature buckets (when available) + a tip |
+| 7 | **Records** | All-time **records board** (longest / longest drive / most efficient / fastest / cheapest) with an expandable top-9 (`ev-trip-records-card`) |
+| 8 | **Charges** | Avg kWh / cost / €/kWh / count KPIs + per-day **charge history** with each charge's **power-vs-time curve** + an inline last-charge price editor (when its helper is set up) |
 
 Two ways to use it:
-- **HACS dashboard strategy** (recommended) — install via HACS, the strategy auto-generates all 9 views from your device slug. No find/replace.
+- **HACS dashboard strategy** (recommended) — install via HACS, the strategy auto-generates all 8 views from your device slug. No find/replace.
 - **Pure-YAML pack** — copy `dashboards/full.yaml` (or `mobile.yaml` for compact) and replace `__DEVICE__` / `__VEHICLE__`. Each card under `cards/` is also a standalone drop-in.
 
 ## Install
@@ -63,11 +68,47 @@ Two ways to use it:
 | Option | Required | What it does |
 |---|---|---|
 | `device` | No | The **trip-logger** slug (e.g. `sealion_7`). **Auto-detected** from the first `sensor.<slug>_recent_trips` entity — only set it if you run more than one logger device. |
-| `vehicle` | No (recommended) | Your **car integration** slug (e.g. `byd_sealion_7`). Unlocks the Driving view's **Range, Odometer, Outside/Cabin temperature, the location map**, and the live **charge session** tiles. Omit it and those car-only cards are simply not shown (everything else still works). |
+| `vehicle` | No (recommended) | Your **car integration** slug (e.g. `byd_sealion_7`, `portunol`). Unlocks the Driving view's **Range, Odometer, Outside/Cabin temperature, tire pressures, location map**, and live **charge** tiles. Omit it and those car-only cards are simply not shown (everything else still works). |
+| `*_entity` overrides | No | Force a specific entity when auto-detection picks the wrong one — see [Works with any car](#works-with-any-car-integration). |
 
-The strategy regenerates all five views on every load, so you never edit the dashboard again — plugin updates ship new cards automatically.
+The strategy regenerates all 8 views on every load, so you never edit the dashboard again — plugin updates ship new cards automatically.
 
-> Helpers: a dashboard strategy can't create input helpers, so the Trips search/sort/filter still needs `packages/trip-list-helpers.yaml` added as a package (replace `__DEVICE__`, restart). Without them the list just shows everything unfiltered.
+> Helpers: a dashboard strategy can't create input helpers, so the Trips search/sort/filter **panel** only appears when you add `packages/trip-list-helpers.yaml` (replace `__DEVICE__`, restart). **Without them nothing breaks** — the trip list just shows everything, newest-first.
+
+## Works with any car integration
+
+The dashboard's data comes from **hass-ev-trip-logger** (`sensor.<device>_*`),
+which is car-agnostic. The only car-specific parts are the optional Driving-view
+tiles (range, temperatures, odometer, tires, location). Those are resolved
+**generically** for each `vehicle` slug, in this order:
+
+1. an explicit `*_entity` **override** in the strategy config (below), then
+2. **known name candidates** (BYD `sensor.<v>_range` / `_exterior_temperature` /
+   `_cabin_temperature`; Tesla `sensor.<v>_battery_range` / `_outside_temperature` /
+   `_inside_temperature`; etc.), then
+3. **`device_class` auto-detection** among that vehicle's own entities (a
+   `distance` sensor whose name says "range", a `temperature` sensor named
+   out/cabin, …).
+
+Anything that can't be resolved is **hidden** (no broken cards). So a BYD, a
+Tesla, or any other integration all work with just `vehicle:` set — and if a
+guess is wrong, override it:
+
+```yaml
+strategy:
+  type: custom:ev-trip
+  vehicle: portunol            # e.g. a Tesla
+  # --- optional overrides (only if auto-detection picks the wrong entity) ---
+  range_entity: sensor.portunol_battery_range
+  odometer_entity: sensor.portunol_odometer
+  outside_temp_entity: sensor.portunol_outside_temperature
+  cabin_temp_entity: sensor.portunol_inside_temperature
+  charge_power_entity: sensor.portunol_charger_power   # for the per-charge kW curve
+```
+
+Supported override keys: `range_entity`, `odometer_entity`, `outside_temp_entity`,
+`cabin_temp_entity`, `charge_power_entity` (plus `soh_entity` / `location_entity` /
+`tire_pressure_entities`, used when those tiles are enabled).
 
 ### Option B — Pure YAML (no HACS)
 
