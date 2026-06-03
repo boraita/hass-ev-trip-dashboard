@@ -844,54 +844,245 @@ class EvTripHistoryCard extends HTMLElement {
   getCardSize() {
     return 4;
   }
+  connectedCallback() {
+    // Event delegation: one click listener toggles the tapped journey's detail.
+    if (this._clickBound) return;
+    this._clickBound = true;
+    this.addEventListener("click", (ev) => {
+      const j = ev.target && ev.target.closest && ev.target.closest(".journey[data-journey-id]");
+      if (!j || !this.contains(j)) return;
+      const id = j.getAttribute("data-journey-id");
+      if (id == null) return;
+      this._openId = String(this._openId) === String(id) ? null : id;
+      this._render();
+    });
+  }
   _render() {
     if (!this._hass) return;
+    // Lazy-bind the click delegation in case connectedCallback hasn't run.
+    if (!this._clickBound && typeof this.addEventListener === "function") {
+      this.connectedCallback();
+    }
     const D = this._device || detectDevice(this._hass);
+    this._device = D;
     const kind = this._kind;
     const st = this._hass.states[`sensor.${D}_recent_${kind}`];
     const rows = (st && st.attributes && Array.isArray(st.attributes[kind]) && st.attributes[kind]) || [];
     const cur = { EUR: "€", USD: "$", GBP: "£" };
     const sym = (c) => cur[c] || c || "€";
-    const num = (v, suffix = "") => (v === null || v === undefined ? "—" : `${v}${suffix}`);
+    const DASH = "—";
+    const fmtNum = (v, dp) => (v == null || isNaN(v) ? DASH : dp == null ? String(v) : Number(v).toFixed(dp));
 
-    let head, body;
-    if (kind === "journeys") {
-      head = `<tr><th>When</th><th>#</th><th class="r">Stages</th><th class="r">km</th><th class="r">kWh</th><th class="r">Cost</th></tr>`;
-      body = rows
-        .map(
-          (j) =>
-            `<tr><td>${_fmtDate(j.ended_at)}</td><td>${num(j.journey_id)}</td><td class="r">${num(j.stages)}</td><td class="r">${num(j.distance_km)}</td><td class="r">${num(j.energy_kwh)}</td><td class="r">${num(j.cost)} ${j.cost != null ? _esc(sym(j.currency)) : ""}</td></tr>`
-        )
-        .join("");
-    } else {
-      head = `<tr><th>When</th><th>Where</th><th class="r">kWh</th><th class="r">€/kWh</th><th class="r">Total</th></tr>`;
-      body = rows
-        .map(
-          (c) =>
-            `<tr><td>${_fmtDate(c.ended_at)}</td><td>${_esc(c.location || "—")}${c.type ? ` <span class="muted">(${_esc(c.type)})</span>` : ""}</td><td class="r">${num(c.kwh)}</td><td class="r">${num(c.price_per_kwh)}</td><td class="r">${num(c.total_cost)} ${c.total_cost != null ? _esc(sym(c.currency)) : ""}</td></tr>`
-        )
-        .join("");
-    }
-
-    const inner = rows.length
-      ? `<table><thead>${head}</thead><tbody>${body}</tbody></table>`
-      : `<div class="empty">No ${kind} recorded yet.</div>`;
+    const inner = kind === "journeys" ? this._journeysHtml(rows, D, sym, DASH, fmtNum) : this._chargesHtml(rows, sym, DASH, fmtNum);
 
     this.innerHTML = `
       <ha-card>
         <style>
-          .head{padding:12px 16px 6px;font-weight:600;}
-          table{width:100%;border-collapse:collapse;font-size:.9em;}
-          th,td{padding:7px 16px;text-align:left;border-top:1px solid var(--divider-color);white-space:nowrap;}
-          th{color:var(--secondary-text-color);font-weight:500;font-size:.85em;}
-          td{color:var(--primary-text-color);font-variant-numeric:tabular-nums;}
-          .r{text-align:right;}
-          .muted{color:var(--secondary-text-color);}
-          .empty{padding:16px;color:var(--secondary-text-color);}
+          .head{display:flex;justify-content:space-between;align-items:baseline;
+                padding:14px 16px 10px;font-weight:600;font-size:1.05em;}
+          .head .count{color:var(--secondary-text-color);font-weight:400;font-size:.82em;}
+          .list{display:flex;flex-direction:column;gap:10px;padding:0 12px 14px;}
+          .empty{padding:24px 16px;text-align:center;color:var(--secondary-text-color);}
+
+          /* ---- mushroom-like row ---- */
+          .row{display:flex;align-items:center;gap:12px;
+               background:var(--secondary-background-color, var(--card-background-color));
+               border:1px solid var(--divider-color);border-radius:14px;padding:12px;}
+          .journey{cursor:pointer;transition:border-color .15s ease;}
+          .journey:hover{border-color:var(--primary-color);}
+          .journey--open{border-color:var(--primary-color);}
+          .badge{flex:0 0 auto;width:42px;height:42px;border-radius:50%;
+                 display:flex;align-items:center;justify-content:center;}
+          .badge ha-icon{--mdc-icon-size:22px;}
+          .badge--road{background:rgba(3,155,229,.16);}
+          .badge--road ha-icon{color:var(--info-color, #039be5);}
+          .badge--ev{background:rgba(3,155,229,.16);}
+          .badge--ev ha-icon{color:var(--info-color, #039be5);}
+          .badge--ac{background:rgba(67,160,71,.16);}
+          .badge--ac ha-icon{color:var(--success-color, #43a047);}
+          .badge--dc{background:rgba(251,140,0,.16);}
+          .badge--dc ha-icon{color:var(--warning-color, #fb8c00);}
+          .body{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;gap:3px;}
+          .title-line{display:flex;align-items:center;gap:8px;flex-wrap:wrap;}
+          .title{font-weight:700;color:var(--primary-text-color);
+                 font-variant-numeric:tabular-nums;}
+          .id{color:var(--secondary-text-color);font-size:.8em;font-weight:600;}
+          .sub{color:var(--secondary-text-color);font-size:.85em;
+               font-variant-numeric:tabular-nums;}
+          .sub b{color:var(--primary-text-color);font-weight:700;}
+          .right{flex:0 0 auto;text-align:right;display:flex;flex-direction:column;gap:2px;}
+          .right .big{font-weight:800;font-size:1.15em;color:var(--primary-text-color);
+                      font-variant-numeric:tabular-nums;}
+          .right .small{font-size:.8em;color:var(--secondary-text-color);
+                        font-variant-numeric:tabular-nums;}
+          .chip{display:inline-flex;align-items:center;gap:3px;
+                background:var(--secondary-background-color);border:1px solid var(--divider-color);
+                border-radius:999px;padding:1px 8px;font-size:.75em;font-weight:600;
+                color:var(--secondary-text-color);white-space:nowrap;}
+          .caret{flex:0 0 auto;color:var(--secondary-text-color);
+                 transition:transform .15s ease;}
+          .caret ha-icon{--mdc-icon-size:20px;}
+          .journey--open .caret{transform:rotate(180deg);}
+
+          /* ---- expanded journey detail ---- */
+          .detail{margin-top:10px;padding-top:12px;border-top:1px solid var(--divider-color);
+                  display:flex;flex-direction:column;gap:12px;}
+          .stages{display:flex;flex-direction:column;gap:8px;}
+          .stage{display:flex;align-items:center;gap:10px;padding:8px 4px;}
+          .stage + .stage{border-top:1px dashed var(--divider-color);}
+          .stage .sbody{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;gap:3px;}
+          .stage .swhen{font-size:.8em;color:var(--secondary-text-color);
+                        font-variant-numeric:tabular-nums;}
+          .stage .sroute{display:flex;align-items:center;gap:6px;flex-wrap:wrap;font-size:.9em;}
+          .stage .smetrics{font-size:.8em;color:var(--secondary-text-color);
+                           font-variant-numeric:tabular-nums;}
+          .stage .smetrics b{color:var(--primary-text-color);font-weight:700;}
+          .arrow{color:var(--secondary-text-color);}
+          .score-pill{flex:0 0 auto;min-width:38px;padding:4px 8px;border-radius:999px;
+                      color:#fff;font-weight:800;text-align:center;
+                      font-variant-numeric:tabular-nums;font-size:.9em;}
+          .stage-empty{padding:8px 4px;color:var(--secondary-text-color);
+                       font-size:.85em;font-style:italic;}
+          .stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;}
+          .stat{background:var(--secondary-background-color);border:1px solid var(--divider-color);
+                border-radius:12px;padding:10px 8px;display:flex;flex-direction:column;
+                align-items:center;gap:3px;text-align:center;}
+          .stat-label{font-size:.62em;letter-spacing:.05em;text-transform:uppercase;
+                      color:var(--secondary-text-color);line-height:1.2;}
+          .stat-value{font-size:1.2em;font-weight:800;color:var(--primary-text-color);
+                      font-variant-numeric:tabular-nums;line-height:1.1;}
+          .stat-unit{font-size:.55em;font-weight:600;color:var(--secondary-text-color);}
         </style>
-        <div class="head">${_esc(this._config.title || (kind === "journeys" ? "Journeys" : "Charges"))}</div>
-        ${inner}
+        <div class="head"><span>${_esc(this._config.title || (kind === "journeys" ? "Journeys" : "Charges"))}</span>
+          <span class="count">${rows.length} ${rows.length === 1 ? kind.replace(/s$/, "") : kind}</span></div>
+        <div class="list">${inner}</div>
       </ha-card>`;
+  }
+
+  _journeysHtml(journeys, D, sym, DASH, fmtNum) {
+    if (!journeys.length) return `<div class="empty">No journeys recorded yet.</div>`;
+    const ts = this._hass.states[`sensor.${D}_recent_trips`];
+    const allTrips = (ts && ts.attributes && Array.isArray(ts.attributes.trips) && ts.attributes.trips) || [];
+
+    return journeys
+      .map((j) => {
+        const isOpen = j.journey_id != null && String(this._openId) === String(j.journey_id);
+        const stageCount = j.stages != null ? j.stages : null;
+        const stageChip = stageCount == null ? "" : `<span class="chip"><ha-icon icon="mdi:map-marker-path"></ha-icon>${stageCount} ${stageCount === 1 ? "stage" : "stages"}</span>`;
+        const costStr = j.cost != null ? `${fmtNum(j.cost, 2)} ${_esc(sym(j.currency))}` : DASH;
+
+        let detail = "";
+        if (isOpen) {
+          const stages = allTrips
+            .filter((t) => t.journey_id != null && String(t.journey_id) === String(j.journey_id))
+            .sort((a, b) => new Date(a.started_at) - new Date(b.started_at));
+          detail = this._journeyDetailHtml(j, stages, sym, DASH, fmtNum);
+        }
+
+        return `
+          <div class="row journey${isOpen ? " journey--open" : ""}" data-journey-id="${_esc(j.journey_id)}">
+            <div class="badge badge--road"><ha-icon icon="mdi:road-variant"></ha-icon></div>
+            <div class="body">
+              <div class="title-line">
+                <span class="title">${_fmtDate(j.ended_at)}</span>
+                <span class="id">#${_esc(j.journey_id)}</span>
+                ${stageChip}
+              </div>
+              <div class="sub"><b>${fmtNum(j.distance_km)}</b> km · <b>${fmtNum(j.energy_kwh)}</b> kWh · <b>${costStr}</b></div>
+            </div>
+            <div class="caret"><ha-icon icon="mdi:chevron-down"></ha-icon></div>
+          </div>
+          ${isOpen ? detail : ""}`;
+      })
+      .join("");
+  }
+
+  _journeyDetailHtml(j, stages, sym, DASH, fmtNum) {
+    // Stages list.
+    let stagesHtml;
+    if (!stages.length) {
+      stagesHtml = `<div class="stage-empty">Stage details not in recent window.</div>`;
+    } else {
+      stagesHtml = stages
+        .map((t) => {
+          const score = t.score != null ? Number(t.score).toFixed(1) : DASH;
+          const origin = t.origin ? `<span class="chip">${_esc(t.origin)}</span>` : `<span class="chip">${DASH}</span>`;
+          const dest = t.destination ? `<span class="chip">${_esc(t.destination)}</span>` : `<span class="chip">${DASH}</span>`;
+          return `
+            <div class="stage">
+              <div class="sbody">
+                <div class="swhen">${_fmtDate(t.started_at)}</div>
+                <div class="sroute">${origin}<span class="arrow"><ha-icon icon="mdi:arrow-right" style="--mdc-icon-size:16px"></ha-icon></span>${dest}</div>
+                <div class="smetrics"><b>${fmtNum(t.distance_km)}</b> km · <b>${fmtNum(t.consumption_kwh_100km)}</b> kWh/100</div>
+              </div>
+              <div class="score-pill" style="background:${_scoreColor(t.score)}">${score}</div>
+            </div>`;
+        })
+        .join("");
+    }
+
+    // Averages / summary.
+    const avgCons =
+      j.energy_kwh != null && j.distance_km != null && j.distance_km !== 0
+        ? fmtNum((j.energy_kwh / j.distance_km) * 100, 1)
+        : DASH;
+
+    let totDist = 0;
+    let totDur = 0;
+    let haveDur = false;
+    for (const t of stages) {
+      if (t.distance_km != null && !isNaN(t.distance_km)) totDist += Number(t.distance_km);
+      if (t.duration_min != null && !isNaN(t.duration_min)) {
+        totDur += Number(t.duration_min);
+        haveDur = true;
+      }
+    }
+    const avgSpeed = haveDur && totDur > 0 ? fmtNum(totDist / (totDur / 60), 1) : DASH;
+
+    const stat = (label, value, unit) => `
+      <div class="stat">
+        <div class="stat-label">${_esc(label)}</div>
+        <div class="stat-value">${value}<span class="stat-unit">${unit ? " " + _esc(unit) : ""}</span></div>
+      </div>`;
+
+    return `
+      <div class="detail">
+        <div class="stages">${stagesHtml}</div>
+        <div class="stats">
+          ${stat("Distance", fmtNum(j.distance_km), "km")}
+          ${stat("Energy", fmtNum(j.energy_kwh), "kWh")}
+          ${stat("Cost", j.cost != null ? fmtNum(j.cost, 2) : DASH, j.cost != null ? sym(j.currency) : "")}
+          ${stat("Avg consumption", avgCons, "kWh/100")}
+          ${stat("Avg speed", avgSpeed, "km/h")}
+        </div>
+      </div>`;
+  }
+
+  _chargesHtml(charges, sym, DASH, fmtNum) {
+    if (!charges.length) return `<div class="empty">No charges recorded yet.</div>`;
+    return charges
+      .map((c) => {
+        const type = c.type ? String(c.type).toUpperCase() : null;
+        const badgeMod = type === "DC" ? "dc" : type === "AC" ? "ac" : "ev";
+        const typeChip = type ? `<span class="chip">${_esc(type)}</span>` : "";
+        const total = c.total_cost != null ? `${fmtNum(c.total_cost, 2)} ${_esc(sym(c.currency))}` : DASH;
+        return `
+          <div class="row">
+            <div class="badge badge--${badgeMod}"><ha-icon icon="mdi:ev-station"></ha-icon></div>
+            <div class="body">
+              <div class="title-line">
+                <span class="title">${_fmtDate(c.ended_at)}</span>
+                <span class="id">${_esc(c.location || DASH)}</span>
+                ${typeChip}
+              </div>
+              <div class="sub"><b>${fmtNum(c.kwh)}</b> kWh · <b>${fmtNum(c.price_per_kwh)}</b> ${_esc(sym(c.currency))}/kWh</div>
+            </div>
+            <div class="right">
+              <span class="big">${total}</span>
+            </div>
+          </div>`;
+      })
+      .join("");
   }
 }
 customElements.define("ev-trip-history-card", EvTripHistoryCard);
