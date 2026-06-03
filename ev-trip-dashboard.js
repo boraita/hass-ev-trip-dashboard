@@ -686,92 +686,8 @@ function patternsView(D, hass) {
   // cards.
   cards.push({ type: "custom:ev-trip-patterns-card", device: D });
 
-  // ---- By Hour — 24-bar histogram --------------------------------------
-  // by_hour keys are STRINGS "0".."23"; we emit {x, y} pairs so apex labels
-  // the bars "00h", "01h", … in chronological order.
-  cards.push({
-    type: "custom:apexcharts-card",
-    header: { show: true, title: "By hour", show_states: false },
-    graph_span: "1d",
-    apex_config: {
-      chart: { height: 240, toolbar: { show: false } },
-      plotOptions: { bar: { borderRadius: 4, columnWidth: "70%" } },
-      dataLabels: { enabled: false },
-      xaxis: {
-        labels: { style: { fontSize: "10px" }, rotate: 0, hideOverlappingLabels: true },
-        tickAmount: 12,
-      },
-      yaxis: { labels: { style: { fontSize: "10px" } }, decimalsInFloat: 0 },
-      grid: { borderColor: "rgba(255,255,255,0.08)" },
-      tooltip: { x: { formatter: 'EVAL:function(val) { return val + ":00"; }' } },
-      colors: ["#f59e0b"],
-    },
-    series: [
-      {
-        entity: `sensor.${D}_trip_patterns`,
-        name: "Trips",
-        type: "column",
-        data_generator:
-          'const by = entity.attributes.by_hour || {};\nconst out = [];\nfor (let i = 0; i < 24; i++) {\n  const k = String(i);\n  out.push({ x: (i < 10 ? "0" + i : "" + i) + "h", y: Number(by[k] || 0) });\n}\nreturn out;',
-      },
-    ],
-  });
-
-  // ---- By Day — radar chart --------------------------------------------
-  // by_weekday is keyed "0".."6" with 0 = Monday. We feed apex an [{x, y}, …]
-  // shape because apexcharts-card requires it; apex flattens the y values for
-  // radar and pulls the labels from apex_config.xaxis.categories.
-  cards.push({
-    type: "custom:apexcharts-card",
-    header: { show: true, title: "By day", show_states: false },
-    apex_config: {
-      chart: { type: "radar", height: 280, toolbar: { show: false } },
-      stroke: { width: 2 },
-      fill: { opacity: 0.35 },
-      markers: { size: 4 },
-      xaxis: {
-        categories: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"],
-        labels: { style: { fontSize: "12px", fontWeight: 600 } },
-      },
-      yaxis: { show: false },
-      colors: ["#6366f1"],
-      tooltip: { y: { formatter: 'EVAL:function(val) { return val + " trips"; }' } },
-    },
-    series: [
-      {
-        entity: `sensor.${D}_trip_patterns`,
-        name: "Trips",
-        data_generator:
-          'const labels = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];\nconst by = entity.attributes.by_weekday || {};\nconst out = [];\nfor (let i = 0; i < 7; i++) {\n  out.push({ x: labels[i], y: Number(by[String(i)] || 0) });\n}\nreturn out;',
-      },
-    ],
-  });
-
-  // ---- Km per weekday — 7-cell horizontal strip -------------------------
-  // Saturday/Sunday get an "amber/orange" color hint to set weekends apart;
-  // weekdays use indigo. Each cell reads the km_by_weekday attr by string key.
-  const weekdayTile = (label, key, iconColor, icon) =>
-    mushroomTpl({
-      primary: label,
-      secondary: `{{ (state_attr('sensor.${D}_trip_patterns','km_by_weekday') or {}).get('${key}', 0) | round(0) }} km`,
-      icon: icon || "mdi:calendar-today",
-      iconColor,
-      layout: "vertical",
-      fillContainer: true,
-      tapAction: { action: "more-info", entity: `sensor.${D}_trip_patterns` },
-    });
-
-  cards.push(
-    hstack([
-      weekdayTile("Mon", "0", "indigo"),
-      weekdayTile("Tue", "1", "indigo"),
-      weekdayTile("Wed", "2", "indigo"),
-      weekdayTile("Thu", "3", "indigo"),
-      weekdayTile("Fri", "4", "indigo"),
-      weekdayTile("Sat", "5", "orange", "mdi:calendar-weekend"),
-      weekdayTile("Sun", "6", "orange", "mdi:calendar-weekend"),
-    ])
-  );
+  // Apex by-hour + "By day" radar + mushroom weekday strip removed —
+  // superseded by ev-trip-patterns-card above (the radar was stuck loading).
 
   return {
     title: "Patterns",
@@ -869,54 +785,8 @@ function eficienciaView(D, hass) {
     })
   );
 
-  // ---- Efficiency vs Distance (SCATTER, 3 series by score) -------------
-  // Each trip becomes one point: x = distance_km, y = consumption_kwh_100km.
-  // Three series so apex colors points by score band:
-  //   green (≥7), orange (4..7), red (<4 or missing).
-  const scatterSeries = (name, color, filterJs) => ({
-    entity: `sensor.${D}_recent_trips`,
-    name,
-    color,
-    data_generator:
-      "const trips = entity.attributes.trips || [];\nreturn trips\n  .filter((t) => " +
-      filterJs +
-      "\n    && t.distance_km != null\n    && t.consumption_kwh_100km != null)\n  .map((t) => [Number(t.distance_km), Number(t.consumption_kwh_100km)]);",
-  });
-
-  cards.push(
-    apexChart({
-      title: "Efficiency vs Distance",
-      graphSpan: "90d",
-      chartType: "scatter",
-      apexConfig: {
-        chart: { height: 280 },
-        dataLabels: { enabled: false },
-        grid: { borderColor: "rgba(255,255,255,0.08)" },
-        legend: { show: true, position: "bottom" },
-        tooltip: {
-          shared: false,
-          intersect: true,
-          x: { formatter: "EVAL:function(val){ return val.toFixed(1) + ' km'; }" },
-          y: { formatter: "EVAL:function(val){ return val.toFixed(1) + ' kWh/100km'; }" },
-        },
-        xaxis: { type: "numeric", title: { text: "Distance (km)" }, decimalsInFloat: 0 },
-        yaxis: { title: { text: "kWh/100km" }, decimalsInFloat: 1 },
-      },
-      series: [
-        scatterSeries("Score ≥ 7", "#2ea043", "Number(t.score) >= 7"),
-        scatterSeries(
-          "Score 4–7",
-          "#f0883e",
-          "(function(){ const s = Number(t.score); return s >= 4 && s < 7; })()"
-        ),
-        scatterSeries(
-          "Score < 4",
-          "#f85149",
-          "(function(){ const s = Number(t.score); return (isNaN(s) || s < 4); })()"
-        ),
-      ],
-    })
-  );
+  // Apex "Efficiency vs Distance" scatter removed — superseded by
+  // ev-trip-efficiency-card above (cleaner, rounded axis labels).
 
   // ---- Consumption by temperature bucket (BAR) -------------------------
   // by_bucket keys are stringified ints; sort them numerically ascending so
@@ -999,119 +869,8 @@ function topsView(D, hass) {
   // NEW: robust records board (leaders + expandable top-9) from sensor.<D>_tops.
   cards.push({ type: "custom:ev-trip-records-card", device: D });
 
-  // Common style block for the KPI tiles — name top-left, big label in middle.
-  const recordTileStyles = (iconColor) => ({
-    card: [{ padding: "12px" }, { "border-radius": "16px" }],
-    name: [
-      { "font-size": "11px" },
-      { "letter-spacing": "1px" },
-      { color: "var(--secondary-text-color)" },
-    ],
-    label: [
-      { "font-size": "16px" },
-      { "font-weight": "600" },
-      { "white-space": "pre-line" },
-      { "line-height": "1.3" },
-    ],
-    icon: [{ color: iconColor }, { width: "28px" }],
-  });
-
-  // ---- KPI grid (2x2) ---------------------------------------------------
-  // Each label is an inline JS expression that reads the first entry of the
-  // ranking list (longest / longest_duration / cheapest / top_efficiency) and
-  // formats "<value>\n<date>" — the pre-line white-space honors the newline.
-  cards.push({
-    type: "grid",
-    columns: 2,
-    square: false,
-    cards: [
-      {
-        type: "custom:button-card",
-        name: "LONGEST",
-        icon: "mdi:map-marker-distance",
-        show_state: false,
-        show_label: true,
-        label:
-          "[[[\n  const list = states['sensor." +
-          D +
-          "_tops']?.attributes?.longest || [];\n  if (!list.length) return '—';\n  const t = list[0];\n  const km = t.distance_km != null ? Number(t.distance_km).toFixed(1) : '—';\n  const d  = t.ended_at ? new Date(t.ended_at).toLocaleDateString('es-ES') : '';\n  return `${km} km\\n${d}`;\n]]]",
-        styles: recordTileStyles("var(--info-color)"),
-      },
-      {
-        type: "custom:button-card",
-        name: "MAX DURATION",
-        icon: "mdi:timer-sand",
-        show_state: false,
-        show_label: true,
-        label:
-          "[[[\n  const list = states['sensor." +
-          D +
-          "_tops']?.attributes?.longest_duration || [];\n  if (!list.length) return '—';\n  const t = list[0];\n  const mn = t.duration_min != null ? Math.round(Number(t.duration_min)) : '—';\n  const d  = t.ended_at ? new Date(t.ended_at).toLocaleDateString('es-ES') : '';\n  return `${mn} min\\n${d}`;\n]]]",
-        styles: recordTileStyles("var(--warning-color)"),
-      },
-      {
-        type: "custom:button-card",
-        name: "CHEAPEST",
-        icon: "mdi:cash-multiple",
-        show_state: false,
-        show_label: true,
-        label:
-          "[[[\n  const list = states['sensor." +
-          D +
-          "_tops']?.attributes?.cheapest || [];\n  if (!list.length) return '—';\n  const t = list[0];\n  const c  = t.cost != null ? Number(t.cost).toFixed(2) : '—';\n  const cur = t.currency || '€';\n  const d  = t.ended_at ? new Date(t.ended_at).toLocaleDateString('es-ES') : '';\n  return `${c} ${cur}\\n${d}`;\n]]]",
-        styles: recordTileStyles("var(--success-color)"),
-      },
-      {
-        type: "custom:button-card",
-        name: "BEST EFFICIENCY",
-        icon: "mdi:leaf",
-        show_state: false,
-        show_label: true,
-        label:
-          "[[[\n  const list = states['sensor." +
-          D +
-          "_tops']?.attributes?.top_efficiency || [];\n  if (!list.length) return '—';\n  const t = list[0];\n  const v = t.consumption_kwh_100km != null\n    ? Number(t.consumption_kwh_100km).toFixed(1) : '—';\n  const d = t.ended_at ? new Date(t.ended_at).toLocaleDateString('es-ES') : '';\n  return `${v} kWh/100\\n${d}`;\n]]]",
-        styles: recordTileStyles("var(--success-color)"),
-      },
-    ],
-  });
-
-  // ---- Top-9 ranking cards ----------------------------------------------
-  // Each one is a mushroom-template-card whose `secondary` is a Jinja list.
-  // We reuse a single helper to spell out the four categories.
-  const topList = (primary, icon, iconColor, attr, valueFormat) =>
-    mushroomTpl({
-      primary,
-      secondary:
-        `{%- set rows = state_attr('sensor.${D}_tops', '${attr}') or [] %}\n` +
-        `{%- if rows | length == 0 %}\n_Sin datos todavía._\n` +
-        `{%- else %}\n{%- for t in rows[:9] %}\n` +
-        `{{ loop.index }}. {{ as_timestamp(t.ended_at) | timestamp_custom('%d/%m/%Y') }} · **${valueFormat}**\n` +
-        `{%- endfor %}\n{%- endif %}`,
-      icon,
-      iconColor,
-      fillContainer: true,
-      multilineSecondary: true,
-    });
-
-  cards.push(
-    topList("🥇 Top Distance", "mdi:map-marker-distance", "blue", "longest", "{{ '%.1f' | format(t.distance_km | float(0)) }} km")
-  );
-  cards.push(
-    topList("⚡ Top Consumption", "mdi:flash", "amber", "top_consumption", "{{ '%.2f' | format(t.energy_kwh | float(0)) }} kWh")
-  );
-  cards.push(
-    topList(
-      "🌱 Top Efficiency",
-      "mdi:leaf",
-      "green",
-      "top_efficiency",
-      "{{ '%.1f' | format(t.consumption_kwh_100km | float(0)) }} kWh/100"
-    )
-  );
-  cards.push(
-    topList("🚀 Top Average Speed", "mdi:speedometer", "red", "top_speed", "{{ '%.0f' | format(t.avg_speed_kmh | float(0)) }} km/h")
-  );
+  // Old apex/button top-9 lists + record KPI tiles removed — replaced by
+  // ev-trip-records-card above (nicer expandable board).
 
   return {
     title: "Records",
@@ -1299,21 +1058,16 @@ function detalleView(D, V, hass) {
 // (custom element ships with this plugin — replaces the markdown blob in
 // trip-list-v2.yaml with a reactive, expandable list).
 // ==========================================================================
-function viajesView(D, hass) {
-  const cards = [];
-
-  cards.push(mushroomTitle("Trips", "Last 30 days", "mdi:car-electric"));
-
-  // ---- KPI strip (5 button-cards) --------------------------------------
-  // Avg consumption is computed in JS from recent_trips because it spans the
-  // last 10 trips; the others are direct sensor reads.
+// 30-day average KPI tiles — moved out of the old Trips-cards view so the
+// restored Trips view can show them on top.
+function trips30dKpis(D) {
   const kpiStyles = {
-    card: [{ padding: "10px" }, { "border-radius": "14px" }],
+    card: [{ padding: "12px" }, { "border-radius": "14px" }],
     name: [{ "font-size": "12px" }, { opacity: "0.75" }],
     state: [{ "font-size": "18px" }, { "font-weight": "bold" }],
   };
 
-  cards.push({
+  return {
     type: "grid",
     columns: 5,
     square: false,
@@ -1385,23 +1139,6 @@ function viajesView(D, hass) {
           "[[[ const v = entity && entity.state; return (v==null||v==='unavailable'||v==='unknown') ? '—' : `${Number(v).toFixed(1)} km/h` ]]]",
       },
     ],
-  });
-
-  // ---- Reactive trip list (custom element from this plugin) ------------
-  // Replaces the per-row Jinja markdown of trip-list-v2.yaml with a sortable,
-  // searchable, expandable list. Honours the same input helpers when present.
-  cards.push({ type: "custom:ev-trip-list-card", device: D, title: "Recent trips" });
-
-  return {
-    // Demoted to a distinct path so the restored pre-2.0 "Trips" (left list +
-    // right records/search) can reclaim the canonical "trips" slot. Remove this
-    // view once the restored one is confirmed as the keeper.
-    title: "Trips (cards)",
-    path: "trips-cards",
-    icon: "mdi:car-multiple",
-    type: "sections",
-    max_columns: 2,
-    sections: [grid(cards)],
   };
 }
 
@@ -1485,11 +1222,43 @@ function cargasView(D, hass) {
   // expandable detail panels.
   cards.push({ type: "custom:ev-trip-history-card", device: D, kind: "charges", title: "Charge history" });
 
-  // NOTE: a floating "+" to log a manual charge used to live here, but it
-  // fired ev_trip_logger.log_charge with empty service_data → the service
-  // rejects it ("required key 'kwh'"). Charges are auto-detected by the
-  // logger's charge_sensor anyway. To re-add manual logging, wire a
-  // browser_mod popup with input_number helpers for kwh + €/kWh.
+  // ---- Quick-fix the last charge's €/kWh -------------------------------
+  // Auto-detect saves charges at the home price; this lets you correct the
+  // most recent one on the fly via ev_trip_logger.set_last_charge_price
+  // (kWh + timestamp stay; cost is recomputed). Needs a runtime input_number
+  // helper `input_number.<device>_charge_price_edit`; shown only when present.
+  if (has(hass, `input_number.${D}_charge_price_edit`)) {
+    cards.push({
+      type: "vertical-stack",
+      cards: [
+        {
+          type: "entities",
+          title: "Fix last charge €/kWh",
+          show_header_toggle: false,
+          entities: [{ entity: `input_number.${D}_charge_price_edit`, name: "New €/kWh" }],
+        },
+        {
+          type: "custom:button-card",
+          name: "Apply to last charge",
+          icon: "mdi:content-save-outline",
+          show_state: false,
+          styles: {
+            card: [{ padding: "10px" }, { "border-radius": "12px" }, { "background-color": "var(--primary-color)" }],
+            name: [{ color: "white" }, { "font-weight": "600" }],
+            icon: [{ color: "white" }, { width: "22px" }],
+          },
+          tap_action: {
+            action: "call-service",
+            service: "ev_trip_logger.set_last_charge_price",
+            service_data: {
+              price_per_kwh:
+                "[[[ return Number(states['input_number." + D + "_charge_price_edit'].state) ]]]",
+            },
+          },
+        },
+      ],
+    });
+  }
 
   return {
     title: "Charges",
@@ -3263,13 +3032,19 @@ function drivingView(D, V, hass) {
             `{%- set ended = state_attr('sensor.${D}_last_trip_distance', 'ended_at') %}\n` +
             `{%- if ended %}\n` +
             `_{{ as_timestamp(ended) | timestamp_custom('%d/%m %H:%M') }} — {{ state_attr('sensor.${D}_last_trip_distance', 'origin') or '?' }} → {{ state_attr('sensor.${D}_last_trip_distance', 'destination') or '?' }}_\n` +
-            `{%- endif %}`
+            `{%- endif %}\n` +
+            // Percentile vs the recent window (relocated here from the deleted Detail view).
+            `{%- set trip = states('sensor.${D}_last_trip_consumption') | float(0) %}\n` +
+            `{%- set trips = state_attr('sensor.${D}_recent_trips', 'trips') or [] %}\n` +
+            `{%- set valid = trips | selectattr('consumption_kwh_100km','defined') | rejectattr('consumption_kwh_100km','none') | list %}\n` +
+            `{%- set total = valid | count %}\n` +
+            `{%- if total > 0 and trip > 0 %}{%- set worse = valid | selectattr('consumption_kwh_100km','>',trip) | list | count %}\n` +
+            `\n**Percentile:** Top {{ ((worse/total)*100)|round(0) }}% — better than {{ worse }} of {{ total }} recent trips{%- endif %}`
           ),
           { type: "glance", columns: 3, entities: lastEnts },
         ],
       },
     },
-    { type: "custom:ev-trip-journey-card", device: D },
   ];
 
   // Charging-now card from the logger's live charge sensors.
@@ -3295,10 +3070,15 @@ function drivingView(D, V, hass) {
 
   const sections = [grid(status), grid(now)];
 
-  // Map (car integration only).
-  if (has(hass, `device_tracker.${V}_location`)) {
-    sections.push(grid([heading("Where", "mdi:map-marker"), { type: "map", default_zoom: 11, entities: [`device_tracker.${V}_location`] }]));
-  }
+  // Today's journey — full width across both columns (replaces the map).
+  sections.push({
+    type: "grid",
+    column_span: 2,
+    cards: [
+      heading("Today's journey", "mdi:map-marker-path"),
+      { type: "custom:ev-trip-journey-card", device: D },
+    ],
+  });
 
   return { title: "Driving", path: "driving", icon: "mdi:car", type: "sections", max_columns: 2, sections };
 }
@@ -3348,6 +3128,12 @@ function tripsView(D) {
     type: "sections",
     max_columns: 2,
     sections: [
+      // TOP — 30-day average KPI strip, full width so the tiles breathe.
+      {
+        type: "grid",
+        column_span: 2,
+        cards: [heading("Last 30 days", "mdi:calendar-range"), trips30dKpis(D)],
+      },
       // LEFT column — the trip list.
       grid([
         heading("Trips", "mdi:map-marker-path"),
@@ -3411,14 +3197,11 @@ class EvTripDashboardStrategy {
         // Restored pre-2.0 favourites first (Driving + Trips with records/search).
         drivingView(D, V, hass),
         tripsView(D),
-        resumenView(D, V, hass),
         calendarioView(D, hass),
         tendenciasView(D, hass),
         patternsView(D, hass),
         eficienciaView(D, hass),
         topsView(D, hass),
-        detalleView(D, V, hass),
-        viajesView(D, hass),
         cargasView(D, hass),
       ],
     };
