@@ -292,7 +292,7 @@ function resumenView(D, V, hass) {
   });
 
   return {
-    title: "Resumen",
+    title: "Overview",
     path: "resumen",
     icon: "mdi:car-electric",
     type: "sections",
@@ -304,34 +304,34 @@ function resumenView(D, V, hass) {
 // ==========================================================================
 // View 2 — Calendario (Pantalla 2)
 // Monthly activity calendar via calendar-card-pro. Each day with activity
-// shows up as one all-day event ("2 viajes · 23 km · 1 carga").
+// shows up as one all-day event ("2 trips · 23 km · 1 charge").
 // ==========================================================================
 function calendarioView(D, hass) {
   // The calendar entity ships with logger v0.5.0. Until it exists, show a
   // friendly placeholder instead of calendar-card-pro's "entity not found".
   if (!has(hass, `calendar.${D}_activity`)) {
     return {
-      title: "Calendario",
+      title: "Calendar",
       path: "calendar",
       icon: "mdi:calendar",
       type: "sections",
       max_columns: 2,
       sections: [
         grid([
-          mushroomTitle("Actividad EV", null, "mdi:calendar"),
+          mushroomTitle("EV Activity", null, "mdi:calendar"),
           md(
-            "### 📅 Calendario de actividad\n\n" +
-              "Esta vista mostrará un calendario mensual con tus viajes y cargas por día.\n\n" +
-              "_Requiere `calendar." +
+            "### 📅 Activity calendar\n\n" +
+              "This view will show a monthly calendar with your trips and charges per day.\n\n" +
+              "_Requires `calendar." +
               D +
-              "_activity`, que se añade al actualizar **hass-ev-trip-logger a v0.5.0**._"
+              "_activity`, which is added when you update **hass-ev-trip-logger to v0.5.0**._"
           ),
         ]),
       ],
     };
   }
   const cards = [
-    mushroomTitle("Actividad EV", null, "mdi:calendar"),
+    mushroomTitle("EV Activity", null, "mdi:calendar"),
     {
       type: "custom:calendar-card-pro",
       entities: [
@@ -343,14 +343,14 @@ function calendarioView(D, hass) {
           color: "#1976d2",
           icon: "mdi:lightning-bolt",
           accumulate_by: "day",
-          label: "carga",
+          label: "charge",
         },
         {
           entity: `calendar.${D}_activity`,
           color: "#2e7d32",
           icon: "mdi:car",
           accumulate_by: "day",
-          label: "viaje",
+          label: "trip",
         },
       ],
       view: "month",
@@ -369,7 +369,7 @@ function calendarioView(D, hass) {
         browser_mod: {
           service: "browser_mod.popup",
           data: {
-            title: "Actividad del día",
+            title: "Day activity",
             size: "normal",
             content: {
               type: "markdown",
@@ -377,7 +377,7 @@ function calendarioView(D, hass) {
                 `{% set events = state_attr('calendar.${D}_activity', 'all_events') or [] %}\n` +
                 `{% set today = states('sensor.date') %}\n` +
                 `{% set todays = events | selectattr('start', 'search', today) | list %}\n` +
-                `{% if todays | length == 0 %}\n_Sin actividad registrada para hoy._\n` +
+                `{% if todays | length == 0 %}\n_No activity recorded for today._\n` +
                 `{% else %}\n{% for ev in todays %}\n**{{ ev.summary }}**\n{{ ev.description or '' }}\n{% endfor %}\n{% endif %}`,
             },
           },
@@ -387,7 +387,7 @@ function calendarioView(D, hass) {
   ];
 
   return {
-    title: "Calendario",
+    title: "Calendar",
     path: "calendar",
     icon: "mdi:calendar",
     type: "sections",
@@ -404,7 +404,7 @@ function calendarioView(D, hass) {
 function tendenciasView(D, hass) {
   const cards = [];
 
-  cards.push(mushroomTitle("Tendencias", "Resumen de los últimos 30/60 días", "mdi:chart-line"));
+  cards.push(mushroomTitle("Trends", "Summary of the last 30/60 days", "mdi:chart-line"));
 
   // ---- KPI 2x2 ----------------------------------------------------------
   // Tile 1 leans on trip_records.attributes.totals.longest_trip_date — colour
@@ -430,7 +430,7 @@ function tendenciasView(D, hass) {
       { operator: "default", color: "rgb(244, 67, 54)" },
     ],
     label:
-      "[[[\n  const d = entity.attributes && entity.attributes.longest && entity.attributes.longest.ended_at;\n  if (!d) return 'sin datos';\n  const days = Math.floor((Date.now() - new Date(d).getTime()) / 86400000);\n  return `hace ${days} día${days === 1 ? '' : 's'}`;\n]]]",
+      "[[[\n  const d = entity.attributes && entity.attributes.longest && entity.attributes.longest.ended_at;\n  if (!d) return 'no data';\n  const days = Math.floor((Date.now() - new Date(d).getTime()) / 86400000);\n  return `${days} day${days === 1 ? '' : 's'} ago`;\n]]]",
     styles: {
       card: [{ padding: "12px" }, { "border-radius": "16px" }],
       name: [{ "font-size": "13px" }, { opacity: "0.75" }],
@@ -569,7 +569,7 @@ function tendenciasView(D, hass) {
   );
 
   return {
-    title: "Tendencias",
+    title: "Trends",
     path: "trends",
     icon: "mdi:chart-line",
     type: "sections",
@@ -586,7 +586,7 @@ function tendenciasView(D, hass) {
 function patternsView(D, hass) {
   const cards = [];
 
-  cards.push(mushroomTitle("Patrones", "Cuándo y cuánto conduces (últimos 90 días)", "mdi:chart-bell-curve-cumulative"));
+  cards.push(mushroomTitle("Patterns", "When and how much you drive (last 90 days)", "mdi:chart-bell-curve-cumulative"));
 
   // ---- KPI strip --------------------------------------------------------
   // Two button-cards in a horizontal stack. Common large-state/small-label
@@ -608,10 +608,10 @@ function patternsView(D, hass) {
       {
         type: "custom:button-card",
         entity: `sensor.${D}_trip_patterns`,
-        name: "Viajes",
+        name: "Trips",
         show_state: true,
         show_label: true,
-        label: "ult. 90 días",
+        label: "last 90 days",
         icon: "mdi:routes",
         styles: kpiCardStyles("#f59e0b"),
         tap_action: { action: "more-info" },
@@ -619,10 +619,10 @@ function patternsView(D, hass) {
       {
         type: "custom:button-card",
         entity: `sensor.${D}_avg_trip_distance_30_days`,
-        name: "Media diaria",
+        name: "Daily avg",
         show_state: true,
         show_label: true,
-        label: "km/día (30 d)",
+        label: "km/day (30 d)",
         icon: "mdi:speedometer",
         styles: kpiCardStyles("#10b981"),
         tap_action: { action: "more-info" },
@@ -635,7 +635,7 @@ function patternsView(D, hass) {
   // the bars "00h", "01h", … in chronological order.
   cards.push({
     type: "custom:apexcharts-card",
-    header: { show: true, title: "Por hora", show_states: false },
+    header: { show: true, title: "By hour", show_states: false },
     graph_span: "1d",
     apex_config: {
       chart: { height: 240, toolbar: { show: false } },
@@ -653,7 +653,7 @@ function patternsView(D, hass) {
     series: [
       {
         entity: `sensor.${D}_trip_patterns`,
-        name: "Viajes",
+        name: "Trips",
         type: "column",
         data_generator:
           'const by = entity.attributes.by_hour || {};\nconst out = [];\nfor (let i = 0; i < 24; i++) {\n  const k = String(i);\n  out.push({ x: (i < 10 ? "0" + i : "" + i) + "h", y: Number(by[k] || 0) });\n}\nreturn out;',
@@ -667,26 +667,26 @@ function patternsView(D, hass) {
   // radar and pulls the labels from apex_config.xaxis.categories.
   cards.push({
     type: "custom:apexcharts-card",
-    header: { show: true, title: "Por día", show_states: false },
+    header: { show: true, title: "By day", show_states: false },
     apex_config: {
       chart: { type: "radar", height: 280, toolbar: { show: false } },
       stroke: { width: 2 },
       fill: { opacity: 0.35 },
       markers: { size: 4 },
       xaxis: {
-        categories: ["L", "M", "X", "J", "V", "S", "D"],
+        categories: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"],
         labels: { style: { fontSize: "12px", fontWeight: 600 } },
       },
       yaxis: { show: false },
       colors: ["#6366f1"],
-      tooltip: { y: { formatter: 'EVAL:function(val) { return val + " viajes"; }' } },
+      tooltip: { y: { formatter: 'EVAL:function(val) { return val + " trips"; }' } },
     },
     series: [
       {
         entity: `sensor.${D}_trip_patterns`,
-        name: "Viajes",
+        name: "Trips",
         data_generator:
-          'const labels = ["L","M","X","J","V","S","D"];\nconst by = entity.attributes.by_weekday || {};\nconst out = [];\nfor (let i = 0; i < 7; i++) {\n  out.push({ x: labels[i], y: Number(by[String(i)] || 0) });\n}\nreturn out;',
+          'const labels = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];\nconst by = entity.attributes.by_weekday || {};\nconst out = [];\nfor (let i = 0; i < 7; i++) {\n  out.push({ x: labels[i], y: Number(by[String(i)] || 0) });\n}\nreturn out;',
       },
     ],
   });
@@ -707,18 +707,18 @@ function patternsView(D, hass) {
 
   cards.push(
     hstack([
-      weekdayTile("L", "0", "indigo"),
-      weekdayTile("M", "1", "indigo"),
-      weekdayTile("X", "2", "indigo"),
-      weekdayTile("J", "3", "indigo"),
-      weekdayTile("V", "4", "amber"),
-      weekdayTile("S", "5", "orange", "mdi:calendar-weekend"),
-      weekdayTile("D", "6", "orange", "mdi:calendar-weekend"),
+      weekdayTile("Mon", "0", "indigo"),
+      weekdayTile("Tue", "1", "indigo"),
+      weekdayTile("Wed", "2", "indigo"),
+      weekdayTile("Thu", "3", "indigo"),
+      weekdayTile("Fri", "4", "indigo"),
+      weekdayTile("Sat", "5", "orange", "mdi:calendar-weekend"),
+      weekdayTile("Sun", "6", "orange", "mdi:calendar-weekend"),
     ])
   );
 
   return {
-    title: "Patrones",
+    title: "Patterns",
     path: "patterns",
     icon: "mdi:chart-bell-curve-cumulative",
     type: "sections",
@@ -737,8 +737,8 @@ function eficienciaView(D, hass) {
 
   cards.push({
     type: "custom:mushroom-title-card",
-    title: "Eficiencia",
-    subtitle: "Consumo, distancia y temperatura",
+    title: "Efficiency",
+    subtitle: "Consumption, distance and temperature",
     alignment: "start",
   });
 
@@ -747,7 +747,7 @@ function eficienciaView(D, hass) {
   cards.push({
     type: "custom:button-card",
     entity: `sensor.${D}_avg_consumption_30_days`,
-    name: "Consumo medio (30 días)",
+    name: "Avg consumption (30 days)",
     show_state: true,
     show_icon: true,
     icon: "mdi:leaf",
@@ -799,7 +799,7 @@ function eficienciaView(D, hass) {
       series: [
         {
           entity: `sensor.${D}_monthly_history`,
-          name: "Consumo",
+          name: "Consumption",
           color: "#2ea043",
           type: "line",
           data_generator:
@@ -885,7 +885,7 @@ function eficienciaView(D, hass) {
     series: [
       {
         entity: `sensor.${D}_consumption_by_temperature`,
-        name: "Consumo",
+        name: "Consumption",
         type: "column",
         data_generator:
           "const buckets = entity.attributes.by_bucket || {};\nreturn Object.keys(buckets)\n  .map((k) => [parseInt(k, 10), Number(buckets[k])])\n  .filter((p) => !isNaN(p[0]) && !isNaN(p[1]))\n  .sort((a, b) => a[0] - b[0])\n  .map(([k, v]) => [`${k}°C`, v]);",
@@ -897,14 +897,14 @@ function eficienciaView(D, hass) {
   // ---- Footer hint — colored advice -------------------------------------
   cards.push(
     mushroomTpl({
-      primary: "Consejo de eficiencia",
+      primary: "Efficiency tip",
       secondary:
         `{% set c = states('sensor.${D}_avg_consumption_30_days') | float(0) %}` +
-        `{% if c == 0 %} Sin datos suficientes todavía.` +
-        `{% elif c < 16 %} Excelente — mantienes un consumo muy eficiente.` +
-        `{% elif c < 19 %} Buen consumo, dentro de lo esperado.` +
-        `{% elif c < 22 %} Algo elevado: revisa estilo de conducción o clima.` +
-        `{% else %} Consumo alto: trayectos cortos/frío/autopista influyen mucho.{% endif %}`,
+        `{% if c == 0 %} Not enough data yet.` +
+        `{% elif c < 16 %} Excellent — you maintain very efficient consumption.` +
+        `{% elif c < 19 %} Good consumption, within the expected range.` +
+        `{% elif c < 22 %} A bit high: check your driving style or the weather.` +
+        `{% else %} High consumption: short trips/cold/highway have a big impact.{% endif %}`,
       icon: "mdi:lightbulb-on-outline",
       iconColor:
         `{% set c = states('sensor.${D}_avg_consumption_30_days') | float(0) %}` +
@@ -917,7 +917,7 @@ function eficienciaView(D, hass) {
   );
 
   return {
-    title: "Eficiencia",
+    title: "Efficiency",
     path: "efficiency",
     icon: "mdi:leaf",
     type: "sections",
@@ -934,7 +934,7 @@ function eficienciaView(D, hass) {
 function topsView(D, hass) {
   const cards = [];
 
-  cards.push(mushroomTitle("Récords", `{{ states('sensor.${D}_tops') }} viajes clasificados`, "mdi:trophy"));
+  cards.push(mushroomTitle("Records", `{{ states('sensor.${D}_tops') }} ranked trips`, "mdi:trophy"));
 
   // Common style block for the KPI tiles — name top-left, big label in middle.
   const recordTileStyles = (iconColor) => ({
@@ -1051,7 +1051,7 @@ function topsView(D, hass) {
   );
 
   return {
-    title: "Récords",
+    title: "Records",
     path: "tops",
     icon: "mdi:trophy",
     type: "sections",
@@ -1070,7 +1070,7 @@ function detalleView(D, V, hass) {
 
   cards.push({
     type: "custom:mushroom-title-card",
-    title: "Detalle del viaje",
+    title: "Trip detail",
     subtitle:
       `{{ state_attr('sensor.${D}_last_trip', 'started_at') | as_timestamp(0) | timestamp_custom('%d %b %H:%M', true) ` +
       `if state_attr('sensor.${D}_last_trip', 'started_at') else '—' }}`,
@@ -1101,14 +1101,14 @@ function detalleView(D, V, hass) {
     columns: 2,
     square: false,
     cards: [
-      kpiBtn(`sensor.${D}_last_trip_distance`, "Distancia", "mdi:road-variant"),
-      kpiBtn(`sensor.${D}_last_trip_energy`, "Consumo", "mdi:lightning-bolt"),
-      kpiBtn(`sensor.${D}_last_trip_consumption`, "Eficiencia", "mdi:speedometer"),
+      kpiBtn(`sensor.${D}_last_trip_distance`, "Distance", "mdi:road-variant"),
+      kpiBtn(`sensor.${D}_last_trip_energy`, "Consumption", "mdi:lightning-bolt"),
+      kpiBtn(`sensor.${D}_last_trip_consumption`, "Efficiency", "mdi:speedometer"),
       {
         type: "custom:button-card",
         // avg_speed_kmh is an attribute, not an entity — use a label template
         // and hide the (empty) state row.
-        name: "Velocidad media",
+        name: "Avg speed",
         show_state: false,
         show_icon: true,
         icon: "mdi:gauge",
@@ -1130,14 +1130,14 @@ function detalleView(D, V, hass) {
   // ---- Comparison vs personal 30-day average ---------------------------
   cards.push(
     mushroomTpl({
-      primary: "Frente a tu media",
+      primary: "vs your average",
       secondary:
         `{% set trip = states('sensor.${D}_last_trip_consumption') | float(0) %}` +
         `{% set avg  = states('sensor.${D}_total_30d_avg_consumption') | float(0) %}` +
         `{% if avg > 0 and trip > 0 %}{% set delta = ((trip - avg) / avg) * 100 %}` +
-        `{% if delta < 0 %}{{ delta | round(1) }}% mejor que tu media (≈ {{ avg | round(1) }} kWh/100km)` +
-        `{% else %}+{{ delta | round(1) }}% peor que tu media (≈ {{ avg | round(1) }} kWh/100km){% endif %}` +
-        `{% else %}Aún no hay datos suficientes{% endif %}`,
+        `{% if delta < 0 %}{{ delta | round(1) }}% better than your average (≈ {{ avg | round(1) }} kWh/100km)` +
+        `{% else %}+{{ delta | round(1) }}% worse than your average (≈ {{ avg | round(1) }} kWh/100km){% endif %}` +
+        `{% else %}Not enough data yet{% endif %}`,
       icon: "mdi:chart-line-variant",
       iconColor:
         `{% set trip = states('sensor.${D}_last_trip_consumption') | float(0) %}` +
@@ -1146,11 +1146,11 @@ function detalleView(D, V, hass) {
     })
   );
 
-  // ---- Percentile within the recent_trips window ------------------------
+  // ---- Percentilee within the recent_trips window ------------------------
   // Lower consumption is better → "Top X%" = this trip beat X% of recent trips.
   cards.push(
     mushroomTpl({
-      primary: "Percentil",
+      primary: "Percentile",
       secondary:
         `{% set trip = states('sensor.${D}_last_trip_consumption') | float(0) %}` +
         `{% set trips = state_attr('sensor.${D}_recent_trips', 'trips') or [] %}` +
@@ -1159,8 +1159,8 @@ function detalleView(D, V, hass) {
         `{% if total > 0 and trip > 0 %}` +
         `{% set worse = valid | selectattr('consumption_kwh_100km', '>', trip) | list | count %}` +
         `{% set pct = ((worse / total) * 100) | round(0) %}` +
-        `Top {{ pct }}% — mejor que {{ worse }} de {{ total }} viajes recientes` +
-        `{% else %}Sin histórico aún{% endif %}`,
+        `Top {{ pct }}% — better than {{ worse }} of {{ total }} recent trips` +
+        `{% else %}No history yet{% endif %}`,
       icon: "mdi:trophy-variant",
       iconColor:
         `{% set trip = states('sensor.${D}_last_trip_consumption') | float(0) %}` +
@@ -1179,7 +1179,7 @@ function detalleView(D, V, hass) {
   cards.push({
     type: "custom:button-card",
     entity: `sensor.${D}_last_trip_cost`,
-    name: "Coste estimado",
+    name: "Estimated cost",
     show_state: true,
     show_icon: true,
     icon: "mdi:cash-multiple",
@@ -1202,7 +1202,7 @@ function detalleView(D, V, hass) {
     }
     cards.push({
       type: "map",
-      title: "Ruta",
+      title: "Route",
       default_zoom: 13,
       hours_to_show: hoursToShow,
       entities: [{ entity: `device_tracker.${V}_location` }],
@@ -1212,16 +1212,16 @@ function detalleView(D, V, hass) {
   // ---- Footnote about route approximation -------------------------------
   cards.push(
     md(
-      "_Ruta aproximada a partir del histórico del `device_tracker`. La integración " +
-        "guarda 1 muestra GPS cada 30 s mientras el coche está encendido " +
-        "(`storage.async_trip_positions(trip_id)`). Para dibujar la ruta exacta " +
-        "instala un mapa de Leaflet (p. ej. `ha-card-leaflet` o `plotly-graph-card` " +
-        "con scatter geo) y aliméntalo con un sensor REST/template que lea esas posiciones._"
+      "_Approximate route from the `device_tracker` history. The integration " +
+        "stores 1 GPS sample every 30 s while the car is on " +
+        "(`storage.async_trip_positions(trip_id)`). To draw the exact route " +
+        "install a Leaflet map (e.g. `ha-card-leaflet` or `plotly-graph-card` " +
+        "with geo scatter) and feed it from a REST/template sensor that reads those positions._"
     )
   );
 
   return {
-    title: "Detalle",
+    title: "Detail",
     path: "trip-detail",
     icon: "mdi:magnify",
     type: "sections",
@@ -1232,14 +1232,14 @@ function detalleView(D, V, hass) {
 
 // ==========================================================================
 // View 8 — Viajes (Pantalla 8)
-// "Viajes" header + Last-30-days KPI strip (5 tiles) + ev-trip-list-card
+// "Trips" header + Last-30-days KPI strip (5 tiles) + ev-trip-list-card
 // (custom element ships with this plugin — replaces the markdown blob in
 // trip-list-v2.yaml with a reactive, expandable list).
 // ==========================================================================
 function viajesView(D, hass) {
   const cards = [];
 
-  cards.push(mushroomTitle("Viajes", "Last 30 days", "mdi:car-electric"));
+  cards.push(mushroomTitle("Trips", "Last 30 days", "mdi:car-electric"));
 
   // ---- KPI strip (5 button-cards) --------------------------------------
   // Avg consumption is computed in JS from recent_trips because it spans the
@@ -1330,7 +1330,7 @@ function viajesView(D, hass) {
   cards.push({ type: "custom:ev-trip-list-card", device: D, title: "Recent trips" });
 
   return {
-    title: "Viajes",
+    title: "Trips",
     path: "trips",
     icon: "mdi:car-multiple",
     type: "sections",
@@ -1348,7 +1348,7 @@ function viajesView(D, hass) {
 function cargasView(D, hass) {
   const cards = [];
 
-  cards.push(mushroomTitle("Cargas", "Últimos 30 días", "mdi:battery-charging"));
+  cards.push(mushroomTitle("Charges", "Last 30 days", "mdi:battery-charging"));
 
   // ---- KPI grid (2x2) --------------------------------------------------
   // Each tile is a button-card with 96px height so the grid feels denser
@@ -1397,7 +1397,7 @@ function cargasView(D, hass) {
       },
       {
         type: "custom:button-card",
-        name: "Total cargas",
+        name: "Total charges",
         icon: "mdi:counter",
         show_state: true,
         show_name: true,
@@ -1417,7 +1417,7 @@ function cargasView(D, hass) {
   // ---- Reactive charges history (custom element from this plugin) ------
   // Replaces the Jinja markdown blob; groups sessions by calendar day with
   // expandable detail panels.
-  cards.push({ type: "custom:ev-trip-history-card", device: D, kind: "charges", title: "Historial de cargas" });
+  cards.push({ type: "custom:ev-trip-history-card", device: D, kind: "charges", title: "Charge history" });
 
   // NOTE: a floating "+" to log a manual charge used to live here, but it
   // fired ev_trip_logger.log_charge with empty service_data → the service
@@ -1426,7 +1426,7 @@ function cargasView(D, hass) {
   // browser_mod popup with input_number helpers for kwh + €/kWh.
 
   return {
-    title: "Cargas",
+    title: "Charges",
     path: "charges",
     icon: "mdi:ev-station",
     type: "sections",
@@ -1555,13 +1555,13 @@ class EvTripListCard extends HTMLElement {
     const DASH = "—";
     const fmtNum = (v, dp) => (v == null || isNaN(v) ? DASH : dp == null ? String(v) : Number(v).toFixed(dp));
 
-    // Mean efficiency of the filtered set (for "Comparado con tu media").
+    // Mean efficiency of the filtered set (for "Compared to your average").
     const effVals = rows.map((t) => t.consumption_kwh_100km).filter((v) => v != null && !isNaN(v) && v !== 0);
     const effMean = effVals.length ? effVals.reduce((a, b) => a + b, 0) / effVals.length : null;
     // Scores of the filtered set (for percentile).
     const scoreVals = rows.map((t) => t.score).filter((v) => v != null && !isNaN(v));
 
-    // Builds the BYD-app-style "Detalle del viaje" panel for one trip.
+    // Builds the BYD-app-style "Trip detail" panel for one trip.
     const detailHtml = (t) => {
       const sym = cur[t.currency] || t.currency || "€";
       const scoreNum = t.score != null ? Number(t.score).toFixed(1) : DASH;
@@ -1572,7 +1572,7 @@ class EvTripListCard extends HTMLElement {
           <div class="d-tile-value">${value}<span class="d-tile-unit">${unit ? " " + _esc(unit) : ""}</span></div>
         </div>`;
 
-      // Velocidad media — derived, guard divide-by-zero.
+      // Avg speed — derived, guard divide-by-zero.
       let speed = DASH;
       if (t.distance_km != null && t.duration_min != null && t.duration_min > 0) {
         speed = fmtNum(t.distance_km / (t.duration_min / 60), 1);
@@ -1586,7 +1586,7 @@ class EvTripListCard extends HTMLElement {
         const sign = good ? "−" : "+";
         const color = good ? "var(--success-color, #43a047)" : "var(--warning-color, #fb8c00)";
         cmpRows.push(
-          `<div class="d-cmp-row"><span class="d-cmp-label">Comparado con tu media</span>` +
+          `<div class="d-cmp-row"><span class="d-cmp-label">Compared to your average</span>` +
           `<span class="d-cmp-val" style="color:${color}">${sign}${Math.abs(pct).toFixed(1)}%</span></div>`
         );
       }
@@ -1594,7 +1594,7 @@ class EvTripListCard extends HTMLElement {
         const better = scoreVals.filter((s) => s >= t.score).length;
         const topPct = (better / scoreVals.length) * 100;
         cmpRows.push(
-          `<div class="d-cmp-row"><span class="d-cmp-label">Percentil</span>` +
+          `<div class="d-cmp-row"><span class="d-cmp-label">Percentile</span>` +
           `<span class="d-cmp-val" style="color:var(--info-color, #039be5)">Top ${topPct.toFixed(0)}%</span></div>`
         );
       }
@@ -1608,7 +1608,7 @@ class EvTripListCard extends HTMLElement {
       return `
         <div class="detail">
           <div class="d-head">
-            <div class="d-title">Detalle del viaje</div>
+            <div class="d-title">Trip detail</div>
             <div class="d-score">
               <span class="d-score-num" style="color:${_scoreColor(t.score)}">${scoreNum}</span>
               <span class="d-score-max">/10</span>
@@ -1616,14 +1616,14 @@ class EvTripListCard extends HTMLElement {
           </div>
           <div class="d-sub">${_fmtDate(t.ended_at, true)}</div>
           <div class="d-grid">
-            ${tile("mdi:map-marker-distance", "Distancia", fmtNum(t.distance_km), "km")}
-            ${tile("mdi:timer-outline", "Duración", fmtNum(t.duration_min == null ? null : Math.round(t.duration_min)), "min")}
-            ${tile("mdi:lightning-bolt", "Consumo", fmtNum(t.energy_kwh), "kWh")}
-            ${tile("mdi:chart-line", "Eficiencia", fmtNum(t.consumption_kwh_100km), "kWh/100km")}
+            ${tile("mdi:map-marker-distance", "Distance", fmtNum(t.distance_km), "km")}
+            ${tile("mdi:timer-outline", "Duration", fmtNum(t.duration_min == null ? null : Math.round(t.duration_min)), "min")}
+            ${tile("mdi:lightning-bolt", "Consumption", fmtNum(t.energy_kwh), "kWh")}
+            ${tile("mdi:chart-line", "Efficiency", fmtNum(t.consumption_kwh_100km), "kWh/100km")}
           </div>
           <div class="d-tile d-tile--wide">
             <ha-icon class="d-tile-icon" icon="mdi:speedometer"></ha-icon>
-            <div class="d-tile-label">Velocidad media</div>
+            <div class="d-tile-label">Avg speed</div>
             <div class="d-tile-value">${speed}<span class="d-tile-unit"> km/h</span></div>
           </div>
           ${cmpRows.length ? `<div class="d-cmp">${cmpRows.join("")}</div>` : ""}
@@ -1652,10 +1652,10 @@ class EvTripListCard extends HTMLElement {
             <div class="trip${isOpen ? " trip--open" : ""}" data-trip-id="${_esc(t.id)}">
               <div class="trip-date">${_fmtDate(t.ended_at, true)}</div>
               <div class="cols">
-                ${col("Distancia", fmtNum(t.distance_km), "km")}
-                ${col("Consumo", fmtNum(t.energy_kwh), "kWh")}
-                ${col("Eficiencia", fmtNum(t.consumption_kwh_100km), "kWh/100km")}
-                ${col("Coste", fmtNum(t.cost), sym || DASH)}
+                ${col("Distance", fmtNum(t.distance_km), "km")}
+                ${col("Consumption", fmtNum(t.energy_kwh), "kWh")}
+                ${col("Efficiency", fmtNum(t.consumption_kwh_100km), "kWh/100km")}
+                ${col("Cost", fmtNum(t.cost), sym || DASH)}
                 ${col("Score", score, "", { big: true, color: _scoreColor(t.score) })}
               </div>
               ${isOpen ? detailHtml(t) : ""}
@@ -1691,7 +1691,7 @@ class EvTripListCard extends HTMLElement {
           .col-unit{font-size:.62em;color:var(--secondary-text-color);line-height:1.2;}
           .empty{padding:24px 16px;text-align:center;color:var(--secondary-text-color);}
 
-          /* ---- Trip detail panel ("Detalle del viaje") ---- */
+          /* ---- Trip detail panel ("Trip detail") ---- */
           .detail{margin-top:14px;padding-top:14px;border-top:1px solid var(--divider-color);
                   display:flex;flex-direction:column;gap:12px;}
           .d-head{display:flex;justify-content:space-between;align-items:flex-start;}
