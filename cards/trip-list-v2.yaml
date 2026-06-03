@@ -143,6 +143,8 @@ cards:
     multiline_secondary: true
     content: |
       {%- set trips = state_attr('sensor.__DEVICE___recent_trips', 'trips') or [] %}
+      {#- Force newest-first ordering by started_at so the most recent trip is always on top. -#}
+      {%- set trips = trips | sort(attribute='started_at', reverse=True) %}
       {%- for t in trips[:10] %}
       ### {{ as_timestamp(t.started_at) | timestamp_custom('%d/%m/%Y') }} · {{ as_timestamp(t.started_at) | timestamp_custom('%H:%M') }}
       | Distance | Consumption | Efficiency | Cost | Score |
@@ -150,6 +152,16 @@ cards:
       | {{ t.distance_km | default('—') }} km | {{ t.energy_kwh | default('—') }} kWh | {{ t.consumption_kwh_100km | default('—') }} kWh/100km | {{ t.cost | default('—') }} {{ t.currency | default('') }} | {% set s = t.score | float(0) %}{% if s >= 7 %}🟢{% elif s >= 4 %}🟡{% else %}🔴{% endif %} **{{ t.score | default('—') }}** |
 
       _{{ t.origin | default('—') }} → {{ t.destination | default('—') }}_
+      {#- Google-Maps route link: emit ONLY when origin != destination (skip round trips).
+          Prefer precise lat/lon (v0.5.3+); fall back to text search by zone name. -#}
+      {%- set same_place = (t.origin or '') | string == (t.destination or '') | string %}
+      {%- if not same_place %}
+      {%- if t.start_lat is not none and t.end_lat is not none %}
+      [🗺 Ver ruta en Google Maps](https://www.google.com/maps/dir/?api=1&origin={{ t.start_lat }},{{ t.start_lon }}&destination={{ t.end_lat }},{{ t.end_lon }}&travelmode=driving)
+      {%- elif t.origin and t.destination %}
+      [🗺 Ver ruta en Google Maps](https://www.google.com/maps/dir/?api=1&origin={{ t.origin | urlencode }}&destination={{ t.destination | urlencode }}&travelmode=driving)
+      {%- endif %}
+      {%- endif %}
       {%- if not loop.last %}
 
       ---

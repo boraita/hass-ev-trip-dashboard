@@ -150,6 +150,8 @@ cards:
   - type: markdown
     content: >-
       {% set chs = state_attr('sensor.__DEVICE___recent_charges', 'charges') or [] %}
+      {#- Force newest-first ordering by ended_at so the most recent charge is on top. -#}
+      {% set chs = chs | sort(attribute='ended_at', reverse=True) %}
       {% if chs | length == 0 %}
       _No hay cargas recientes._
       {% else %}

@@ -1625,7 +1625,17 @@ class EvTripHistoryCard extends HTMLElement {
     this._device = D;
     const kind = this._kind;
     const st = this._hass.states[`sensor.${D}_recent_${kind}`];
-    const rows = (st && st.attributes && Array.isArray(st.attributes[kind]) && st.attributes[kind]) || [];
+    const raw = (st && st.attributes && Array.isArray(st.attributes[kind]) && st.attributes[kind]) || [];
+    // Always show newest first regardless of the underlying attribute order.
+    // Journeys sort by ended_at desc when available, fallback to started_at;
+    // charges sort by ended_at desc.
+    const sortKey = kind === "journeys" ? "ended_at" : "ended_at";
+    const fallback = kind === "journeys" ? "started_at" : "ended_at";
+    const rows = raw.slice().sort((a, b) => {
+      const ax = a[sortKey] || a[fallback] || "";
+      const bx = b[sortKey] || b[fallback] || "";
+      return bx.localeCompare(ax);
+    });
     const cur = { EUR: "€", USD: "$", GBP: "£" };
     const sym = (c) => cur[c] || c || "€";
     const DASH = "—";
