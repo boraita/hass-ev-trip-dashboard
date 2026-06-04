@@ -178,6 +178,51 @@ cards:
       {% endif %}
 
   # ---------------------------------------------------------------------------
+  # INLINE PRICE EDITOR — quick "I paid €X at this public charger" fix.
+  # Needs packages/charge-price-helper.yaml dropped in (defines the input_number
+  # helpers below). Without that package this card silently no-ops on click.
+  # ---------------------------------------------------------------------------
+  - type: custom:mushroom-title-card
+    title: Ajustar precio
+    subtitle: Cambia el €/kWh de una carga (0 = la última)
+    icon: mdi:cash-edit
+
+  - type: entities
+    entities:
+      - entity: input_number.__DEVICE___charge_price_override
+        name: Precio €/kWh
+        icon: mdi:cash
+      - entity: input_number.__DEVICE___charge_id_to_edit
+        name: ID a editar (0 = última)
+        icon: mdi:database-edit
+
+  - type: custom:button-card
+    name: Aplicar precio
+    icon: mdi:check-bold
+    show_state: false
+    tap_action:
+      action: perform-action
+      perform_action: ev_trip_logger.set_last_charge_price
+      data:
+        price_per_kwh: "[[[ return states['input_number.__DEVICE___charge_price_override'].state; ]]]"
+        charge_id: |
+          [[[
+            const id = parseInt(states['input_number.__DEVICE___charge_id_to_edit'].state, 10);
+            return id > 0 ? id : undefined;
+          ]]]
+    styles:
+      card:
+        - padding: 12px
+        - background-color: var(--success-color)
+        - color: white
+        - border-radius: 8px
+      name:
+        - color: white
+        - font-weight: 600
+      icon:
+        - color: white
+
+  # ---------------------------------------------------------------------------
   # FLOATING "+" BUTTON — bottom-right, fixed. Calls ev_trip_logger.log_charge
   # via more-info on the recent_charges sensor (user can wire a custom popup).
   # ---------------------------------------------------------------------------

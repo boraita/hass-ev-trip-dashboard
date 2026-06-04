@@ -1,0 +1,29 @@
+# Quick-edit helper for the Cargas view's "Aplicar precio" tile.
+#
+# Drop into config/packages/ and replace __DEVICE__ with your trip-logger
+# device slug (the same one you use everywhere else). Restart HA.
+#
+# The Cargas card shows an input_number tied to this helper plus a button
+# that calls `ev_trip_logger.set_last_charge_price` with the helper's
+# value — letting you change the €/kWh of the most-recent charge (or any
+# charge by id) from the dashboard without opening Developer Tools.
+
+input_number:
+  __DEVICE___charge_price_override:
+    name: Override charge price
+    icon: mdi:cash-edit
+    min: 0
+    max: 5
+    step: 0.001
+    mode: box
+    unit_of_measurement: "€/kWh"
+    initial: 0.07
+
+  __DEVICE___charge_id_to_edit:
+    name: Charge id to edit (0 = last)
+    icon: mdi:database-edit
+    min: 0
+    max: 100000
+    step: 1
+    mode: box
+    initial: 0
