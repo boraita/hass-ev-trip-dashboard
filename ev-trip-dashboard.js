@@ -138,10 +138,26 @@ function evChargeState(hass, D, plugEnt, chargingEnt, powerEnt) {
   const plugSensorsConnected = pStates.length > 0 && pStates.every((v) => v === "on");
   const plugged = charging || plugSensorsConnected;
   // When charging stops the logger drops current_charge_* to unknown, so fall
-  // back to the just-finished charge for the paused view (real energy + the
-  // time it actually charged — frozen, since power is now 0).
+  // back to the just-finished charge for the paused view — BUT only if that
+  // charge belongs to THE CURRENT plug session (ended after the cable was
+  // connected). Otherwise (e.g. cable plugged now but the last charge was this
+  // morning), the paused card must NOT show that old charge's energy/time.
+  let plugSince = null;
+  for (const e of plugList) {
+    const o = hass.states[e];
+    if (o && String(o.state).toLowerCase() === "on") {
+      const t = new Date(o.last_changed).getTime();
+      if (!isNaN(t) && (plugSince == null || t < plugSince)) plugSince = t; // connected since the earliest
+    }
+  }
   const rc = hass.states[`sensor.${D}_recent_charges`];
-  const last = (rc && rc.attributes && Array.isArray(rc.attributes.charges) && rc.attributes.charges[0]) || null;
+  const lastRaw = (rc && rc.attributes && Array.isArray(rc.attributes.charges) && rc.attributes.charges[0]) || null;
+  // A charge is "this session" if it ended at/after the cable was connected
+  // (5-min grace). When charging live we always treat it as the current one.
+  const inSession =
+    charging ||
+    (lastRaw && lastRaw.ended_at && plugSince != null && new Date(lastRaw.ended_at).getTime() >= plugSince - 300000);
+  const last = inSession ? lastRaw : null;
   let lastDurMin = null;
   if (last && last.started_at && last.ended_at) {
     const d = (new Date(last.ended_at) - new Date(last.started_at)) / 60000;
