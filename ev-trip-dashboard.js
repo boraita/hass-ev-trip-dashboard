@@ -69,6 +69,8 @@ function pickVehicleEntity(hass, V, concept, cfg) {
     cabin_temp: [`sensor.${V}_cabin_temperature`, `sensor.${V}_inside_temperature`],
     soh: [`sensor.${V}_state_of_health`, `sensor.${V}_battery_health`],
     location: [`device_tracker.${V}_location`, `device_tracker.${V}`],
+    plug: [`binary_sensor.${V}_plug`, `binary_sensor.${V}_charge_cable`, `binary_sensor.${V}_charging_cable`, `binary_sensor.${V}_charge_port`],
+    charging: [`binary_sensor.${V}_charging`, `binary_sensor.${V}_charging_system`],
   };
   for (const e of NAMES[concept] || []) if (hasVal(hass, e)) return e;
   const ids = Object.keys(hass.states).filter((id) => id.includes(`.${V}_`) || id.endsWith(`.${V}`));
@@ -81,6 +83,8 @@ function pickVehicleEntity(hass, V, concept, cfg) {
     case "cabin_temp": return find((id) => id.startsWith("sensor.") && dc(id) === "temperature" && /(in|cabin|interior)/.test(id)) || null;
     case "soh": return find((id) => id.startsWith("sensor.") && /(state_of_health|_soh|battery_health)/.test(id)) || null;
     case "location": return find((id) => id.startsWith("device_tracker.")) || null;
+    case "plug": return find((id) => id.startsWith("binary_sensor.") && (dc(id) === "plug" || /(plug|cable)/.test(id))) || null;
+    case "charging": return find((id) => id.startsWith("binary_sensor.") && dc(id) === "battery_charging") || null;
     default: return null;
   }
 }
@@ -113,6 +117,29 @@ function resolveChargePower(hass, D, cfg) {
     (id) => id.startsWith("sensor.") && (hass.states[id].attributes || {}).device_class === "power" && /charg/.test(id)
   );
   return cand || own;
+}
+
+// Current charge state, shared by the Driving charge card + the trip-list live
+// row. state ∈ "charging" (drawing power) | "paused" (cable in, not charging) |
+// "idle" (unplugged). plugEnt/chargingEnt/powerEnt are resolved generically.
+function evChargeState(hass, D, plugEnt, chargingEnt, powerEnt) {
+  const s = (id) => { const e = id && hass.states[id]; return e ? e.state : undefined; };
+  const num = (id) => { const v = parseFloat(s(id)); return isNaN(v) ? null : v; };
+  const cip = String(s(`sensor.${D}_charge_in_progress`) || "").toLowerCase();
+  const chgBin = chargingEnt ? String(s(chargingEnt)).toLowerCase() === "on" : false;
+  const pwr = powerEnt ? num(powerEnt) : null;
+  const charging = cip === "charging" || chgBin || (pwr != null && pwr > 0.05);
+  const plugged = charging || (plugEnt ? String(s(plugEnt)).toLowerCase() === "on" : false);
+  return {
+    state: charging ? "charging" : plugged ? "paused" : "idle",
+    charging, plugged,
+    power: pwr,
+    energy: num(`sensor.${D}_current_charge_energy`),
+    duration: s(`sensor.${D}_current_charge_duration`),
+    soc: num(`sensor.${D}_battery_percent`),
+    price: num(`sensor.${D}_current_charge_price_per_kwh`),
+    type: s(`sensor.${D}_current_charge_type`),
+  };
 }
 
 // ---- graceful degradation when HACS frontend cards aren't installed --------
@@ -1657,7 +1684,28 @@ class EvTripListCard extends HTMLElement {
     } else {
       items = rows.map(tripRowHtml);
     }
-    const rowsHtml = items.length ? items.join("") : `<div class="empty">No trips match the current filters.</div>`;
+    // Live charge row at the very top while the cable is connected:
+    // "Charging" (drawing power) or "Paused" (plugged, not charging).
+    let liveRow = "";
+    const cs = evChargeState(this._hass, D2, this._config.plugEntity, this._config.chargingEntity, this._config.powerEntity);
+    if (cs.state === "charging" || cs.state === "paused") {
+      const charging = cs.state === "charging";
+      const soc = cs.soc != null ? `${cs.soc.toFixed(0)}%` : "";
+      const dur = cs.duration && !["unknown", "unavailable", "none"].includes(String(cs.duration).toLowerCase()) ? ` · ${cs.duration} min` : "";
+      const metrics = charging
+        ? `<b>${(cs.energy || 0).toFixed(2)}</b> kWh · <b>${(cs.power || 0).toFixed(1)}</b> kW${dur}`
+        : "Cable connected · not charging";
+      liveRow = `
+        <div class="charge-row charge-live ${charging ? "cl-charging" : "cl-paused"}">
+          <div class="cr-badge"><ha-icon icon="${charging ? "mdi:ev-station" : "mdi:pause-circle-outline"}"></ha-icon></div>
+          <div class="cr-body">
+            <div class="cr-head">${charging ? "Charging" : "Paused"}<span class="cr-time">${soc}</span></div>
+            <div class="cr-metrics">${metrics}</div>
+          </div>
+          <span class="cr-type ${charging ? "cr-type--ac" : "cr-type--dc"}">${charging ? "⚡" : "⏸"}</span>
+        </div>`;
+    }
+    const rowsHtml = (liveRow + (items.length ? items.join("") : "")) || `<div class="empty">No trips match the current filters.</div>`;
 
     this.innerHTML = `
       <ha-card>
@@ -1676,6 +1724,15 @@ class EvTripListCard extends HTMLElement {
                       background:linear-gradient(90deg, rgba(3,155,229,.10), transparent);
                       border:1px dashed var(--info-color, #039be5);border-radius:14px;
                       padding:10px 12px;}
+          .charge-live{border-style:solid;}
+          .cl-charging{border-color:var(--success-color,#43a047);
+                       background:linear-gradient(90deg, rgba(67,160,71,.16), transparent);}
+          .cl-charging .cr-badge{background:rgba(67,160,71,.18);}
+          .cl-charging .cr-badge ha-icon,.cl-charging .cr-head{color:var(--success-color,#43a047);}
+          .cl-paused{border-color:var(--warning-color,#fb8c00);
+                     background:linear-gradient(90deg, rgba(245,158,11,.16), transparent);}
+          .cl-paused .cr-badge{background:rgba(245,158,11,.18);}
+          .cl-paused .cr-badge ha-icon,.cl-paused .cr-head{color:var(--warning-color,#fb8c00);}
           .cr-badge{flex:0 0 auto;width:34px;height:34px;border-radius:50%;
                     background:rgba(3,155,229,.16);display:flex;align-items:center;justify-content:center;}
           .cr-badge ha-icon{--mdc-icon-size:19px;color:var(--info-color, #039be5);}
@@ -3316,6 +3373,160 @@ window.customCards = window.customCards || [];
 window.customCards.push({ type: "ev-charge-graph-card", name: "EV Trip — charge power curve", description: "Power-vs-time curve of the last charge (from recorder history)." });
 
 // ==========================================================================
+// Custom card: live charge status for the first screen. Three states:
+//   charging → live power curve + kWh/kW/time/SoC; paused (cable in, not
+//   charging) → SoC + charged-so-far; idle (unplugged) → last-charge summary
+//   (kWh / duration / avg kW). Reads logger current_charge_* + recent_charges
+//   + the resolved plug/charging/power entities (config).
+// ==========================================================================
+class EvChargeStatusCard extends HTMLElement {
+  setConfig(config) {
+    this._config = config || {};
+    this._device = this._config.device || null;
+  }
+  set hass(hass) {
+    this._hass = hass;
+    this._tick();
+  }
+  getCardSize() { return 4; }
+  _tick() {
+    const D = this._device || detectDevice(this._hass);
+    this._device = D;
+    const st = evChargeState(this._hass, D, this._config.plugEntity, this._config.chargingEntity, this._config.powerEntity);
+    this._st = st;
+    const pe = this._config.powerEntity || `sensor.${D}_current_charge_power`;
+    if ((st.charging || st.plugged) && has(this._hass, pe)) {
+      const now = new Date().getTime();
+      if (!this._lastFetch || this._fetchedState !== st.state || (st.charging && now - this._lastFetch > 45000)) {
+        this._lastFetch = now;
+        this._fetchedState = st.state;
+        const start = new Date(now - 4 * 3600 * 1000).toISOString();
+        const end = new Date(now + 60000).toISOString();
+        Promise.resolve(this._hass.callApi("GET", `history/period/${start}?end_time=${end}&filter_entity_id=${pe}&minimal_response&no_attributes`))
+          .then((res) => {
+            const ser = Array.isArray(res) && res[0] ? res[0] : [];
+            this._pts = ser.map((p) => ({ t: new Date(p.last_changed || p.lu || p.lc).getTime(), v: parseFloat(p.state) })).filter((p) => !isNaN(p.t) && !isNaN(p.v));
+            this._render();
+          })
+          .catch(() => { this._pts = []; this._render(); });
+      }
+    }
+    this._render();
+  }
+  _lastCharge() {
+    const st = this._hass.states[`sensor.${this._device}_recent_charges`];
+    const arr = (st && st.attributes && Array.isArray(st.attributes.charges) && st.attributes.charges) || [];
+    return arr[0] || null;
+  }
+  _render() {
+    if (!this._hass) return;
+    const D = this._device;
+    const st = this._st || {};
+    const DASH = "—";
+    const cur = { EUR: "€", USD: "$", GBP: "£" };
+    const tile = (icon, label, value, unit) =>
+      `<div class="cs-t"><ha-icon class="cs-ti" icon="${icon}"></ha-icon><div class="cs-tl">${_esc(label)}</div>` +
+      `<div class="cs-tv">${value}<span class="cs-tu">${unit ? " " + _esc(unit) : ""}</span></div></div>`;
+    const styles = `
+      <style>
+        .cs-head{display:flex;align-items:center;gap:10px;padding:14px 16px 8px;}
+        .cs-badge{flex:0 0 auto;width:42px;height:42px;border-radius:50%;display:flex;align-items:center;justify-content:center;}
+        .cs-badge ha-icon{--mdc-icon-size:23px;}
+        .cs-title{font-weight:700;}
+        .cs-sub{color:var(--secondary-text-color);font-size:.82em;font-variant-numeric:tabular-nums;}
+        .cs-svg{display:block;width:100%;height:120px;padding:0 10px;box-sizing:border-box;}
+        .cs-axis{stroke:var(--divider-color);stroke-width:1;}
+        .cs-area{fill:var(--info-color,#039be5);opacity:.13;}
+        .cs-line{fill:none;stroke:var(--info-color,#039be5);stroke-width:2.5;stroke-linejoin:round;stroke-linecap:round;}
+        .cs-lbl{fill:var(--secondary-text-color);font-size:8px;}
+        .cs-tiles{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;padding:6px 12px 14px;}
+        .cs-t{background:var(--secondary-background-color,var(--card-background-color));border:1px solid var(--divider-color);
+              border-radius:12px;padding:9px 6px;display:flex;flex-direction:column;align-items:center;gap:3px;text-align:center;}
+        .cs-ti{--mdc-icon-size:18px;color:var(--secondary-text-color);}
+        .cs-tl{font-size:.6em;letter-spacing:.04em;text-transform:uppercase;color:var(--secondary-text-color);line-height:1.2;}
+        .cs-tv{font-size:1.15em;font-weight:800;font-variant-numeric:tabular-nums;line-height:1.1;}
+        .cs-tu{font-size:.55em;font-weight:600;color:var(--secondary-text-color);}
+      </style>`;
+    const curveSvg = () => {
+      const pts = (this._pts || []).filter((p) => p.v >= 0);
+      if (pts.length < 2) return "";
+      const VB_W = 320, VB_H = 120, PL = 28, PR = 8, PT = 8, PB = 16;
+      const x0 = PL, x1 = VB_W - PR, y0 = PT, y1 = VB_H - PB;
+      const t0 = Math.min(...pts.map((p) => p.t)), t1 = Math.max(...pts.map((p) => p.t));
+      const maxKw = Math.max(...pts.map((p) => p.v)) * 1.12 || 1;
+      const sx = (t) => x0 + (t1 > t0 ? (t - t0) / (t1 - t0) : 0) * (x1 - x0);
+      const sy = (v) => y1 - (v / maxKw) * (y1 - y0);
+      const ft = (ms) => { const d = new Date(ms); const p = (n) => String(n).padStart(2, "0"); return `${p(d.getHours())}:${p(d.getMinutes())}`; };
+      const line = pts.map((p, i) => `${i ? "L" : "M"}${sx(p.t).toFixed(1)},${sy(p.v).toFixed(1)}`).join(" ");
+      const area = `M${sx(pts[0].t).toFixed(1)},${y1} ` + pts.map((p) => `L${sx(p.t).toFixed(1)},${sy(p.v).toFixed(1)}`).join(" ") + ` L${sx(pts[pts.length - 1].t).toFixed(1)},${y1} Z`;
+      return `<svg viewBox="0 0 ${VB_W} ${VB_H}" class="cs-svg" preserveAspectRatio="none">
+        <text x="${x0 - 3}" y="${(sy(maxKw) + 4).toFixed(1)}" text-anchor="end" class="cs-lbl">${maxKw.toFixed(0)}</text>
+        <line x1="${x0}" y1="${sy(0).toFixed(1)}" x2="${x1}" y2="${sy(0).toFixed(1)}" class="cs-axis"/>
+        <path d="${area}" class="cs-area"/><path d="${line}" class="cs-line"/>
+        <text x="${x0}" y="${VB_H - 4}" class="cs-lbl">${ft(t0)}</text>
+        <text x="${x1}" y="${VB_H - 4}" text-anchor="end" class="cs-lbl">${ft(t1)}</text>
+      </svg>`;
+    };
+    const num = (v, dp) => (v == null || isNaN(v) ? DASH : Number(v).toFixed(dp == null ? 0 : dp));
+
+    if (st.state === "charging" || st.state === "paused") {
+      const charging = st.state === "charging";
+      const dur = st.duration && !["unknown", "unavailable"].includes(String(st.duration)) ? `${st.duration} min` : DASH;
+      const energy = st.energy != null ? st.energy : parseFloat((this._hass.states[`sensor.${D}_last_charge_energy`] || {}).state);
+      const sym = cur[st.type] || "€";
+      this.innerHTML = `
+        <ha-card>
+          <div class="cs-head">
+            <div class="cs-badge" style="background:${charging ? "rgba(67,160,71,.18)" : "rgba(245,158,11,.18)"}">
+              <ha-icon icon="${charging ? "mdi:ev-station" : "mdi:pause-circle-outline"}" style="color:${charging ? "var(--success-color,#43a047)" : "var(--warning-color,#fb8c00)"}"></ha-icon>
+            </div>
+            <div>
+              <div class="cs-title">${charging ? "⚡ Charging" : "🔌 Plugged in — paused"}</div>
+              <div class="cs-sub">${charging ? "Cable connected · drawing power" : "Cable connected · not charging"}</div>
+            </div>
+          </div>
+          ${curveSvg()}
+          <div class="cs-tiles">
+            ${tile("mdi:battery-charging-high", "SoC", num(st.soc, 0), "%")}
+            ${tile("mdi:lightning-bolt", "Added", num(energy, 2), "kWh")}
+            ${tile("mdi:flash", "Power", num(st.power, 1), "kW")}
+            ${tile("mdi:timer-outline", "Time", dur, "")}
+          </div>
+        </ha-card>${styles}`;
+      return;
+    }
+
+    // idle / unplugged → last-charge summary
+    const c = this._lastCharge();
+    if (!c) { this.innerHTML = ""; return; } // nothing to show
+    const sym = cur[c.currency] || c.currency || "€";
+    let durMin = null;
+    if (c.started_at && c.ended_at) { const d = (new Date(c.ended_at) - new Date(c.started_at)) / 60000; if (!isNaN(d) && d >= 0) durMin = d; }
+    const durStr = durMin == null ? DASH : durMin >= 60 ? `${Math.floor(durMin / 60)}h ${Math.round(durMin % 60)}m` : `${Math.round(durMin)}m`;
+    const avgKw = c.kwh != null && durMin && durMin > 0 ? Number(c.kwh) / (durMin / 60) : null;
+    this.innerHTML = `
+      <ha-card>
+        <div class="cs-head">
+          <div class="cs-badge" style="background:rgba(3,155,229,.16)"><ha-icon icon="mdi:check-circle-outline" style="color:var(--info-color,#039be5)"></ha-icon></div>
+          <div>
+            <div class="cs-title">✅ Last charge</div>
+            <div class="cs-sub">${_esc(c.location || "")}${c.ended_at ? ` · ${_fmtDate(c.ended_at, true)}` : ""}</div>
+          </div>
+        </div>
+        <div class="cs-tiles">
+          ${tile("mdi:lightning-bolt", "Charged", num(c.kwh, 2), "kWh")}
+          ${tile("mdi:timer-outline", "Time", durStr, "")}
+          ${tile("mdi:flash", "Avg", avgKw == null ? DASH : avgKw.toFixed(1), "kW")}
+          ${tile("mdi:cash", "Cost", c.total_cost != null ? num(c.total_cost, 2) : DASH, sym)}
+        </div>
+      </ha-card>${styles}`;
+  }
+}
+customElements.define("ev-charge-status-card", EvChargeStatusCard);
+window.customCards = window.customCards || [];
+window.customCards.push({ type: "ev-charge-status-card", name: "EV Trip — charge status", description: "Live charging / paused / last-charge summary for the first screen." });
+
+// ==========================================================================
 // RESTORED from v1.5.0 (user favourites, pre-2.0): Driving + Trips views.
 // Additive — the 9-view equivalents stay until these are validated.
 // ==========================================================================
@@ -3393,6 +3604,15 @@ function drivingView(D, V, hass, cfg) {
       severity: { green: 50, yellow: 20, red: 0 },
     });
   }
+
+  // Live charge status (charging / paused-while-plugged / last-charge summary).
+  status.push({
+    type: "custom:ev-charge-status-card",
+    device: D,
+    plugEntity: pickVehicleEntity(hass, V, "plug", cfg),
+    chargingEntity: pickVehicleEntity(hass, V, "charging", cfg),
+    powerEntity: resolveChargePower(hass, D, cfg),
+  });
 
   // Battery / range / odometer. Logger gives a real-world range estimate;
   // the car integration (optional) gives its own range + odometer.
@@ -3561,7 +3781,12 @@ function recordsCard(D) {
   );
 }
 
-function tripsView(D, hass) {
+function tripsView(D, hass, V, cfg) {
+  // Resolve the plug/charging/power entities once so the trip list can show a
+  // live "Charging"/"Paused" row at the top while the cable is connected.
+  const plugEntity = hass ? pickVehicleEntity(hass, V, "plug", cfg) : null;
+  const chargingEntity = hass ? pickVehicleEntity(hass, V, "charging", cfg) : null;
+  const powerEntity = hass ? resolveChargePower(hass, D, cfg) : `sensor.${D}_current_charge_power`;
   // Right column: records, plus the helper-backed Search & filter card ONLY
   // when the input helpers exist (input_text.<D>_trip_search is the canary).
   // Without them the ev-trip-list-card still shows all trips, newest-first —
@@ -3591,7 +3816,7 @@ function tripsView(D, hass) {
     max_columns: 2,
     sections: [
       { type: "grid", column_span: 2, cards: [heading("Last 30 days", "mdi:calendar-range"), trips30dKpis(D)] },
-      grid([heading("Trips", "mdi:map-marker-path"), { type: "custom:ev-trip-list-card", device: D, title: "Trips" }]),
+      grid([heading("Trips", "mdi:map-marker-path"), { type: "custom:ev-trip-list-card", device: D, title: "Trips", plugEntity, chargingEntity, powerEntity }]),
       grid(rightCards),
     ],
   };
@@ -3628,7 +3853,7 @@ class EvTripDashboardStrategy {
     const views = [
       // Restored pre-2.0 favourites first (Driving + Trips with records/search).
       drivingView(D, V, hass, config),
-      tripsView(D, hass),
+      tripsView(D, hass, V, config),
       calendarioView(D, hass),
       tendenciasView(D, hass),
       patternsView(D, hass),
