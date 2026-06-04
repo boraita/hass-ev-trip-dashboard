@@ -193,26 +193,66 @@ cards:
         - font-size: 26px
         - font-weight: bold
 
-  # ── Route map (HA native — breadcrumbs around the trip window) ────
-  # The integration samples 1 GPS point per 30s while the car is on and
-  # stores them via storage.async_trip_positions(trip_id). The native
-  # `map` card can't query that API, so we fall back to the device's
-  # recorder history — `hours_to_show` is sized to the trip duration so
-  # the breadcrumb trail roughly matches the route.
+  # ── Origin / destination addresses + embedded OSM map ─────────────
+  # Logger v0.5.12 reverse-geocodes each trip's start/end coordinates via
+  # Nominatim and exposes them as `start_address` / `end_address` on the
+  # last_trip recent_trips item. We show the human-readable label here
+  # plus a static OSM map image (no API key needed) with green/red markers
+  # at the endpoints.
+  - type: custom:mushroom-template-card
+    primary: >-
+      🟢 {{ state_attr('sensor.__DEVICE___recent_trips', 'trips')[0].start_address
+            or state_attr('sensor.__DEVICE___recent_trips', 'trips')[0].origin
+            or '—' }}
+    secondary: Origen
+    icon: mdi:map-marker-outline
+    icon_color: green
+    tap_action:
+      action: url
+      url_path: >-
+        {% set t = state_attr('sensor.__DEVICE___recent_trips', 'trips')[0] %}
+        https://www.google.com/maps?q={{ t.start_lat }},{{ t.start_lon }}
+
+  - type: custom:mushroom-template-card
+    primary: >-
+      🔴 {{ state_attr('sensor.__DEVICE___recent_trips', 'trips')[0].end_address
+            or state_attr('sensor.__DEVICE___recent_trips', 'trips')[0].destination
+            or '—' }}
+    secondary: Destino
+    icon: mdi:map-marker-check
+    icon_color: red
+    tap_action:
+      action: url
+      url_path: >-
+        {% set t = state_attr('sensor.__DEVICE___recent_trips', 'trips')[0] %}
+        https://www.google.com/maps?q={{ t.end_lat }},{{ t.end_lon }}
+
+  - type: markdown
+    content: >-
+      {% set t = state_attr('sensor.__DEVICE___recent_trips', 'trips')[0] %}
+      {% if t and t.start_lat is not none and t.end_lat is not none %}
+      {%- set s_lat = t.start_lat | float %}
+      {%- set s_lon = t.start_lon | float %}
+      {%- set e_lat = t.end_lat | float %}
+      {%- set e_lon = t.end_lon | float %}
+      {%- set c_lat = (s_lat + e_lat) / 2 %}
+      {%- set c_lon = (s_lon + e_lon) / 2 %}
+      {%- set bbox = "%s,%s,%s,%s"|format(
+            [s_lon, e_lon] | min - 0.005, [s_lat, e_lat] | min - 0.005,
+            [s_lon, e_lon] | max + 0.005, [s_lat, e_lat] | max + 0.005) %}
+      ![map](https://staticmap.openstreetmap.de/staticmap.php?center={{ c_lat }},{{ c_lon }}&zoom=13&size=600x350&markers={{ s_lat }},{{ s_lon }},lightgreen|{{ e_lat }},{{ e_lon }},red)
+
+      [🗺 Ver ruta completa en Google Maps](https://www.google.com/maps/dir/?api=1&origin={{ s_lat }},{{ s_lon }}&destination={{ e_lat }},{{ e_lon }}&travelmode=driving)
+      {% else %}
+      _Aún no hay coordenadas GPS para este viaje. Asegúrate de tener el `location_tracker` configurado en EV Trip Logger y conduce un trip nuevo._
+      {% endif %}
+
+  # ── Fallback breadcrumb (device_tracker history) ──────────────────
   - type: map
-    title: Ruta
+    title: Histórico device tracker
     default_zoom: 13
     hours_to_show: >-
       {% set d = state_attr('sensor.__DEVICE___last_trip', 'duration_min') | float(0) %}
       {{ ((d / 60) + 0.5) | round(0) if d > 0 else 1 }}
     entities:
       - entity: device_tracker.__VEHICLE___location
-
-  - type: markdown
-    content: >
-      _Ruta aproximada a partir del histórico del `device_tracker`. La
-      integración guarda 1 muestra GPS cada 30 s mientras el coche está
-      encendido (`storage.async_trip_positions(trip_id)`). Para dibujar
-      la ruta exacta instala un mapa de Leaflet (p. ej. `ha-card-leaflet`
-      o `plotly-graph-card` con scatter geo) y aliméntalo con un sensor
-      REST/template que lea esas posiciones._
