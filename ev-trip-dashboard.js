@@ -130,15 +130,30 @@ function evChargeState(hass, D, plugEnt, chargingEnt, powerEnt) {
   const pwr = powerEnt ? num(powerEnt) : null;
   const charging = cip === "charging" || chgBin || (pwr != null && pwr > 0.05);
   const plugged = charging || (plugEnt ? String(s(plugEnt)).toLowerCase() === "on" : false);
+  // When charging stops the logger drops current_charge_* to unknown, so fall
+  // back to the just-finished charge for the paused view (real energy + the
+  // time it actually charged — frozen, since power is now 0).
+  const rc = hass.states[`sensor.${D}_recent_charges`];
+  const last = (rc && rc.attributes && Array.isArray(rc.attributes.charges) && rc.attributes.charges[0]) || null;
+  let lastDurMin = null;
+  if (last && last.started_at && last.ended_at) {
+    const d = (new Date(last.ended_at) - new Date(last.started_at)) / 60000;
+    if (!isNaN(d) && d >= 0) lastDurMin = d;
+  }
+  const liveDur = s(`sensor.${D}_current_charge_duration`);
+  const liveDurOk = liveDur && !["unknown", "unavailable", "none"].includes(String(liveDur).toLowerCase());
   return {
     state: charging ? "charging" : plugged ? "paused" : "idle",
     charging, plugged,
-    power: pwr,
+    // live power while charging; 0 while paused (cable in, not drawing power).
+    power: charging ? (pwr != null ? pwr : 0) : plugged ? 0 : pwr,
     energy: num(`sensor.${D}_current_charge_energy`),
-    duration: s(`sensor.${D}_current_charge_duration`),
+    durationMin: liveDurOk ? parseFloat(liveDur) : null,
     soc: num(`sensor.${D}_battery_percent`),
     price: num(`sensor.${D}_current_charge_price_per_kwh`),
     type: s(`sensor.${D}_current_charge_type`),
+    lastEnergy: last && last.kwh != null ? Number(last.kwh) : null,
+    lastDurMin,
   };
 }
 
@@ -620,94 +635,9 @@ function tendenciasView(D, hass) {
   // Daily km sparkline (replaces the apex 60-day line below once validated).
   cards.push({ type: "custom:ev-trip-daily-card", device: D });
 
-  // ---- Dual-axis bar chart — Monthly Km & kWh ---------------------------
-  // data_generator walks monthly_history.attributes.months and emits
-  // [month-label, value] pairs. Two series share the x-axis but use separate
-  // y-axes (left=km, right=kWh).
-  cards.push(
-    apexChart({
-      title: "Monthly Km & kWh",
-      // NO graphSpan/span: the data_generator emits category labels ("YYYY-MM"),
-      // and a datetime time-window would filter every string point out → blank.
-      apexConfig: {
-        chart: { height: "280px", stacked: false },
-        legend: { position: "bottom" },
-        xaxis: { type: "category", labels: { rotate: -45, style: { fontSize: "11px" } } },
-        plotOptions: { bar: { columnWidth: "60%", borderRadius: 4 } },
-        tooltip: { shared: true },
-      },
-      yaxis: [
-        {
-          id: "km",
-          decimals: 0,
-          apex_config: { title: { text: "Km" }, labels: { style: { colors: "#ef5350" } } },
-        },
-        {
-          id: "kwh",
-          opposite: true,
-          decimals: 1,
-          apex_config: { title: { text: "kWh" }, labels: { style: { colors: "#26c6da" } } },
-        },
-      ],
-      series: [
-        {
-          entity: `sensor.${D}_monthly_history`,
-          name: "Distance (km)",
-          type: "column",
-          yaxis_id: "km",
-          color: "#ef5350",
-          data_generator:
-            "const months = entity.attributes.months || [];\nreturn months.map(m => [m.month, m.distance_km]);",
-        },
-        {
-          entity: `sensor.${D}_monthly_history`,
-          name: "Energy (kWh)",
-          type: "column",
-          yaxis_id: "kwh",
-          color: "#26c6da",
-          data_generator:
-            "const months = entity.attributes.months || [];\nreturn months.map(m => [m.month, m.energy_kwh]);",
-        },
-      ],
-    })
-  );
-
-  // ---- Line chart — Km driven in last 60 days ---------------------------
-  // Smoothed area chart with gradient fill, datetime x-axis.
-  cards.push(
-    apexChart({
-      title: "Km driven in last 60 days",
-      headerShowStates: true,
-      colorizeStates: true,
-      graphSpan: "60d",
-      span: { end: "day" },
-      apexConfig: {
-        chart: { height: "260px" },
-        stroke: { curve: "smooth", width: 3 },
-        fill: {
-          type: "gradient",
-          gradient: { shadeIntensity: 1, opacityFrom: 0.55, opacityTo: 0.05, stops: [0, 90, 100] },
-        },
-        xaxis: {
-          type: "datetime",
-          labels: { datetimeFormatter: { month: "MMM", day: "dd MMM" } },
-        },
-        tooltip: { x: { format: "dd MMM yyyy" } },
-      },
-      yaxis: [{ decimals: 0, min: 0, apex_config: { title: { text: "Km / day" } } }],
-      series: [
-        {
-          entity: `sensor.${D}_daily_km_60d`,
-          name: "Km",
-          type: "area",
-          color: "#e53935",
-          stroke_width: 3,
-          data_generator:
-            "const days = entity.attributes.days || [];\nreturn days.map(d => [new Date(d.day).getTime(), d.distance_km]);",
-        },
-      ],
-    })
-  );
+  // Apex "Monthly Km & kWh" + "60-day line" removed — the ev-trip-monthly-card
+  // and ev-trip-daily-card above render the same data reliably (apex category
+  // bars rendered blank).
 
   return {
     title: "Trends",
@@ -1691,10 +1621,12 @@ class EvTripListCard extends HTMLElement {
     if (cs.state === "charging" || cs.state === "paused") {
       const charging = cs.state === "charging";
       const soc = cs.soc != null ? `${cs.soc.toFixed(0)}%` : "";
-      const dur = cs.duration && !["unknown", "unavailable", "none"].includes(String(cs.duration).toLowerCase()) ? ` · ${cs.duration} min` : "";
+      const dm = cs.durationMin != null ? cs.durationMin : cs.lastDurMin;
+      const durStr = dm == null ? "" : dm >= 60 ? `${Math.floor(dm / 60)}h ${Math.round(dm % 60)}m` : `${Math.round(dm)} min`;
+      const energy = cs.energy != null ? cs.energy : cs.lastEnergy;
       const metrics = charging
-        ? `<b>${(cs.energy || 0).toFixed(2)}</b> kWh · <b>${(cs.power || 0).toFixed(1)}</b> kW${dur}`
-        : "Cable connected · not charging";
+        ? `<b>${(energy || 0).toFixed(2)}</b> kWh · <b>${(cs.power || 0).toFixed(1)}</b> kW${durStr ? ` · ${durStr}` : ""}`
+        : `Cable connected · not charging${energy != null ? ` · <b>${energy.toFixed(2)}</b> kWh` : ""}${durStr ? ` · ${durStr}` : ""}`;
       liveRow = `
         <div class="charge-row charge-live ${charging ? "cl-charging" : "cl-paused"}">
           <div class="cr-badge"><ha-icon icon="${charging ? "mdi:ev-station" : "mdi:pause-circle-outline"}"></ha-icon></div>
@@ -3471,8 +3403,10 @@ class EvChargeStatusCard extends HTMLElement {
 
     if (st.state === "charging" || st.state === "paused") {
       const charging = st.state === "charging";
-      const dur = st.duration && !["unknown", "unavailable"].includes(String(st.duration)) ? `${st.duration} min` : DASH;
-      const energy = st.energy != null ? st.energy : parseFloat((this._hass.states[`sensor.${D}_last_charge_energy`] || {}).state);
+      // Time: live duration while charging; the frozen charge time while paused.
+      const durMin = st.durationMin != null ? st.durationMin : st.lastDurMin;
+      const dur = durMin == null ? DASH : durMin >= 60 ? `${Math.floor(durMin / 60)}h ${Math.round(durMin % 60)}m` : `${Math.round(durMin)} min`;
+      const energy = st.energy != null ? st.energy : st.lastEnergy;
       const sym = cur[st.type] || "€";
       this.innerHTML = `
         <ha-card>
