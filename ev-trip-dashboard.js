@@ -129,7 +129,14 @@ function evChargeState(hass, D, plugEnt, chargingEnt, powerEnt) {
   const chgBin = chargingEnt ? String(s(chargingEnt)).toLowerCase() === "on" : false;
   const pwr = powerEnt ? num(powerEnt) : null;
   const charging = cip === "charging" || chgBin || (pwr != null && pwr > 0.05);
-  const plugged = charging || (plugEnt ? String(s(plugEnt)).toLowerCase() === "on" : false);
+  // plugEnt may be a single entity or a LIST (e.g. wallbox + car plug). The
+  // cable counts as connected only when every sensor that reports a usable
+  // on/off agrees on "on" — so one flappy sensor saying "on" can't fake it,
+  // and an unknown/asleep sensor is ignored rather than blocking.
+  const plugList = Array.isArray(plugEnt) ? plugEnt : plugEnt ? [plugEnt] : [];
+  const pStates = plugList.map((e) => String(s(e) || "").toLowerCase()).filter((v) => v === "on" || v === "off");
+  const plugSensorsConnected = pStates.length > 0 && pStates.every((v) => v === "on");
+  const plugged = charging || plugSensorsConnected;
   // When charging stops the logger drops current_charge_* to unknown, so fall
   // back to the just-finished charge for the paused view (real energy + the
   // time it actually charged — frozen, since power is now 0).
@@ -3543,7 +3550,7 @@ function drivingView(D, V, hass, cfg) {
   status.push({
     type: "custom:ev-charge-status-card",
     device: D,
-    plugEntity: pickVehicleEntity(hass, V, "plug", cfg),
+    plugEntity: (cfg && cfg.plug_entity) || pickVehicleEntity(hass, V, "plug", cfg),
     chargingEntity: pickVehicleEntity(hass, V, "charging", cfg),
     powerEntity: resolveChargePower(hass, D, cfg),
   });
@@ -3718,7 +3725,7 @@ function recordsCard(D) {
 function tripsView(D, hass, V, cfg) {
   // Resolve the plug/charging/power entities once so the trip list can show a
   // live "Charging"/"Paused" row at the top while the cable is connected.
-  const plugEntity = hass ? pickVehicleEntity(hass, V, "plug", cfg) : null;
+  const plugEntity = (cfg && cfg.plug_entity) || (hass ? pickVehicleEntity(hass, V, "plug", cfg) : null);
   const chargingEntity = hass ? pickVehicleEntity(hass, V, "charging", cfg) : null;
   const powerEntity = hass ? resolveChargePower(hass, D, cfg) : `sensor.${D}_current_charge_power`;
   // Right column: records, plus the helper-backed Search & filter card ONLY
