@@ -1477,6 +1477,10 @@ class EvTripListCard extends HTMLElement {
     const cur = { EUR: "€", USD: "$", GBP: "£" };
     const DASH = "—";
     const fmtNum = (v, dp) => (v == null || isNaN(v) ? DASH : dp == null ? String(v) : Number(v).toFixed(dp));
+    // Non-negative: energy/consumption can't be < 0 from driving — a negative
+    // means the logger counted a period that included charging (SoC rose) as a
+    // trip. Show "—" instead of a nonsensical negative.
+    const nn = (v, dp) => (v == null || isNaN(v) || Number(v) < 0 ? DASH : fmtNum(v, dp));
 
     // Mean efficiency of the filtered set (for "Compared to your average").
     const effVals = rows.map((t) => t.consumption_kwh_100km).filter((v) => v != null && !isNaN(v) && v !== 0);
@@ -1556,8 +1560,8 @@ class EvTripListCard extends HTMLElement {
           <div class="d-grid">
             ${tile("mdi:map-marker-distance", "Distance", fmtNum(t.distance_km), "km")}
             ${tile("mdi:timer-outline", "Duration", fmtNum(t.duration_min == null ? null : Math.round(t.duration_min)), "min")}
-            ${tile("mdi:lightning-bolt", "Consumption", fmtNum(t.energy_kwh), "kWh")}
-            ${tile("mdi:chart-line", "Efficiency", fmtNum(t.consumption_kwh_100km), "kWh/100km")}
+            ${tile("mdi:lightning-bolt", "Consumption", nn(t.energy_kwh), "kWh")}
+            ${tile("mdi:chart-line", "Efficiency", nn(t.consumption_kwh_100km), "kWh/100km")}
           </div>
           <div class="d-tile d-tile--wide">
             <ha-icon class="d-tile-icon" icon="mdi:speedometer"></ha-icon>
@@ -1589,8 +1593,8 @@ class EvTripListCard extends HTMLElement {
           <div class="trip-date">${_fmtDate(t.ended_at, true)}</div>
           <div class="cols">
             ${col("Distance", fmtNum(t.distance_km), "km")}
-            ${col("Consumption", fmtNum(t.energy_kwh), "kWh")}
-            ${col("Efficiency", fmtNum(t.consumption_kwh_100km), "kWh/100km")}
+            ${col("Consumption", nn(t.energy_kwh), "kWh")}
+            ${col("Efficiency", nn(t.consumption_kwh_100km), "kWh/100km")}
             ${col("Cost", fmtNum(t.cost), sym || DASH)}
             ${col("Score", score, "", { big: true, color: _scoreColor(t.score) })}
           </div>
@@ -2719,26 +2723,47 @@ const _timeOfDay = (iso) => {
   return `${p(d.getHours())}:${p(d.getMinutes())}`;
 };
 const _endpoint = (addr, fallback) => _esc(addr || fallback || "?");
-// Draw a GPS route as an auto-fit SVG polyline (equirectangular projection,
-// latitude-scaled so it isn't distorted). pts = [{lat,lon}] in order.
+// Draw a GPS route over REAL OpenStreetMap tiles (Web Mercator), auto-zoomed
+// to fit the route. No API key. pts = [{lat,lon}] in order. If tiles fail to
+// load (offline/blocked) the polyline still shows on the blank background.
 const _routeSvg = (pts) => {
   if (!pts || pts.length < 2) return "";
-  const lats = pts.map((p) => p.lat), lons = pts.map((p) => p.lon);
-  const latMin = Math.min(...lats), latMax = Math.max(...lats);
-  const lonMin = Math.min(...lons), lonMax = Math.max(...lons);
-  const kx = Math.cos(((latMin + latMax) / 2) * Math.PI / 180);
-  const wW = (lonMax - lonMin) * kx || 1e-9, wH = latMax - latMin || 1e-9;
-  const VB_W = 320, VB_H = 180, PAD = 12, iW = VB_W - 2 * PAD, iH = VB_H - 2 * PAD;
-  const s = Math.min(iW / wW, iH / wH);
-  const offX = PAD + (iW - wW * s) / 2, offY = PAD + (iH - wH * s) / 2;
-  const X = (lon) => offX + (lon - lonMin) * kx * s;
-  const Y = (lat) => offY + (wH - (lat - latMin)) * s;
+  const VB_W = 320, VB_H = 180, PAD = 18;
+  const lon2x = (lon) => (lon + 180) / 360;
+  const lat2y = (lat) => {
+    const s = Math.sin((lat * Math.PI) / 180);
+    return 0.5 - Math.log((1 + s) / (1 - s)) / (4 * Math.PI);
+  };
+  const xs = pts.map((p) => lon2x(p.lon)), ys = pts.map((p) => lat2y(p.lat));
+  const xMin = Math.min(...xs), xMax = Math.max(...xs), yMin = Math.min(...ys), yMax = Math.max(...ys);
+  let z = 18;
+  for (; z > 1; z--) {
+    const sc = Math.pow(2, z) * 256;
+    if ((xMax - xMin) * sc <= VB_W - 2 * PAD && (yMax - yMin) * sc <= VB_H - 2 * PAD) break;
+  }
+  const sc = Math.pow(2, z) * 256;
+  const cx = ((xMin + xMax) / 2) * sc, cy = ((yMin + yMax) / 2) * sc; // route center, world px
+  const left = cx - VB_W / 2, top = cy - VB_H / 2;
+  const X = (lon) => lon2x(lon) * sc - left;
+  const Y = (lat) => lat2y(lat) * sc - top;
+  const nT = Math.pow(2, z);
+  let tiles = "";
+  for (let tx = Math.floor(left / 256); tx <= Math.floor((left + VB_W) / 256); tx++) {
+    for (let ty = Math.floor(top / 256); ty <= Math.floor((top + VB_H) / 256); ty++) {
+      if (ty < 0 || ty >= nT) continue;
+      const xt = ((tx % nT) + nT) % nT;
+      tiles += `<image href="https://tile.openstreetmap.org/${z}/${xt}/${ty}.png" x="${(tx * 256 - left).toFixed(1)}" y="${(ty * 256 - top).toFixed(1)}" width="256" height="256"/>`;
+    }
+  }
   const d = pts.map((p, i) => `${i ? "L" : "M"}${X(p.lon).toFixed(1)},${Y(p.lat).toFixed(1)}`).join(" ");
   const a = pts[0], b = pts[pts.length - 1];
-  return `<svg viewBox="0 0 ${VB_W} ${VB_H}" class="cal-rt-svg" preserveAspectRatio="xMidYMid meet">
+  return `<svg viewBox="0 0 ${VB_W} ${VB_H}" class="cal-rt-svg" preserveAspectRatio="xMidYMid slice">
+    ${tiles}
+    <path d="${d}" class="cal-rt-halo"/>
     <path d="${d}" class="cal-rt-line"/>
     <circle cx="${X(a.lon).toFixed(1)}" cy="${Y(a.lat).toFixed(1)}" r="4" class="cal-rt-start"/>
     <circle cx="${X(b.lon).toFixed(1)}" cy="${Y(b.lat).toFixed(1)}" r="4.5" class="cal-rt-end"/>
+    <text x="${VB_W - 2}" y="${VB_H - 3}" class="cal-rt-attr">© OpenStreetMap</text>
   </svg>`;
 };
 class EvTripCalendarCard extends HTMLElement {
@@ -2887,7 +2912,7 @@ class EvTripCalendarCard extends HTMLElement {
         <div class="cal-stage">
           <span class="cal-stime">${_timeOfDay(t.started_at)}</span>
           <span class="cal-sroute">${_endpoint(t.start_address, t.origin)}<ha-icon class="cal-arr" icon="mdi:arrow-right"></ha-icon>${_endpoint(t.end_address, t.destination)}</span>
-          <span class="cal-smeta">${f0(t.distance_km)} km · ${f1(t.consumption_kwh_100km)} kWh/100</span>
+          <span class="cal-smeta">${f0(t.distance_km)} km · ${t.consumption_kwh_100km != null && Number(t.consumption_kwh_100km) >= 0 ? f1(t.consumption_kwh_100km) + " kWh/100" : "—"}</span>
           ${t.score != null ? `<span class="cal-pill" style="background:${_scoreColor(t.score)}">${f1(t.score)}</span>` : ""}
         </div>`;
       const mapSlot = (start, end) => {
@@ -3012,9 +3037,12 @@ class EvTripCalendarCard extends HTMLElement {
           .cal-map-ph{height:100%;display:flex;align-items:center;justify-content:center;gap:6px;
                       color:var(--secondary-text-color);font-size:.85em;}
           .cal-rt-svg{display:block;width:100%;height:170px;}
-          .cal-rt-line{fill:none;stroke:var(--info-color,#039be5);stroke-width:2.5;stroke-linejoin:round;stroke-linecap:round;}
-          .cal-rt-start{fill:var(--success-color,#43a047);}
-          .cal-rt-end{fill:var(--error-color,#e53935);}
+          .cal-rt-svg image{image-rendering:auto;}
+          .cal-rt-halo{fill:none;stroke:#fff;stroke-width:5;stroke-linejoin:round;stroke-linecap:round;opacity:.8;}
+          .cal-rt-line{fill:none;stroke:#1565c0;stroke-width:3;stroke-linejoin:round;stroke-linecap:round;}
+          .cal-rt-start{fill:var(--success-color,#43a047);stroke:#fff;stroke-width:1.5;}
+          .cal-rt-end{fill:var(--error-color,#e53935);stroke:#fff;stroke-width:1.5;}
+          .cal-rt-attr{fill:#000;opacity:.5;font-size:7px;text-anchor:end;paint-order:stroke;stroke:#fff;stroke-width:2;}
         </style>
       </ha-card>`;
 
