@@ -547,12 +547,18 @@ function resumenView(D, V, hass) {
 // Monthly activity calendar via calendar-card-pro. Each day with activity
 // shows up as one all-day event ("2 trips · 23 km · 1 charge").
 // ==========================================================================
-function calendarioView(D, hass) {
+function calendarioView(D, hass, V, cfg) {
   const cards = [
     mushroomTitle("EV Activity", null, "mdi:calendar"),
     // NEW: robust monthly calendar built from EXISTING recent_trips +
     // recent_charges — works today, no v0.5.0 calendar entity required.
-    { type: "custom:ev-trip-calendar-card", device: D },
+    // locationEntity lets the day detail draw each journey's GPS route from
+    // the device_tracker recorder history.
+    {
+      type: "custom:ev-trip-calendar-card",
+      device: D,
+      locationEntity: (cfg && cfg.location_entity) || (hass ? pickVehicleEntity(hass, V, "location", cfg) : null),
+    },
   ];
 
   // calendar-card-pro removed — the custom ev-trip-calendar-card above is the
@@ -2712,12 +2718,36 @@ const _timeOfDay = (iso) => {
   const p = (n) => String(n).padStart(2, "0");
   return `${p(d.getHours())}:${p(d.getMinutes())}`;
 };
+const _endpoint = (addr, fallback) => _esc(addr || fallback || "?");
+// Draw a GPS route as an auto-fit SVG polyline (equirectangular projection,
+// latitude-scaled so it isn't distorted). pts = [{lat,lon}] in order.
+const _routeSvg = (pts) => {
+  if (!pts || pts.length < 2) return "";
+  const lats = pts.map((p) => p.lat), lons = pts.map((p) => p.lon);
+  const latMin = Math.min(...lats), latMax = Math.max(...lats);
+  const lonMin = Math.min(...lons), lonMax = Math.max(...lons);
+  const kx = Math.cos(((latMin + latMax) / 2) * Math.PI / 180);
+  const wW = (lonMax - lonMin) * kx || 1e-9, wH = latMax - latMin || 1e-9;
+  const VB_W = 320, VB_H = 180, PAD = 12, iW = VB_W - 2 * PAD, iH = VB_H - 2 * PAD;
+  const s = Math.min(iW / wW, iH / wH);
+  const offX = PAD + (iW - wW * s) / 2, offY = PAD + (iH - wH * s) / 2;
+  const X = (lon) => offX + (lon - lonMin) * kx * s;
+  const Y = (lat) => offY + (wH - (lat - latMin)) * s;
+  const d = pts.map((p, i) => `${i ? "L" : "M"}${X(p.lon).toFixed(1)},${Y(p.lat).toFixed(1)}`).join(" ");
+  const a = pts[0], b = pts[pts.length - 1];
+  return `<svg viewBox="0 0 ${VB_W} ${VB_H}" class="cal-rt-svg" preserveAspectRatio="xMidYMid meet">
+    <path d="${d}" class="cal-rt-line"/>
+    <circle cx="${X(a.lon).toFixed(1)}" cy="${Y(a.lat).toFixed(1)}" r="4" class="cal-rt-start"/>
+    <circle cx="${X(b.lon).toFixed(1)}" cy="${Y(b.lat).toFixed(1)}" r="4.5" class="cal-rt-end"/>
+  </svg>`;
+};
 class EvTripCalendarCard extends HTMLElement {
   setConfig(config) {
     this._config = config || {};
     this._device = this._config.device || null;
     this._offset = 0; // months relative to current
     this._openDate = null;
+    this._routes = this._routes || {}; // window key -> [{lat,lon}] | 'loading'
   }
   set hass(hass) {
     this._hass = hass;
@@ -2725,6 +2755,33 @@ class EvTripCalendarCard extends HTMLElement {
   }
   getCardSize() {
     return 5;
+  }
+  // Group a day's trips into journeys (home→home) by journey_id; ungrouped
+  // trips become 1-stage standalone entries. Each group gets a summary.
+  _groupByJourney(trips) {
+    const sorted = trips.slice().sort((a, b) => new Date(a.started_at) - new Date(b.started_at));
+    const groups = [], byId = new Map(), standalone = [];
+    for (const t of sorted) {
+      if (t.journey_id == null) { standalone.push(t); continue; }
+      const key = String(t.journey_id);
+      let g = byId.get(key);
+      if (!g) { g = { journey_id: t.journey_id, stages: [] }; byId.set(key, g); groups.push(g); }
+      g.stages.push(t);
+    }
+    for (const g of groups) {
+      const s = g.stages;
+      g.started_at = s[0].started_at;
+      g.ended_at = s[s.length - 1].ended_at;
+      g.origin = s[0].start_address || s[0].origin || "?";
+      g.destination = s[s.length - 1].end_address || s[s.length - 1].destination || "?";
+      g.km = s.reduce((a, t) => a + (Number(t.distance_km) || 0), 0);
+      g.kwh = s.reduce((a, t) => a + (Number(t.energy_kwh) || 0), 0);
+      g.cost = s.reduce((a, t) => a + (Number(t.cost) || 0), 0);
+      g.currency = (s.find((t) => t.currency) || {}).currency || null;
+      g.cons = g.km > 0 ? (g.kwh / g.km) * 100 : null;
+      g.roundTrip = g.origin && g.destination && g.origin.trim().toLowerCase() === g.destination.trim().toLowerCase();
+    }
+    return { groups, standalone };
   }
   connectedCallback() {
     if (this._clickBound) return;
@@ -2814,19 +2871,48 @@ class EvTripCalendarCard extends HTMLElement {
     }
 
     let detail = "";
+    this._openGroups = [];
     if (this._openDate && map[this._openDate]) {
       const e = map[this._openDate];
       const sym = (c) => cur[c] || c || "€";
-      const trs = e.trips
-        .slice()
-        .sort((a, b) => String(a.started_at).localeCompare(String(b.started_at)))
+      const f0 = (v) => (Number(v) || 0).toFixed(0);
+      const f1 = (v) => (Number(v) || 0).toFixed(1);
+      const { groups, standalone } = this._groupByJourney(e.trips);
+      // record windows so _fetchOpenDayRoutes can pull each journey's route
+      this._openGroups = groups
+        .map((g) => ({ key: `${g.started_at}|${g.ended_at}`, start: g.started_at, end: g.ended_at }))
+        .concat(standalone.map((t) => ({ key: `${t.started_at}|${t.ended_at}`, start: t.started_at, end: t.ended_at })));
+
+      const stage = (t) => `
+        <div class="cal-stage">
+          <span class="cal-stime">${_timeOfDay(t.started_at)}</span>
+          <span class="cal-sroute">${_endpoint(t.start_address, t.origin)}<ha-icon class="cal-arr" icon="mdi:arrow-right"></ha-icon>${_endpoint(t.end_address, t.destination)}</span>
+          <span class="cal-smeta">${f0(t.distance_km)} km · ${f1(t.consumption_kwh_100km)} kWh/100</span>
+          ${t.score != null ? `<span class="cal-pill" style="background:${_scoreColor(t.score)}">${f1(t.score)}</span>` : ""}
+        </div>`;
+      const mapSlot = (start, end) => {
+        if (!this._config.locationEntity) return "";
+        const r = this._routes[`${start}|${end}`];
+        if (Array.isArray(r)) return `<div class="cal-map">${_routeSvg(r) || '<div class="cal-map-ph">No GPS for this trip</div>'}</div>`;
+        return `<div class="cal-map"><div class="cal-map-ph"><ha-icon icon="mdi:map-marker-path"></ha-icon> Loading route…</div></div>`;
+      };
+      const jHtml = groups
         .map(
-          (t) =>
-            `<div class="cal-row"><span class="cal-ricon cal-b-trip"><ha-icon icon="mdi:car"></ha-icon></span>` +
-            `<span class="cal-rtime">${_timeOfDay(t.started_at)}</span>` +
-            `<span class="cal-rmain">${_esc(t.origin || "?")} → ${_esc(t.destination || "?")}</span>` +
-            `<span class="cal-rval">${(Number(t.distance_km) || 0).toFixed(0)} km${t.score != null ? ` · ${Number(t.score).toFixed(1)}` : ""}</span></div>`
+          (g) => `
+        <div class="cal-journey">
+          <div class="cal-jhead">
+            <span class="cal-jicon"><ha-icon icon="${g.roundTrip ? "mdi:home-map-marker" : "mdi:map-marker-path"}"></ha-icon></span>
+            <span class="cal-jtitle">${_endpoint(g.origin)} → ${_endpoint(g.destination)}</span>
+            <span class="cal-jtime">${_timeOfDay(g.started_at)}–${_timeOfDay(g.ended_at)}</span>
+          </div>
+          <div class="cal-jsum"><b>${f0(g.km)}</b> km · <b>${f1(g.kwh)}</b> kWh${g.cons != null ? ` · <b>${f1(g.cons)}</b> kWh/100` : ""}${g.cost ? ` · <b>${g.cost.toFixed(2)} ${_esc(sym(g.currency))}</b>` : ""} · ${g.stages.length} ${g.stages.length === 1 ? "stage" : "stages"}</div>
+          <div class="cal-stages">${g.stages.map(stage).join("")}</div>
+          ${mapSlot(g.started_at, g.ended_at)}
+        </div>`
         )
+        .join("");
+      const soloHtml = standalone
+        .map((t) => `<div class="cal-journey cal-journey--solo"><div class="cal-stages">${stage(t)}</div>${mapSlot(t.started_at, t.ended_at)}</div>`)
         .join("");
       const chs = e.charges
         .slice()
@@ -2840,7 +2926,8 @@ class EvTripCalendarCard extends HTMLElement {
         )
         .join("");
       const [yy, mm, dd] = this._openDate.split("-");
-      detail = `<div class="cal-detail"><div class="cal-dhead">${dd}/${mm}/${yy}</div>${trs}${chs || (trs ? "" : '<div class="cal-none">No activity.</div>')}</div>`;
+      const body = jHtml + soloHtml + chs || '<div class="cal-none">No activity.</div>';
+      detail = `<div class="cal-detail"><div class="cal-dhead">${dd}/${mm}/${yy}</div>${body}</div>`;
     }
 
     this.innerHTML = `
@@ -2898,8 +2985,72 @@ class EvTripCalendarCard extends HTMLElement {
           .cal-rmain{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
           .cal-rval{flex:0 0 auto;font-weight:600;font-variant-numeric:tabular-nums;}
           .cal-none{color:var(--secondary-text-color);font-size:.85em;}
+          /* ---- journey groups + route map ---- */
+          .cal-journey{border:1px solid var(--divider-color);border-radius:12px;padding:10px;
+                       display:flex;flex-direction:column;gap:8px;background:var(--card-background-color);}
+          .cal-journey--solo{border-style:dashed;}
+          .cal-jhead{display:flex;align-items:center;gap:8px;}
+          .cal-jicon{flex:0 0 auto;width:28px;height:28px;border-radius:50%;display:flex;align-items:center;
+                     justify-content:center;background:rgba(3,155,229,.16);color:var(--info-color,#039be5);}
+          .cal-jicon ha-icon{--mdc-icon-size:17px;}
+          .cal-jtitle{flex:1 1 auto;min-width:0;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+          .cal-jtime{flex:0 0 auto;color:var(--secondary-text-color);font-size:.82em;font-variant-numeric:tabular-nums;}
+          .cal-jsum{font-size:.82em;color:var(--secondary-text-color);font-variant-numeric:tabular-nums;}
+          .cal-jsum b{color:var(--primary-text-color);font-weight:700;}
+          .cal-stages{display:flex;flex-direction:column;gap:6px;border-left:2px solid var(--divider-color);
+                      margin-left:13px;padding-left:12px;}
+          .cal-stage{display:flex;align-items:center;gap:8px;font-size:.85em;flex-wrap:wrap;}
+          .cal-stime{flex:0 0 auto;color:var(--secondary-text-color);font-variant-numeric:tabular-nums;}
+          .cal-sroute{flex:1 1 auto;min-width:0;display:flex;align-items:center;gap:4px;overflow:hidden;
+                      text-overflow:ellipsis;white-space:nowrap;}
+          .cal-arr{--mdc-icon-size:14px;color:var(--secondary-text-color);flex:0 0 auto;}
+          .cal-smeta{flex:0 0 auto;color:var(--secondary-text-color);font-variant-numeric:tabular-nums;}
+          .cal-pill{flex:0 0 auto;min-width:30px;text-align:center;padding:2px 7px;border-radius:999px;
+                    color:#fff;font-weight:800;font-size:.8em;font-variant-numeric:tabular-nums;}
+          .cal-map{height:170px;border-radius:10px;overflow:hidden;border:1px solid var(--divider-color);
+                   background:var(--secondary-background-color);}
+          .cal-map-ph{height:100%;display:flex;align-items:center;justify-content:center;gap:6px;
+                      color:var(--secondary-text-color);font-size:.85em;}
+          .cal-rt-svg{display:block;width:100%;height:170px;}
+          .cal-rt-line{fill:none;stroke:var(--info-color,#039be5);stroke-width:2.5;stroke-linejoin:round;stroke-linecap:round;}
+          .cal-rt-start{fill:var(--success-color,#43a047);}
+          .cal-rt-end{fill:var(--error-color,#e53935);}
         </style>
       </ha-card>`;
+
+    // After render, lazily fetch each open journey's GPS route from the
+    // device_tracker recorder history and re-render the SVG into its slot.
+    this._fetchOpenDayRoutes();
+  }
+  _fetchOpenDayRoutes() {
+    const ent = this._config.locationEntity;
+    if (!ent || !this._openGroups || !this._openGroups.length) return;
+    for (const w of this._openGroups) {
+      if (this._routes[w.key] !== undefined) continue; // cached/loading
+      this._routes[w.key] = "loading";
+      let start, end;
+      try {
+        start = new Date(new Date(w.start).getTime() - 60000).toISOString();
+        end = new Date(new Date(w.end).getTime() + 60000).toISOString();
+      } catch (_e) { this._routes[w.key] = []; continue; }
+      // NOTE: need attributes (lat/lon) so do NOT use minimal_response/no_attributes.
+      Promise.resolve(this._hass.callApi("GET", `history/period/${start}?end_time=${end}&filter_entity_id=${ent}&significant_changes_only=0`))
+        .then((res) => {
+          const ser = Array.isArray(res) && res[0] ? res[0] : [];
+          const pts = [];
+          for (const x of ser) {
+            const a = x.attributes || {};
+            const lat = parseFloat(a.latitude), lon = parseFloat(a.longitude);
+            if (!isNaN(lat) && !isNaN(lon)) {
+              const last = pts[pts.length - 1];
+              if (!last || last.lat !== lat || last.lon !== lon) pts.push({ lat, lon });
+            }
+          }
+          this._routes[w.key] = pts;
+          this._render();
+        })
+        .catch(() => { this._routes[w.key] = []; this._render(); });
+    }
   }
 }
 customElements.define("ev-trip-calendar-card", EvTripCalendarCard);
@@ -3811,7 +3962,7 @@ class EvTripDashboardStrategy {
       // Restored pre-2.0 favourites first (Driving + Trips with records/search).
       drivingView(D, V, hass, config),
       tripsView(D, hass, V, config),
-      calendarioView(D, hass),
+      calendarioView(D, hass, V, config),
       tendenciasView(D, hass),
       patternsView(D, hass),
       eficienciaView(D, hass),
