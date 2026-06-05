@@ -825,35 +825,47 @@ function eficienciaView(D, hass) {
   // Additive: above the apex scatter below; retire the apex once validated.
   cards.push({ type: "custom:ev-trip-efficiency-card", device: D });
 
-  // ---- Monthly avg consumption (LINE) -----------------------------------
-  // Walk monthly_history.attributes.months, compute kWh/100km per month with
-  // a divide-by-zero guard, parse "YYYY-MM" → ms timestamp for datetime x-axis.
-  cards.push(
-    apexChart({
-      title: "Avg consumption per month (kWh/100km)",
-      // Category axis (NOT datetime + graph_span) — like the working temp bar;
-      // a datetime window dropped the [ts,value] points and rendered blank.
-      apexConfig: {
-        chart: { type: "line", height: 260 },
-        stroke: { curve: "smooth", width: 3 },
-        markers: { size: 4 },
-        dataLabels: { enabled: false },
-        grid: { borderColor: "rgba(255,255,255,0.08)" },
-        xaxis: { type: "category", labels: { rotate: -45, style: { fontSize: "11px" } } },
-        yaxis: { decimalsInFloat: 1, title: { text: "kWh/100km" } },
-      },
-      series: [
-        {
-          entity: `sensor.${D}_monthly_history`,
-          name: "Consumption",
-          color: "#2ea043",
-          type: "line",
-          data_generator:
-            "const months = entity.attributes.months || [];\nconst M=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];\nreturn months.map((m) => {\n  const km = Number(m.distance_km) || 0;\n  const kwh = Number(m.energy_kwh) || 0;\n  const cons = km > 0 ? Math.round((kwh / km) * 1000) / 10 : null;\n  const [y, mo] = String(m.month || '').split('-').map(Number);\n  const lbl = (y && mo) ? `${M[mo-1]} '${String(y).slice(2)}` : String(m.month);\n  return [lbl, cons];\n}).filter((p) => p[1] !== null);",
-        },
-      ],
-    })
-  );
+  // ---- Monthly efficiency: per-month chips + this-vs-last delta ---------
+  // A 2-point line chart looks broken; instead show each month's kWh/100 as
+  // chips and a clear "this month vs last" trend (computed at generate time).
+  {
+    const mh = hass && hass.states[`sensor.${D}_monthly_history`];
+    const months = (mh && mh.attributes && Array.isArray(mh.attributes.months) && mh.attributes.months) || [];
+    const eff = (m) => { const km = Number(m.distance_km) || 0, kwh = Number(m.energy_kwh) || 0; return km > 0 ? (kwh / km) * 100 : null; };
+    const withEff = months.map((m) => ({ m, e: eff(m) })).filter((x) => x.e != null);
+    if (withEff.length >= 2) {
+      const cur = withEff[withEff.length - 1].e, prev = withEff[withEff.length - 2].e;
+      const better = cur <= prev;
+      cards.push(
+        mushroomTpl({
+          primary: "Efficiency · this month vs last",
+          secondary: `${cur.toFixed(1)} vs ${prev.toFixed(1)} kWh/100km · ${better ? "▼" : "▲"} ${Math.abs(cur - prev).toFixed(1)} (${better ? "better" : "worse"})`,
+          icon: better ? "mdi:trending-down" : "mdi:trending-up",
+          iconColor: better ? "green" : "orange",
+          fillContainer: true,
+        })
+      );
+    }
+    if (withEff.length) {
+      const M = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+      const chips = withEff
+        .map((x) => {
+          const [y, mo] = String(x.m.month || "").split("-").map(Number);
+          const lbl = y && mo ? `${M[mo - 1]} '${String(y).slice(2)}` : String(x.m.month);
+          return `<span class="me-chip"><span class="me-m">${lbl}</span><span class="me-v">${x.e.toFixed(1)}</span></span>`;
+        })
+        .join("");
+      cards.push(
+        md(
+          `<div class="me-wrap"><div class="me-h">Per-month efficiency (kWh/100km)</div><div class="me-chips">${chips}</div></div>` +
+            `<style>.me-wrap{padding:2px 2px}.me-h{font-size:.8em;color:var(--secondary-text-color);text-transform:uppercase;letter-spacing:.04em;margin-bottom:6px}` +
+            `.me-chips{display:flex;flex-wrap:wrap;gap:6px}.me-chip{display:flex;flex-direction:column;align-items:center;gap:1px;` +
+            `background:var(--secondary-background-color,var(--card-background-color));border:1px solid var(--divider-color);border-radius:10px;padding:6px 10px}` +
+            `.me-m{font-size:.62em;color:var(--secondary-text-color);text-transform:uppercase}.me-v{font-weight:800;font-variant-numeric:tabular-nums}</style>`
+        )
+      );
+    }
+  }
 
   // Apex "Efficiency vs Distance" scatter removed — superseded by
   // ev-trip-efficiency-card above (cleaner, rounded axis labels).
@@ -1632,10 +1644,9 @@ class EvTripListCard extends HTMLElement {
             ${tile("mdi:lightning-bolt", "Consumption", nn(t.energy_kwh), "kWh")}
             ${tile("mdi:chart-line", "Efficiency", nn(t.consumption_kwh_100km), "kWh/100km")}
           </div>
-          <div class="d-tile d-tile--wide">
-            <ha-icon class="d-tile-icon" icon="mdi:speedometer"></ha-icon>
-            <div class="d-tile-label">Avg speed</div>
-            <div class="d-tile-value">${speed}<span class="d-tile-unit"> km/h</span></div>
+          <div class="d-grid">
+            ${tile("mdi:speedometer", "Avg speed", speed, "km/h")}
+            ${tile("mdi:thermometer", "Outside temp", t.avg_temp_c != null && !isNaN(t.avg_temp_c) ? Number(t.avg_temp_c).toFixed(1) : DASH, "°C")}
           </div>
           ${cmpRows.length ? `<div class="d-cmp">${cmpRows.join("")}</div>` : ""}
         </div>`;
