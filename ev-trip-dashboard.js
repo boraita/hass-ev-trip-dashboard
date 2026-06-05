@@ -584,6 +584,29 @@ function tendenciasView(D, hass) {
 
   cards.push(mushroomTitle("Trends", "Summary of the last 30/60 days", "mdi:chart-line"));
 
+  // Distance by period — at-a-glance totals (today / week / month / year).
+  const distStyles = {
+    card: [{ padding: "10px" }, { "border-radius": "14px" }],
+    name: [{ "font-size": "12px" }, { opacity: "0.75" }],
+    state: [{ "font-size": "20px" }, { "font-weight": "bold" }],
+    icon: [{ color: "var(--info-color)" }, { width: "22px" }],
+  };
+  const distTile = (suffix, name) => ({
+    type: "custom:button-card",
+    entity: `sensor.${D}_distance_${suffix}`,
+    name,
+    icon: "mdi:map-marker-distance",
+    show_state: true, show_name: true, show_icon: true,
+    styles: distStyles,
+    state_display: "[[[ const v = entity && entity.state; return (v==null||v==='unavailable'||v==='unknown') ? '—' : `${Number(v).toFixed(0)} km` ]]]",
+  });
+  cards.push({
+    type: "grid",
+    columns: 4,
+    square: false,
+    cards: [distTile("today", "Today"), distTile("this_week", "Week"), distTile("this_month", "Month"), distTile("this_year", "Year")],
+  });
+
   // ---- KPI 2x2 ----------------------------------------------------------
   // Tile 1 leans on trip_records.attributes.totals.longest_trip_date — colour
   // shifts from orange (recent) to red (long ago) using an inline JS state rule.
@@ -808,19 +831,15 @@ function eficienciaView(D, hass) {
   cards.push(
     apexChart({
       title: "Avg consumption per month (kWh/100km)",
-      graphSpan: "365d",
-      span: { end: "month" },
+      // Category axis (NOT datetime + graph_span) — like the working temp bar;
+      // a datetime window dropped the [ts,value] points and rendered blank.
       apexConfig: {
-        chart: { height: 260 },
+        chart: { type: "line", height: 260 },
         stroke: { curve: "smooth", width: 3 },
         markers: { size: 4 },
         dataLabels: { enabled: false },
         grid: { borderColor: "rgba(255,255,255,0.08)" },
-        tooltip: { x: { format: "MMM yyyy" } },
-        xaxis: {
-          type: "datetime",
-          labels: { datetimeFormatter: { year: "yyyy", month: "MMM 'yy" } },
-        },
+        xaxis: { type: "category", labels: { rotate: -45, style: { fontSize: "11px" } } },
         yaxis: { decimalsInFloat: 1, title: { text: "kWh/100km" } },
       },
       series: [
@@ -830,7 +849,7 @@ function eficienciaView(D, hass) {
           color: "#2ea043",
           type: "line",
           data_generator:
-            "const months = entity.attributes.months || [];\nreturn months.map((m) => {\n  const km = Number(m.distance_km) || 0;\n  const kwh = Number(m.energy_kwh) || 0;\n  const cons = km > 0 ? (kwh / km) * 100 : null;\n  const [y, mo] = String(m.month || '').split('-').map(Number);\n  const ts = (y && mo) ? new Date(y, mo - 1, 1).getTime() : new Date(m.month).getTime();\n  return [ts, cons];\n}).filter((p) => p[1] !== null);",
+            "const months = entity.attributes.months || [];\nconst M=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];\nreturn months.map((m) => {\n  const km = Number(m.distance_km) || 0;\n  const kwh = Number(m.energy_kwh) || 0;\n  const cons = km > 0 ? Math.round((kwh / km) * 1000) / 10 : null;\n  const [y, mo] = String(m.month || '').split('-').map(Number);\n  const lbl = (y && mo) ? `${M[mo-1]} '${String(y).slice(2)}` : String(m.month);\n  return [lbl, cons];\n}).filter((p) => p[1] !== null);",
         },
       ],
     })
@@ -873,6 +892,18 @@ function eficienciaView(D, hass) {
       },
     ],
     });
+  } else {
+    // The bucket data is empty until trips are logged with an outside-temp
+    // reading — show a placeholder so the chart isn't silently missing.
+    cards.push(
+      mushroomTpl({
+        primary: "Consumption by temperature",
+        secondary: "Collecting data — appears once trips are logged with an outside-temperature reading.",
+        icon: "mdi:thermometer-lines",
+        iconColor: "blue-grey",
+        fillContainer: true,
+      })
+    );
   }
 
   // ---- Footer hint — colored advice -------------------------------------
@@ -1120,7 +1151,7 @@ function trips30dKpis(D) {
 
   return {
     type: "grid",
-    columns: 5,
+    columns: 3,
     square: false,
     cards: [
       {
@@ -1151,7 +1182,7 @@ function trips30dKpis(D) {
           D +
           "_recent_trips'].attributes\n                && states['sensor." +
           D +
-          "_recent_trips'].attributes.trips) || [];\n  const vals = trips.map(t => parseFloat(t.energy_kwh)).filter(v => !isNaN(v));\n  if (!vals.length) return '— kWh';\n  const avg = vals.reduce((a,b)=>a+b,0) / vals.length;\n  return `${avg.toFixed(2)} kWh`;\n]]]",
+          "_recent_trips'].attributes.trips) || [];\n  const vals = trips.map(t => parseFloat(t.energy_kwh)).filter(v => !isNaN(v));\n  if (!vals.length) return '— kWh';\n  const avg = vals.reduce((a,b)=>a+b,0) / vals.length;\n  return `${avg.toFixed(1)} kWh`;\n]]]",
       },
       {
         type: "custom:button-card",
@@ -1252,6 +1283,44 @@ function cargasView(D, hass) {
     icon: [{ color: iconColor }, { width: "28px" }],
   });
 
+  // This-month totals (energy charged / spent / sessions) — complements the
+  // 30-day averages below.
+  cards.push(heading("This month", "mdi:calendar-month"));
+  cards.push({
+    type: "grid",
+    columns: 3,
+    square: false,
+    cards: [
+      {
+        type: "custom:button-card",
+        entity: `sensor.${D}_energy_charged_this_month`,
+        name: "Charged",
+        icon: "mdi:lightning-bolt",
+        show_state: true, show_name: true, show_icon: true,
+        styles: chKpiStyles("var(--info-color)"),
+        state_display: "[[[ const v = entity && entity.state; return (v==null||v==='unavailable'||v==='unknown') ? '—' : `${Number(v).toFixed(1)} kWh` ]]]",
+      },
+      {
+        type: "custom:button-card",
+        entity: `sensor.${D}_spent_on_charging_this_month`,
+        name: "Spent",
+        icon: "mdi:cash-multiple",
+        show_state: true, show_name: true, show_icon: true,
+        styles: chKpiStyles("var(--warning-color)"),
+        state_display: "[[[ const v = entity && entity.state; return (v==null||v==='unavailable'||v==='unknown') ? '—' : `${Number(v).toFixed(2)} €` ]]]",
+      },
+      {
+        type: "custom:button-card",
+        entity: `sensor.${D}_charges_this_month`,
+        name: "Sessions",
+        icon: "mdi:counter",
+        show_state: true, show_name: true, show_icon: true,
+        styles: chKpiStyles("var(--success-color)"),
+      },
+    ],
+  });
+
+  cards.push(heading("Last 30 days", "mdi:chart-box-outline"));
   cards.push({
     type: "grid",
     columns: 2,
@@ -3115,9 +3184,10 @@ class EvTripEfficiencyCard extends HTMLElement {
       .map((t) => ({
         x: Number(t.distance_km),
         y: Number(t.consumption_kwh_100km),
+        e: Number(t.energy_kwh),
         s: t.score == null ? null : Number(t.score),
       }))
-      .filter((p) => !isNaN(p.x) && !isNaN(p.y) && p.x >= 0 && p.y >= 0);
+      .filter((p) => !isNaN(p.x) && !isNaN(p.y) && p.x > 0 && p.y >= 0 && !(p.e < 0));
 
     if (pts.length < 2) {
       this.innerHTML = `
@@ -3143,7 +3213,12 @@ class EvTripEfficiencyCard extends HTMLElement {
     const sy = (v) => y1 - ((v - yMin) / (yMax - yMin || 1)) * (y1 - y0);
     const fmt = (v) => (Math.round(v * 10) / 10).toString();
 
-    const mean = yVals.reduce((a, b) => a + b, 0) / yVals.length;
+    // Distance-weighted mean (Σenergy / Σdistance · 100) — matches the 30-day
+    // hero and is the correct efficiency; a simple mean of per-trip ratios
+    // over-weights short inefficient trips. Reconstruct energy if missing.
+    const sumE = pts.reduce((a, p) => a + (isNaN(p.e) ? (p.y * p.x) / 100 : p.e), 0);
+    const sumX = pts.reduce((a, p) => a + p.x, 0);
+    const mean = sumX > 0 ? (sumE / sumX) * 100 : 0;
     const meanY = sy(mean);
 
     // Gridlines + labels (3 on each axis).
