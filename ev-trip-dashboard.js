@@ -3786,6 +3786,80 @@ window.customCards = window.customCards || [];
 window.customCards.push({ type: "ev-charge-status-card", name: "EV Trip — charge status", description: "Live charging / paused / last-charge summary for the first screen." });
 
 // ==========================================================================
+// Custom card: the LIVE trip in progress, for the Driving screen. Shows tiles
+// (distance/duration/energy/efficiency/avg speed/SoC used + cost/score) only
+// while a trip is active (current_trip_distance > 0); renders nothing otherwise.
+// ==========================================================================
+class EvTripActiveCard extends HTMLElement {
+  setConfig(config) {
+    this._config = config || {};
+    this._device = this._config.device || null;
+  }
+  set hass(hass) {
+    this._hass = hass;
+    this._render();
+  }
+  getCardSize() { return 4; }
+  _render() {
+    if (!this._hass) return;
+    const D = this._device || detectDevice(this._hass);
+    this._device = D;
+    const DASH = "—";
+    const num = (id) => { const e = this._hass.states[`sensor.${D}_${id}`]; const v = e ? parseFloat(e.state) : NaN; return isNaN(v) ? null : v; };
+    const dist = num("current_trip_distance");
+    if (dist == null || dist <= 0) { this.innerHTML = ""; return; } // not driving → hide
+    const f = (v, dp) => (v == null ? DASH : Number(v).toFixed(dp == null ? 0 : dp));
+    const dur = num("current_trip_duration");
+    const energy = num("current_trip_energy");
+    const cons = num("current_trip_consumption");
+    const spd = num("current_trip_average_speed");
+    const soc = num("current_trip_battery_used");
+    const cost = num("current_trip_cost");
+    const score = num("current_trip_score");
+    const tile = (icon, label, value, unit, color) =>
+      `<div class="at-t"><ha-icon class="at-ti" icon="${icon}"></ha-icon><div class="at-tl">${_esc(label)}</div>` +
+      `<div class="at-tv"${color ? ` style="color:${color}"` : ""}>${value}<span class="at-tu">${unit ? " " + _esc(unit) : ""}</span></div></div>`;
+    const extra =
+      (cost != null ? tile("mdi:cash", "Cost", f(cost, 2), "€") : "") +
+      (score != null ? tile("mdi:star", "Score", f(score, 1), "", _scoreColor(score)) : "");
+    this.innerHTML = `
+      <ha-card>
+        <div class="at-head">
+          <span class="at-badge"><ha-icon icon="mdi:steering"></ha-icon></span>
+          <div><div class="at-title">🟢 Trip in progress</div><div class="at-sub">live · updates as you drive</div></div>
+        </div>
+        <div class="at-tiles">
+          ${tile("mdi:map-marker-distance", "Distance", f(dist, 1), "km")}
+          ${tile("mdi:timer-outline", "Duration", f(dur), "min")}
+          ${tile("mdi:lightning-bolt", "Energy", f(energy, 2), "kWh")}
+          ${tile("mdi:chart-line", "Efficiency", f(cons, 1), "kWh/100")}
+          ${tile("mdi:speedometer", "Avg speed", f(spd, 1), "km/h")}
+          ${tile("mdi:battery-minus", "SoC used", f(soc, 1), "%")}
+          ${extra}
+        </div>
+        <style>
+          .at-head{display:flex;align-items:center;gap:10px;padding:14px 16px 8px;}
+          .at-badge{flex:0 0 auto;width:42px;height:42px;border-radius:50%;display:flex;align-items:center;justify-content:center;
+                    background:rgba(67,160,71,.18);}
+          .at-badge ha-icon{--mdc-icon-size:23px;color:var(--success-color,#43a047);}
+          .at-title{font-weight:700;}
+          .at-sub{color:var(--secondary-text-color);font-size:.82em;}
+          .at-tiles{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;padding:6px 12px 14px;}
+          .at-t{background:var(--secondary-background-color,var(--card-background-color));border:1px solid var(--divider-color);
+                border-radius:12px;padding:9px 6px;display:flex;flex-direction:column;align-items:center;gap:3px;text-align:center;}
+          .at-ti{--mdc-icon-size:18px;color:var(--secondary-text-color);}
+          .at-tl{font-size:.6em;letter-spacing:.04em;text-transform:uppercase;color:var(--secondary-text-color);line-height:1.2;}
+          .at-tv{font-size:1.2em;font-weight:800;font-variant-numeric:tabular-nums;line-height:1.1;}
+          .at-tu{font-size:.55em;font-weight:600;color:var(--secondary-text-color);}
+        </style>
+      </ha-card>`;
+  }
+}
+customElements.define("ev-trip-active-card", EvTripActiveCard);
+window.customCards = window.customCards || [];
+window.customCards.push({ type: "ev-trip-active-card", name: "EV Trip — live trip", description: "The in-progress trip (shown only while driving)." });
+
+// ==========================================================================
 // RESTORED from v1.5.0 (user favourites, pre-2.0): Driving + Trips views.
 // Additive — the 9-view equivalents stay until these are validated.
 // ==========================================================================
@@ -3864,6 +3938,9 @@ function drivingView(D, V, hass, cfg) {
     });
   }
 
+  // Live trip in progress — right after the battery; self-hides when not driving.
+  status.push({ type: "custom:ev-trip-active-card", device: D });
+
   // Live charge status (charging / paused-while-plugged / last-charge summary).
   status.push({
     type: "custom:ev-charge-status-card",
@@ -3893,28 +3970,8 @@ function drivingView(D, V, hass, cfg) {
   const vCab = pickVehicleEntity(hass, V, "cabin_temp", cfg);
   if (vCab) status.push(kpiTile(vCab, "Cabin", "mdi:car-seat", "orange"));
 
-  // Live-trip glance — shown only while a trip is actively tracked, so these
-  // metrics populate live (they're sampled when vehicle_on is on). Include any
-  // that the logger exposes; synthetic/backfilled trips never open this card.
-  const liveEnts = [
-    { entity: `sensor.${D}_current_trip_distance`, name: "km" },
-    { entity: `sensor.${D}_current_trip_duration`, name: "min" },
-    { entity: `sensor.${D}_current_trip_energy`, name: "kWh" },
-    { entity: `sensor.${D}_current_trip_consumption`, name: "kWh/100" },
-    { entity: `sensor.${D}_current_trip_average_speed`, name: "km/h" },
-    { entity: `sensor.${D}_current_trip_battery_used`, name: "% used" },
-  ];
-  for (const [s, n] of [
-    ["current_trip_max_speed", "km/h max"],
-    ["current_trip_max_power", "kW max"],
-    ["current_trip_avg_temperature", "°C"],
-    ["current_trip_regen_energy", "regen"],
-    ["current_trip_cost", "cost"],
-    ["current_trip_score", "score"],
-  ]) {
-    if (has(hass, `sensor.${D}_${s}`)) liveEnts.push({ entity: `sensor.${D}_${s}`, name: n });
-  }
-
+  // (The live in-progress trip is rendered by the ev-trip-active-card placed
+  // right after the battery above — it self-hides when no trip is open.)
   const lastEnts = [
     { entity: `sensor.${D}_last_trip_distance`, name: "km" },
     { entity: `sensor.${D}_last_trip_duration`, name: "min" },
@@ -3935,12 +3992,7 @@ function drivingView(D, V, hass, cfg) {
   }
 
   const now = [
-    heading("Now", "mdi:speedometer"),
-    {
-      type: "conditional",
-      conditions: [{ condition: "numeric_state", entity: `sensor.${D}_current_trip_distance`, above: 0 }],
-      card: { type: "glance", title: "🟢 Trip in progress", columns: 4, entities: liveEnts },
-    },
+    heading("Last trip", "mdi:history"),
     {
       type: "conditional",
       conditions: [{ condition: "numeric_state", entity: `sensor.${D}_current_trip_distance`, below: 0.001 }],
