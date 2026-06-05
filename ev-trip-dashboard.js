@@ -2027,8 +2027,9 @@ class EvTripHistoryCard extends HTMLElement {
       stagesHtml = stages
         .map((t) => {
           const score = t.score != null ? Number(t.score).toFixed(1) : DASH;
-          const origin = t.origin ? `<span class="chip">${_esc(t.origin)}</span>` : `<span class="chip">${DASH}</span>`;
-          const dest = t.destination ? `<span class="chip">${_esc(t.destination)}</span>` : `<span class="chip">${DASH}</span>`;
+          // Prefer the reverse-geocoded street address over the home/not_home label.
+          const origin = `<span class="chip">${_endpoint(t.start_address, t.origin)}</span>`;
+          const dest = `<span class="chip">${_endpoint(t.end_address, t.destination)}</span>`;
           return `
             <div class="stage">
               <div class="sbody">
