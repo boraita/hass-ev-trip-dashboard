@@ -1470,6 +1470,31 @@ class EvTripListCard extends HTMLElement {
   setConfig(config) {
     this._config = config || {};
     this._device = this._config.device || null;
+    this._temps = this._temps || {}; // trip id -> {start,end} | 'loading'
+  }
+  // Fetch the outside-temperature at the open trip's start/end from recorder
+  // history (the logger only stores avg_temp_c). Cached per trip id.
+  _fetchOpenTripTemp(rows) {
+    const ent = this._config.tempEntity;
+    if (!ent || this._openTripId == null) return;
+    const t = rows.find((x) => String(x.id) === String(this._openTripId));
+    if (!t || !t.started_at || !t.ended_at) return;
+    const id = t.id;
+    if (this._temps[id] !== undefined) return;
+    this._temps[id] = "loading";
+    let start, end;
+    try {
+      start = new Date(new Date(t.started_at).getTime() - 120000).toISOString();
+      end = new Date(new Date(t.ended_at).getTime() + 120000).toISOString();
+    } catch (_e) { this._temps[id] = {}; return; }
+    Promise.resolve(this._hass.callApi("GET", `history/period/${start}?end_time=${end}&filter_entity_id=${ent}&minimal_response`))
+      .then((res) => {
+        const ser = Array.isArray(res) && res[0] ? res[0] : [];
+        const vals = ser.map((p) => parseFloat(p.state)).filter((v) => !isNaN(v));
+        this._temps[id] = vals.length ? { start: vals[0], end: vals[vals.length - 1] } : {};
+        this._render();
+      })
+      .catch(() => { this._temps[id] = {}; this._render(); });
   }
   set hass(hass) {
     this._hass = hass;
@@ -1644,9 +1669,16 @@ class EvTripListCard extends HTMLElement {
             ${tile("mdi:lightning-bolt", "Consumption", nn(t.energy_kwh), "kWh")}
             ${tile("mdi:chart-line", "Efficiency", nn(t.consumption_kwh_100km), "kWh/100km")}
           </div>
-          <div class="d-grid">
+          <div class="d-grid d-grid3">
             ${tile("mdi:speedometer", "Avg speed", speed, "km/h")}
-            ${tile("mdi:thermometer", "Outside temp", t.avg_temp_c != null && !isNaN(t.avg_temp_c) ? Number(t.avg_temp_c).toFixed(1) : DASH, "°C")}
+            ${(() => {
+              const tp = this._temps[t.id];
+              const fmtT = (v) => (tp === "loading" ? "…" : v != null ? Number(v).toFixed(1) : DASH);
+              return (
+                tile("mdi:thermometer-low", "Temp start", fmtT(tp && tp.start), "°C") +
+                tile("mdi:thermometer-high", "Temp end", fmtT(tp && tp.end), "°C")
+              );
+            })()}
           </div>
           ${cmpRows.length ? `<div class="d-cmp">${cmpRows.join("")}</div>` : ""}
         </div>`;
@@ -1817,6 +1849,7 @@ class EvTripListCard extends HTMLElement {
           .d-sub{margin-top:-6px;font-size:.85em;color:var(--secondary-text-color);
                  font-variant-numeric:tabular-nums;}
           .d-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;}
+          .d-grid3{grid-template-columns:repeat(3,1fr);}
           .d-tile{background:var(--secondary-background-color);
                   border:1px solid var(--divider-color);border-radius:14px;
                   padding:12px 10px;display:flex;flex-direction:column;align-items:center;
@@ -1849,6 +1882,9 @@ class EvTripListCard extends HTMLElement {
           <span class="count">Showing ${rows.length} of ${total} trips</span></div>
         <div class="list">${rowsHtml}</div>
       </ha-card>`;
+
+    // Lazily fetch the open trip's start/end outside temperature.
+    this._fetchOpenTripTemp(rows);
   }
 }
 customElements.define("ev-trip-list-card", EvTripListCard);
@@ -4010,6 +4046,7 @@ function tripsView(D, hass, V, cfg) {
   const plugEntity = (cfg && cfg.plug_entity) || (hass ? pickVehicleEntity(hass, V, "plug", cfg) : null);
   const chargingEntity = hass ? pickVehicleEntity(hass, V, "charging", cfg) : null;
   const powerEntity = hass ? resolveChargePower(hass, D, cfg) : `sensor.${D}_current_charge_power`;
+  const tempEntity = (cfg && cfg.outside_temp_entity) || (hass ? pickVehicleEntity(hass, V, "outside_temp", cfg) : null);
   // Right column: records, plus the helper-backed Search & filter card ONLY
   // when the input helpers exist (input_text.<D>_trip_search is the canary).
   // Without them the ev-trip-list-card still shows all trips, newest-first —
@@ -4039,7 +4076,7 @@ function tripsView(D, hass, V, cfg) {
     max_columns: 2,
     sections: [
       { type: "grid", column_span: 2, cards: [heading("Last 30 days", "mdi:calendar-range"), trips30dKpis(D)] },
-      grid([heading("Trips", "mdi:map-marker-path"), { type: "custom:ev-trip-list-card", device: D, title: "Trips", plugEntity, chargingEntity, powerEntity }]),
+      grid([heading("Trips", "mdi:map-marker-path"), { type: "custom:ev-trip-list-card", device: D, title: "Trips", plugEntity, chargingEntity, powerEntity, tempEntity }]),
       grid(rightCards),
     ],
   };
