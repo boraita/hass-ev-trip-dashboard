@@ -92,20 +92,7 @@ views:
           !include ../cards/efficiency-charts.yaml
 
   # ============================================================
-  # VIEW 6 — Récords
-  # ============================================================
-  - title: Récords
-    path: tops
-    icon: mdi:trophy
-    type: sections
-    max_columns: 2
-    sections:
-      - type: grid
-        cards:
-          !include ../cards/tops-rankings.yaml
-
-  # ============================================================
-  # VIEW 7 — Detalle del último viaje
+  # VIEW 6 — Detalle del último viaje
   # ============================================================
   - title: Detalle
     path: trip-detail

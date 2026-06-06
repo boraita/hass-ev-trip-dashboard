@@ -41,6 +41,64 @@ cards:
     multiline_secondary: true
 
   # ---------------------------------------------------------------------------
+  # ROUTE MAP — multi-stage OSM static map + Google Maps directions link
+  # with the full journey route (origin = first stage start, waypoints
+  # = each intermediate stage end, destination = last stage end). Free
+  # Google Maps caps waypoints at 9; we slice and add a warning chip if
+  # the journey has more stages.
+  # ---------------------------------------------------------------------------
+  - type: conditional
+    conditions:
+      - condition: state
+        entity: sensor.__DEVICE___last_journey
+        state_not: "unavailable"
+      - condition: state
+        entity: sensor.__DEVICE___last_journey
+        state_not: "unknown"
+      - condition: state
+        entity: sensor.__DEVICE___last_journey
+        state_not: "0"
+    card:
+      type: markdown
+      content: >-
+        {% set jid = state_attr('sensor.__DEVICE___last_journey', 'journey_id') %}
+        {% set trips = state_attr('sensor.__DEVICE___recent_trips', 'trips') or [] %}
+        {% set st = trips
+              | selectattr('journey_id', 'equalto', jid)
+              | selectattr('start_lat', 'ne', none)
+              | selectattr('end_lat',   'ne', none)
+              | sort(attribute='started_at') | list %}
+        {% if st | length > 0 %}
+        {%- set o = st[0] %}
+        {%- set d = st[-1] %}
+        {%- set waypoints = [] %}
+        {%- for s in st[:-1] %}
+        {%-   set _ = waypoints.append(s.end_lat ~ ',' ~ s.end_lon) %}
+        {%- endfor %}
+        {%- set wp = waypoints[:9] %}
+        {%- set truncated = waypoints | length > 9 %}
+        {%- set markers = [] %}
+        {%- set _ = markers.append(o.start_lat ~ ',' ~ o.start_lon ~ ',lightgreen') %}
+        {%- for s in st[:-1] %}
+        {%-   set _ = markers.append(s.end_lat ~ ',' ~ s.end_lon ~ ',lightblue') %}
+        {%- endfor %}
+        {%- set _ = markers.append(d.end_lat ~ ',' ~ d.end_lon ~ ',red') %}
+        {%- set lats = [o.start_lat | float] + (st | map(attribute='end_lat') | list | map('float') | list) %}
+        {%- set lons = [o.start_lon | float] + (st | map(attribute='end_lon') | list | map('float') | list) %}
+        {%- set c_lat = (lats | sum) / (lats | length) %}
+        {%- set c_lon = (lons | sum) / (lons | length) %}
+        ![map](https://staticmap.openstreetmap.de/staticmap.php?center={{ c_lat }},{{ c_lon }}&zoom=12&size=640x360&markers={{ markers | join('|') }})
+
+        [🗺 Ver journey completo en Google Maps](https://www.google.com/maps/dir/?api=1&origin={{ o.start_lat }},{{ o.start_lon }}&destination={{ d.end_lat }},{{ d.end_lon }}{% if wp %}&waypoints={{ wp | join('|') }}{% endif %}&travelmode=driving)
+        {% if truncated %}
+
+        > ℹ️ Mostrando 9 de {{ waypoints | length }} paradas (límite gratuito de Google Maps).
+        {% endif %}
+        {% else %}
+        _Sin coordenadas GPS para este journey._
+        {% endif %}
+
+  # ---------------------------------------------------------------------------
   # AGGREGATES — stages · km · kWh · € · duración
   # ---------------------------------------------------------------------------
   - type: conditional

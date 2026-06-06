@@ -40,12 +40,3 @@ views:
         cards:
           !include ../cards/charges-v2.yaml
 
-  - title: Récords
-    path: tops
-    icon: mdi:trophy
-    type: sections
-    max_columns: 1
-    sections:
-      - type: grid
-        cards:
-          !include ../cards/tops-rankings.yaml
