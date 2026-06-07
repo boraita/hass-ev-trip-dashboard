@@ -73,7 +73,12 @@ function pickVehicleEntity(hass, V, concept, cfg) {
     charging: [`binary_sensor.${V}_charging`, `binary_sensor.${V}_charging_system`],
   };
   for (const e of NAMES[concept] || []) if (hasVal(hass, e)) return e;
-  const ids = Object.keys(hass.states).filter((id) => id.includes(`.${V}_`) || id.endsWith(`.${V}`));
+  // Match the vehicle slug even when the car integration PREFIXES it
+  // (e.g. logger slug `sealion_7` but entities are `…byd_sealion_7_*`), so the
+  // auto-detect works without the user setting `vehicle:` explicitly.
+  const ids = Object.keys(hass.states).filter(
+    (id) => id.includes(`.${V}_`) || id.endsWith(`.${V}`) || id.includes(`_${V}_`) || id.endsWith(`_${V}`)
+  );
   const dc = (id) => (hass.states[id].attributes || {}).device_class;
   const find = (pred) => ids.find((id) => { try { return pred(id); } catch (_e) { return false; } });
   switch (concept) {
@@ -1561,7 +1566,17 @@ class EvTripListCard extends HTMLElement {
       if (t.consumption_kwh_100km != null && t.consumption_kwh_100km > maxE) return false;
       return inWindow(t);
     });
-    const by = (k, dir = 1) => (a, b) => ((a[k] ?? 0) - (b[k] ?? 0)) * dir;
+    // Sort by a numeric key; trips MISSING that key (null/NaN) always sink to
+    // the bottom regardless of direction — so "Cheapest"/"Most efficient" never
+    // surface an unpriced/unmeasured trip as if it were 0.
+    const by = (k, dir = 1) => (a, b) => {
+      const av = a[k], bv = b[k];
+      const an = av == null || isNaN(av), bn = bv == null || isNaN(bv);
+      if (an && bn) return 0;
+      if (an) return 1;
+      if (bn) return -1;
+      return (av - bv) * dir;
+    };
     const byDate = (dir) => (a, b) => (new Date(a.ended_at) - new Date(b.ended_at)) * dir;
     const sorters = {
       Newest: byDate(-1), Oldest: byDate(1),
@@ -1769,9 +1784,12 @@ class EvTripListCard extends HTMLElement {
       const dm = cs.durationMin != null ? cs.durationMin : cs.lastDurMin;
       const durStr = dm == null ? "" : dm >= 60 ? `${Math.floor(dm / 60)}h ${Math.round(dm % 60)}m` : `${Math.round(dm)} min`;
       const energy = cs.energy != null ? cs.energy : cs.lastEnergy;
+      // Until the logger has a kWh delta (soc_start may be null at the very
+      // start), show "starting…" rather than a misleading 0.00 kWh.
+      const hasE = energy != null && energy >= 0.01;
       const metrics = charging
-        ? `<b>${(energy || 0).toFixed(2)}</b> kWh · <b>${(cs.power || 0).toFixed(1)}</b> kW${durStr ? ` · ${durStr}` : ""}`
-        : `Cable connected · not charging${energy != null ? ` · <b>${energy.toFixed(2)}</b> kWh` : ""}${durStr ? ` · ${durStr}` : ""}`;
+        ? `${hasE ? `<b>${energy.toFixed(2)}</b> kWh · ` : "starting… · "}<b>${(cs.power || 0).toFixed(1)}</b> kW${durStr ? ` · ${durStr}` : ""}`
+        : `Cable connected · not charging${hasE ? ` · <b>${energy.toFixed(2)}</b> kWh` : ""}${durStr ? ` · ${durStr}` : ""}`;
       liveRow = `
         <div class="charge-row charge-live ${charging ? "cl-charging" : "cl-paused"}">
           <div class="cr-badge"><ha-icon icon="${charging ? "mdi:ev-station" : "mdi:pause-circle-outline"}"></ha-icon></div>
@@ -2839,7 +2857,13 @@ const _timeOfDay = (iso) => {
   const p = (n) => String(n).padStart(2, "0");
   return `${p(d.getHours())}:${p(d.getMinutes())}`;
 };
-const _endpoint = (addr, fallback) => _esc(addr || fallback || "?");
+const _endpoint = (addr, fallback) => {
+  const v = addr || fallback || "?";
+  const z = String(v).trim().toLowerCase();
+  if (z === "not_home") return "Away";   // raw HA zone label → human
+  if (z === "home") return "Home";
+  return _esc(v);
+};
 // Draw a GPS route over REAL OpenStreetMap tiles (Web Mercator), auto-zoomed
 // to fit the route. No API key. pts = [{lat,lon}] in order. If tiles fail to
 // load (offline/blocked) the polyline still shows on the blank background.
@@ -3020,10 +3044,13 @@ class EvTripCalendarCard extends HTMLElement {
       const f0 = (v) => (Number(v) || 0).toFixed(0);
       const f1 = (v) => (Number(v) || 0).toFixed(1);
       const { groups, standalone } = this._groupByJourney(e.trips);
-      // record windows so _fetchOpenDayRoutes can pull each journey's route
+      // Record route windows so _fetchOpenDayRoutes can pull each journey's
+      // GPS track. A journey is fetched PER STAGE (one sub-window per leg) and
+      // the legs are concatenated — fetching the whole journey span would drag
+      // the polyline across the parked gap between stages (e.g. overnight).
       this._openGroups = groups
-        .map((g) => ({ key: `${g.started_at}|${g.ended_at}`, start: g.started_at, end: g.ended_at }))
-        .concat(standalone.map((t) => ({ key: `${t.started_at}|${t.ended_at}`, start: t.started_at, end: t.ended_at })));
+        .map((g) => ({ key: `${g.started_at}|${g.ended_at}`, windows: g.stages.map((t) => ({ start: t.started_at, end: t.ended_at })) }))
+        .concat(standalone.map((t) => ({ key: `${t.started_at}|${t.ended_at}`, windows: [{ start: t.started_at, end: t.ended_at }] })));
 
       const stage = (t) => `
         <div class="cal-stage">
@@ -3170,16 +3197,16 @@ class EvTripCalendarCard extends HTMLElement {
   _fetchOpenDayRoutes() {
     const ent = this._config.locationEntity;
     if (!ent || !this._openGroups || !this._openGroups.length) return;
-    for (const w of this._openGroups) {
-      if (this._routes[w.key] !== undefined) continue; // cached/loading
-      this._routes[w.key] = "loading";
+    // Fetch one device_tracker history window and return its de-duplicated
+    // lat/lon breadcrumb. NOTE: need attributes (lat/lon) so do NOT use
+    // minimal_response/no_attributes.
+    const fetchWin = (win) => {
       let start, end;
       try {
-        start = new Date(new Date(w.start).getTime() - 60000).toISOString();
-        end = new Date(new Date(w.end).getTime() + 60000).toISOString();
-      } catch (_e) { this._routes[w.key] = []; continue; }
-      // NOTE: need attributes (lat/lon) so do NOT use minimal_response/no_attributes.
-      Promise.resolve(this._hass.callApi("GET", `history/period/${start}?end_time=${end}&filter_entity_id=${ent}&significant_changes_only=0`))
+        start = new Date(new Date(win.start).getTime() - 60000).toISOString();
+        end = new Date(new Date(win.end).getTime() + 60000).toISOString();
+      } catch (_e) { return Promise.resolve([]); }
+      return Promise.resolve(this._hass.callApi("GET", `history/period/${start}?end_time=${end}&filter_entity_id=${ent}&significant_changes_only=0`))
         .then((res) => {
           const ser = Array.isArray(res) && res[0] ? res[0] : [];
           const pts = [];
@@ -3190,6 +3217,23 @@ class EvTripCalendarCard extends HTMLElement {
               const last = pts[pts.length - 1];
               if (!last || last.lat !== lat || last.lon !== lon) pts.push({ lat, lon });
             }
+          }
+          return pts;
+        })
+        .catch(() => []);
+    };
+    for (const w of this._openGroups) {
+      if (this._routes[w.key] !== undefined) continue; // cached/loading
+      this._routes[w.key] = "loading";
+      const wins = Array.isArray(w.windows) ? w.windows : [];
+      // Fetch every leg, then concatenate in chronological order (skips the
+      // stationary gaps between stages entirely).
+      Promise.all(wins.map(fetchWin))
+        .then((legs) => {
+          const pts = [];
+          for (const leg of legs) for (const p of leg) {
+            const last = pts[pts.length - 1];
+            if (!last || last.lat !== p.lat || last.lon !== p.lon) pts.push(p);
           }
           this._routes[w.key] = pts;
           this._render();
@@ -3260,12 +3304,17 @@ class EvTripEfficiencyCard extends HTMLElement {
     const sy = (v) => y1 - ((v - yMin) / (yMax - yMin || 1)) * (y1 - y0);
     const fmt = (v) => (Math.round(v * 10) / 10).toString();
 
-    // Distance-weighted mean (Σenergy / Σdistance · 100) — matches the 30-day
-    // hero and is the correct efficiency; a simple mean of per-trip ratios
-    // over-weights short inefficient trips. Reconstruct energy if missing.
+    // Dashed line = the authoritative 30-day average (the same number shown in
+    // the hero), so the two never disagree. The logger's `avg_consumption_30_days`
+    // is a true 30-DAY window; recomputing here over `recent_trips` would be the
+    // last-N-TRIPS window instead (a different population), which is why the old
+    // self-computed mean visibly diverged. Fall back to the distance-weighted
+    // mean of the plotted points only when the hero sensor is missing.
     const sumE = pts.reduce((a, p) => a + (isNaN(p.e) ? (p.y * p.x) / 100 : p.e), 0);
     const sumX = pts.reduce((a, p) => a + p.x, 0);
-    const mean = sumX > 0 ? (sumE / sumX) * 100 : 0;
+    const heroSt = this._hass.states[`sensor.${D}_avg_consumption_30_days`];
+    const hero = heroSt ? parseFloat(heroSt.state) : NaN;
+    const mean = !isNaN(hero) ? hero : sumX > 0 ? (sumE / sumX) * 100 : 0;
     const meanY = sy(mean);
 
     // Gridlines + labels (3 on each axis).
@@ -4019,26 +4068,8 @@ function drivingView(D, V, hass, cfg) {
     },
   ];
 
-  // Charging-now card from the logger's live charge sensors.
-  if (has(hass, `sensor.${D}_current_charge_power`)) {
-    now.push({
-      type: "conditional",
-      conditions: [{ condition: "state", entity: `sensor.${D}_charge_in_progress`, state: "charging" }],
-      card: {
-        type: "glance",
-        title: "⚡ Charging now",
-        columns: 3,
-        entities: [
-          { entity: `sensor.${D}_current_charge_power`, name: "kW" },
-          { entity: `sensor.${D}_current_charge_energy`, name: "kWh" },
-          { entity: `sensor.${D}_current_charge_duration`, name: "min" },
-          { entity: `sensor.${D}_current_charge_price_per_kwh`, name: "€/kWh" },
-          { entity: `sensor.${D}_current_charge_cost`, name: "cost" },
-          { entity: `sensor.${D}_current_charge_type`, name: "type" },
-        ],
-      },
-    });
-  }
+  // (The live "Charging now" details are already rendered by the richer
+  // ev-charge-status-card in the status grid above — no duplicate glance here.)
 
   const sections = [grid(status), grid(now)];
 
