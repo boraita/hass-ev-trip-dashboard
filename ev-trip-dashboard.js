@@ -1551,6 +1551,11 @@ class EvTripListCard extends HTMLElement {
     if (!ent || this._openTripId == null) return;
     const t = rows.find((x) => String(x.id) === String(this._openTripId));
     if (!t || !t.started_at || !t.ended_at) return;
+    // Only geocode endpoints that were OUTSIDE any HA zone — when origin/dest
+    // is a named zone (home / "Trabajo ele") we show the area name, no lookup.
+    const needStart = _zoneLabel(t.origin) == null;
+    const needEnd = _zoneLabel(t.destination) == null;
+    if (!needStart && !needEnd) return;
     const id = t.id;
     if (this._streets[id] !== undefined) return;
     this._streets[id] = "loading";
@@ -1571,10 +1576,12 @@ class EvTripListCard extends HTMLElement {
         }
         if (!pts.length) { this._streets[id] = {}; this._render(); return; }
         const first = pts[0], last = pts[pts.length - 1];
-        this._streets[id] = { start: "loading", end: "loading" };
+        this._streets[id] = { start: needStart ? "loading" : null, end: needEnd ? "loading" : null };
         this._render();
-        Promise.all([_reverseGeocode(first.lat, first.lon), _reverseGeocode(last.lat, last.lon)])
-          .then(([s, e]) => { this._streets[id] = { start: s, end: e }; this._render(); });
+        Promise.all([
+          needStart ? _reverseGeocode(first.lat, first.lon) : Promise.resolve(null),
+          needEnd ? _reverseGeocode(last.lat, last.lon) : Promise.resolve(null),
+        ]).then(([s, e]) => { this._streets[id] = { start: s, end: e }; this._render(); });
       })
       .catch(() => { this._streets[id] = {}; this._render(); });
   }
@@ -1779,14 +1786,19 @@ class EvTripListCard extends HTMLElement {
             </div>
           </div>
           <div class="d-sub">${_fmtDate(t.ended_at, true)}</div>
-          <div class="d-route">${_endpoint(t.start_address, t.origin)}<ha-icon icon="mdi:arrow-right"></ha-icon>${_endpoint(t.end_address, t.destination)}</div>
           ${(() => {
+            // One location line: a HA zone/area name when the endpoint was
+            // inside a zone, otherwise the reverse-geocoded street (not_home).
             const ss = this._streets[t.id];
-            if (!this._config.locationEntity) return "";
-            if (ss === undefined || ss === "loading") return `<div class="d-streets"><ha-icon icon="mdi:map-marker"></ha-icon> locating…</div>`;
-            const part = (lbl, v) => (v === "loading" ? `${lbl} …` : v ? `${lbl} ${_esc(v)}` : "");
-            const segs = [part("From", ss.start), part("To", ss.end)].filter(Boolean);
-            return segs.length ? `<div class="d-streets"><ha-icon icon="mdi:map-marker"></ha-icon><span>${segs.join(" · ")}</span></div>` : "";
+            const resolve = (zone, key) => {
+              const zl = _zoneLabel(zone);
+              if (zl) return `<span class="d-zone">${_esc(zl)}</span>`;
+              if (!this._config.locationEntity) return "Away";
+              if (ss === undefined || ss === "loading") return "…";
+              const v = ss[key];
+              return v === "loading" ? "…" : v ? `<span class="d-street">${_esc(v)}</span>` : "Away";
+            };
+            return `<div class="d-route"><ha-icon icon="mdi:map-marker"></ha-icon>${resolve(t.origin, "start")}<ha-icon icon="mdi:arrow-right"></ha-icon>${resolve(t.destination, "end")}</div>`;
           })()}
           <div class="d-grid">
             ${tile("mdi:map-marker-distance", "Distance", fmtNum(t.distance_km), "km")}
@@ -1998,9 +2010,9 @@ class EvTripListCard extends HTMLElement {
           .d-route{display:flex;align-items:center;gap:5px;flex-wrap:wrap;font-weight:600;
                    font-size:.95em;margin-top:-2px;}
           .d-route ha-icon{--mdc-icon-size:15px;color:var(--secondary-text-color);}
-          .d-streets{display:flex;align-items:flex-start;gap:5px;font-size:.82em;
-                     color:var(--secondary-text-color);line-height:1.35;}
-          .d-streets ha-icon{--mdc-icon-size:15px;flex:0 0 auto;color:var(--info-color,#039be5);margin-top:1px;}
+          .d-route ha-icon[icon="mdi:map-marker"]{color:var(--info-color,#039be5);}
+          .d-zone{color:var(--primary-text-color);}
+          .d-street{color:var(--info-color,#039be5);font-weight:600;}
           .d-cmp{display:flex;flex-direction:column;gap:8px;margin-top:2px;}
           .d-cmp-row{display:flex;justify-content:space-between;align-items:center;
                      font-size:.95em;}
@@ -3013,6 +3025,15 @@ const _endpoint = (addr, fallback) => {
   if (z === "not_home") return "Away";   // raw HA zone label → human
   if (z === "home") return "Home";
   return _esc(v);
+};
+// HA zone/area name for a trip endpoint, or null when the car was OUTSIDE any
+// zone (`not_home`/empty) — in which case the caller should reverse-geocode the
+// street. `home` and named zones (e.g. "Trabajo ele") return the area name.
+const _zoneLabel = (zone) => {
+  const z = String(zone == null ? "" : zone).trim();
+  if (!z || z.toLowerCase() === "not_home") return null;
+  if (z.toLowerCase() === "home") return "Home";
+  return z;
 };
 // Draw a GPS route over REAL OpenStreetMap tiles (Web Mercator), auto-zoomed
 // to fit the route. No API key. pts = [{lat,lon}] in order. If tiles fail to
