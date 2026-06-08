@@ -2438,6 +2438,9 @@ class EvTripHistoryCard extends HTMLElement {
         else curve = _miniPowerSvg(cv);
         const cid = c.charge_id != null ? c.charge_id : c.id;
         const locked = c.price_locked === true;
+        // Home charges always use the default home price — only AWAY charges
+        // (not_home / a named zone like "Trabajo ele") need a manual price.
+        const isHome = String(c.location || "").toLowerCase() === "home";
         // not_home → street + Google Maps link (geocoded from device_tracker
         // history at charge time; charges carry no coordinates).
         const isAway = !c.location || String(c.location).toLowerCase() === "not_home";
@@ -2450,15 +2453,18 @@ class EvTripHistoryCard extends HTMLElement {
             locHtml = `<div class="s-loc"><ha-icon icon="mdi:map-marker"></ha-icon><a href="https://www.google.com/maps/search/?api=1&query=${q}" target="_blank" rel="noopener">${_esc(ss.label || "View on map")}</a></div>`;
           }
         }
-        // Inline €/kWh editor — sets THIS charge (charge_id). Hides once the
-        // price is locked (the service sets price_locked=1).
-        const priceHtml = locked
-          ? `<div class="cp-locked"><ha-icon icon="mdi:lock-check"></ha-icon>${fmtNum(c.price_per_kwh, 3)} ${_esc(sym(c.currency))}/kWh · set</div>`
-          : `<div class="cp-edit">
+        // Inline €/kWh editor — only for AWAY charges (home uses the default
+        // price). Sets THIS charge by charge_id; hides once price_locked=1.
+        let priceHtml = "";
+        if (locked) {
+          priceHtml = `<div class="cp-locked"><ha-icon icon="mdi:lock-check"></ha-icon>${fmtNum(c.price_per_kwh, 3)} ${_esc(sym(c.currency))}/kWh · set</div>`;
+        } else if (!isHome) {
+          priceHtml = `<div class="cp-edit">
                <span class="cp-lbl">Set €/kWh</span>
                <input class="cp-input" data-charge-id="${_esc(cid)}" type="number" inputmode="decimal" step="0.001" min="0" placeholder="${fmtNum(c.price_per_kwh, 3)}" />
                <button class="cp-apply" data-charge-id="${_esc(cid)}"><ha-icon icon="mdi:check"></ha-icon>Set</button>
              </div>`;
+        }
         return `
           <div class="csession">
             <div class="session">
