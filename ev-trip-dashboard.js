@@ -1558,7 +1558,7 @@ class EvTripListCard extends HTMLElement {
       return true;
     };
     let rows = trips.filter((t) => {
-      const label = `${t.origin || ""} ${t.destination || ""} ${_fmtDate(t.ended_at)}`.toLowerCase();
+      const label = `${t.origin || ""} ${t.destination || ""} ${t.start_address || ""} ${t.end_address || ""} ${_fmtDate(t.ended_at)}`.toLowerCase();
       if (q && !label.includes(q)) return false;
       if (t.distance_km != null && t.distance_km < minD) return false;
       if (t.score != null && t.score < minS) return false;
@@ -2706,9 +2706,18 @@ class EvTripPatternsCard extends HTMLElement {
         </div>`;
     }).join("");
 
+    // At-a-glance insights derived from the same data.
+    const argmax = (o, n) => Array.from({ length: n }, (_, i) => [i, Number(o[String(i)]) || 0]).reduce((m, c) => (c[1] > m[1] ? c : m), [0, -1]);
+    const peakH = argmax(byHour, 24), peakW = argmax(byWd, 7), kmLead = argmax(kmWd, 7);
+    const insights =
+      `<span class="tp-ins"><ha-icon icon="mdi:clock-outline"></ha-icon>Busiest <b>${peakH[0]}:00</b></span>` +
+      (peakW[1] > 0 ? `<span class="tp-ins"><ha-icon icon="mdi:calendar-star"></ha-icon>Most trips <b>${_WD_ABBR[peakW[0]]}</b></span>` : "") +
+      (kmLead[1] > 0 ? `<span class="tp-ins"><ha-icon icon="mdi:map-marker-distance"></ha-icon>Most km <b>${_WD_ABBR[kmLead[0]]}</b></span>` : "");
+
     this.innerHTML = `
       <ha-card>
         <div class="tp-head">Driving patterns <span class="tp-tot">${total} trips · ${winDays} d</span></div>
+        <div class="tp-insights">${insights}</div>
         <div class="tp-section">By hour of day</div>
         <div class="tp-hours">${hourBars}</div>
         <div class="tp-section">By weekday <span class="tp-legend">km · trips</span></div>
@@ -2717,6 +2726,12 @@ class EvTripPatternsCard extends HTMLElement {
           .tp-head{display:flex;justify-content:space-between;align-items:baseline;
                    padding:14px 16px 6px;font-weight:600;font-size:1.05em;}
           .tp-tot{color:var(--secondary-text-color);font-weight:400;font-size:.8em;}
+          .tp-insights{display:flex;flex-wrap:wrap;gap:6px;padding:2px 14px 6px;}
+          .tp-ins{display:inline-flex;align-items:center;gap:4px;font-size:.8em;
+                  background:var(--secondary-background-color,var(--card-background-color));
+                  border:1px solid var(--divider-color);border-radius:999px;padding:3px 10px;}
+          .tp-ins ha-icon{--mdc-icon-size:15px;color:var(--secondary-text-color);}
+          .tp-ins b{font-weight:700;}
           .tp-section{padding:8px 16px 4px;font-size:.78em;font-weight:600;
                       text-transform:uppercase;letter-spacing:.04em;
                       color:var(--secondary-text-color);
@@ -2877,6 +2892,10 @@ const _routeSvg = (pts) => {
   };
   const xs = pts.map((p) => lon2x(p.lon)), ys = pts.map((p) => lat2y(p.lat));
   const xMin = Math.min(...xs), xMax = Math.max(...xs), yMin = Math.min(...ys), yMax = Math.max(...ys);
+  // Degenerate route (car never really moved / GPS pinned to one spot): a span
+  // below ~40 m would max-zoom around a single point and render a pointless
+  // map — let the caller show the "No GPS for this trip" placeholder instead.
+  if (Math.max(xMax - xMin, yMax - yMin) < 1e-6) return "";
   let z = 18;
   for (; z > 1; z--) {
     const sc = Math.pow(2, z) * 256;
@@ -2899,6 +2918,7 @@ const _routeSvg = (pts) => {
   const d = pts.map((p, i) => `${i ? "L" : "M"}${X(p.lon).toFixed(1)},${Y(p.lat).toFixed(1)}`).join(" ");
   const a = pts[0], b = pts[pts.length - 1];
   return `<svg viewBox="0 0 ${VB_W} ${VB_H}" class="cal-rt-svg" preserveAspectRatio="xMidYMid slice">
+    <rect x="0" y="0" width="${VB_W}" height="${VB_H}" class="cal-rt-bg"/>
     ${tiles}
     <path d="${d}" class="cal-rt-halo"/>
     <path d="${d}" class="cal-rt-line"/>
@@ -3181,6 +3201,7 @@ class EvTripCalendarCard extends HTMLElement {
           .cal-map-ph{height:100%;display:flex;align-items:center;justify-content:center;gap:6px;
                       color:var(--secondary-text-color);font-size:.85em;}
           .cal-rt-svg{display:block;width:100%;height:170px;}
+          .cal-rt-bg{fill:var(--secondary-background-color,#e8eaed);}
           .cal-rt-svg image{image-rendering:auto;}
           .cal-rt-halo{fill:none;stroke:#fff;stroke-width:5;stroke-linejoin:round;stroke-linecap:round;opacity:.8;}
           .cal-rt-line{fill:none;stroke:#1565c0;stroke-width:3;stroke-linejoin:round;stroke-linecap:round;}
@@ -4095,12 +4116,16 @@ function recordsCard(D) {
     `{%- set longest = state_attr(rsrc, 'longest') %}\n` +
     `{%- set efficient = state_attr(rsrc, 'most_efficient') %}\n` +
     `{%- set cheapest = state_attr(rsrc, 'cheapest') %}\n` +
+    `{%- set tot = state_attr(rsrc, 'totals') %}\n` +
+    `{%- set cy = CUR.get(cheapest.currency, cheapest.currency or '€') if cheapest else '€' %}\n` +
+    `{%- macro place(v) %}{{ '—' if not v else ('Away' if v == 'not_home' else ('Home' if v == 'home' else v)) }}{%- endmacro %}\n` +
     `### 🏆 Records ({{ states(rsrc) }} trips all-time)\n` +
-    `| Record | When | Where | Value |\n|---|---|---|---:|\n` +
-    `{%- if best.value is defined %}\n| 🥇 Best score | {{ as_timestamp(best.ended_at) | timestamp_custom('%d/%m/%y') }} | {{ best.destination or '—' }} | **{{ best.value }}** |\n{%- endif %}\n` +
-    `{%- if longest %}\n| 📏 Longest | {{ as_timestamp(longest.ended_at) | timestamp_custom('%d/%m/%y') }} | {{ longest.destination or '—' }} | **{{ longest.value }} km** |\n{%- endif %}\n` +
-    `{%- if efficient %}\n| 🪫 Most efficient | {{ as_timestamp(efficient.ended_at) | timestamp_custom('%d/%m/%y') }} | {{ efficient.destination or '—' }} | **{{ efficient.value }} kWh/100** |\n{%- endif %}\n` +
-    `{%- if cheapest %}\n| 💶 Cheapest | {{ as_timestamp(cheapest.ended_at) | timestamp_custom('%d/%m/%y') }} | {{ cheapest.destination or '—' }} | **{{ cheapest.value }} {{ CUR.get(cheapest.currency, cheapest.currency or '€') }}** |\n{%- endif %}\n` +
+    `{%- if tot is mapping %}\n**{{ tot.distance_km | round(0) }} km** · **{{ tot.energy_kwh | round(0) }} kWh** · **{{ tot.cost | round(2) }} {{ cy }}** total\n{%- endif %}\n` +
+    `\n| Record | When | Where | Value |\n|---|---|---|---:|\n` +
+    `{%- if best.value is defined %}\n| 🥇 Best score | {{ as_timestamp(best.ended_at) | timestamp_custom('%d/%m/%y') }} | {{ place(best.destination) | trim }} | **{{ best.value }}** |\n{%- endif %}\n` +
+    `{%- if longest %}\n| 📏 Longest | {{ as_timestamp(longest.ended_at) | timestamp_custom('%d/%m/%y') }} | {{ place(longest.destination) | trim }} | **{{ longest.value }} km** |\n{%- endif %}\n` +
+    `{%- if efficient %}\n| 🪫 Most efficient | {{ as_timestamp(efficient.ended_at) | timestamp_custom('%d/%m/%y') }} | {{ place(efficient.destination) | trim }} | **{{ efficient.value }} kWh/100** |\n{%- endif %}\n` +
+    `{%- if cheapest %}\n| 💶 Cheapest | {{ as_timestamp(cheapest.ended_at) | timestamp_custom('%d/%m/%y') }} | {{ place(cheapest.destination) | trim }} | **{{ cheapest.value }} {{ cy }}** |\n{%- endif %}\n` +
     `{%- else %}\n` +
     `{%- set trips = state_attr('sensor.${D}_recent_trips', 'trips') or [] %}\n` +
     `{%- if trips | length == 0 %}\n### 🏆 Trip records\n_No trips recorded yet._\n` +
