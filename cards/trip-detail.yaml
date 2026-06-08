@@ -22,8 +22,10 @@ cards:
   - type: custom:mushroom-title-card
     title: Detalle del viaje
     subtitle: >-
-      {% set s = state_attr('sensor.__DEVICE___last_trip', 'started_at') %}
-      {% set e = state_attr('sensor.__DEVICE___last_trip', 'ended_at') %}
+      {% set trips = state_attr('sensor.__DEVICE___recent_trips', 'trips') or [] %}
+      {% set t = trips[0] if trips else None %}
+      {% set s = t.started_at if t else None %}
+      {% set e = t.ended_at if t else None %}
       {% if s and e %}
         {% set s_ts = s | as_timestamp(0) %}
         {% set e_ts = e | as_timestamp(0) %}
