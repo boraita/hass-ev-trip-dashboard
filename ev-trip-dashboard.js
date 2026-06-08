@@ -1470,6 +1470,29 @@ const _scoreColor = (s) =>
     ? "var(--warning-color, #fbc02d)"
     : "var(--error-color, #e53935)";
 const _esc = (s) => String(s == null ? "" : s).replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+// Medal for the top 3 of a ranking, plain number after.
+const _medal = (i) => ["🥇", "🥈", "🥉"][i] || `${i + 1}`;
+// Currency symbol for cards whose own data carries no per-row currency
+// (e.g. monthly_history). Derive it from the per-row currency on recent
+// charges/trips, falling back to €.
+const _CUR_SYMBOLS = { EUR: "€", USD: "$", GBP: "£" };
+const _deviceCurrency = (hass, D) => {
+  const fromArr = (id, arrKey) => {
+    const a = (hass.states[`sensor.${D}_${id}`] || {}).attributes;
+    const arr = a && Array.isArray(a[arrKey]) && a[arrKey];
+    const row = arr && arr.find((x) => x && x.currency);
+    return row ? row.currency : null;
+  };
+  const code = fromArr("recent_charges", "charges") || fromArr("recent_trips", "trips");
+  return _CUR_SYMBOLS[code] || code || "€";
+};
+// Compact colour legend for the trip score bands (matches _scoreColor).
+const _scoreLegend = () =>
+  `<div class="score-legend">` +
+  [["var(--success-color,#43a047)", "8+ great"], ["var(--light-green-color,#7cb342)", "7+ good"], ["var(--warning-color,#fbc02d)", "5+ ok"], ["var(--error-color,#e53935)", "&lt;5 poor"]]
+    .map(([c, l]) => `<span class="sl-i"><i style="background:${c}"></i>${l}</span>`)
+    .join("") +
+  `</div>`;
 
 class EvTripListCard extends HTMLElement {
   setConfig(config) {
@@ -2566,10 +2589,10 @@ class EvTripMonthlyCard extends HTMLElement {
     if (!this._hass) return;
     const D = this._device || detectDevice(this._hass);
     this._device = D;
-    const cur = { EUR: "€", USD: "$", GBP: "£" };
     const st = this._hass.states[`sensor.${D}_monthly_history`];
     const months = (st && st.attributes && Array.isArray(st.attributes.months) && st.attributes.months) || [];
-    const sym = cur[st && st.attributes && st.attributes.currency] || "€";
+    // monthly_history carries no currency — derive it from the trip/charge data.
+    const sym = _deviceCurrency(this._hass, D);
 
     if (!months.length) {
       this.innerHTML = `
@@ -3403,7 +3426,14 @@ class EvTripEfficiencyCard extends HTMLElement {
           <div class="ef-stat"><div class="ef-sv">${fmt(mean)}</div><div class="ef-sl">average</div></div>
           <div class="ef-stat"><div class="ef-sv" style="color:var(--error-color,#e53935)">${fmt(worst)}</div><div class="ef-sl">worst</div></div>
         </div>
+        <div class="ef-legcap">dot colour = trip score</div>
+        ${_scoreLegend()}
         <style>
+          .ef-legcap{padding:0 16px 2px;font-size:.66em;text-transform:uppercase;
+                     letter-spacing:.04em;color:var(--secondary-text-color);}
+          .score-legend{display:flex;flex-wrap:wrap;gap:8px;padding:2px 16px 14px;}
+          .sl-i{display:inline-flex;align-items:center;gap:4px;font-size:.74em;color:var(--secondary-text-color);}
+          .sl-i i{width:10px;height:10px;border-radius:3px;display:inline-block;}
           .ef-head{display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;
                    gap:4px;padding:14px 16px 6px;font-weight:600;font-size:1.05em;}
           .ef-sub{color:var(--secondary-text-color);font-weight:400;font-size:.78em;}
@@ -3522,7 +3552,7 @@ class EvTripRecordsCard extends HTMLElement {
             c.list
               .map(
                 (t, i) =>
-                  `<div class="rec-li"><span class="rec-rank">${i + 1}</span>` +
+                  `<div class="rec-li"><span class="rec-rank">${_medal(i)}</span>` +
                   `<span class="rec-lmain">${_endpoint(t.start_address, t.origin)} → ${_endpoint(t.end_address, t.destination)}</span>` +
                   `<span class="rec-ldate">${_recDate(t.started_at || t.ended_at)}</span>` +
                   `<span class="rec-lval">${c.val(t)}</span></div>`
