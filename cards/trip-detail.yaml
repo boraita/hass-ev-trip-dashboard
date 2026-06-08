@@ -29,9 +29,13 @@ cards:
         {% set e_ts = e | as_timestamp(0) %}
         {% set same_day = s_ts | timestamp_custom('%Y-%m-%d', true) ==
                           e_ts | timestamp_custom('%Y-%m-%d', true) %}
+        {% set mins = ((e_ts - s_ts) / 60) | round(0) | int %}
+        {% set dur = (mins ~ ' min') if mins < 90 else (
+          ((mins // 60) ~ 'h ' ~ ('%02d'|format(mins % 60)) ~ 'min')) %}
         {{ s_ts | timestamp_custom('%d %b %H:%M', true) }}
         →
         {{ e_ts | timestamp_custom('%H:%M' if same_day else '%d %b %H:%M', true) }}
+        · {{ dur }}
       {% elif s %}
         {{ s | as_timestamp(0) | timestamp_custom('%d %b %H:%M', true) }}
       {% else %}
