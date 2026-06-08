@@ -1486,6 +1486,40 @@ const _deviceCurrency = (hass, D) => {
   const code = fromArr("recent_charges", "charges") || fromArr("recent_trips", "trips");
   return _CUR_SYMBOLS[code] || code || "€";
 };
+// Reverse-geocode lat/lon → a short "street, town" label via OpenStreetMap
+// Nominatim. Trips don't store coordinates, so callers fetch the position from
+// the device_tracker recorder history first. Results are cached per ~11 m cell
+// and requests are throttled to ~1/s to respect Nominatim's usage policy.
+const _geoCache = {};
+const _geoQueue = [];
+let _geoBusy = false;
+function _geoPump() {
+  if (_geoBusy) return;
+  const job = _geoQueue.shift();
+  if (!job) return;
+  _geoBusy = true;
+  fetch(`https://nominatim.openstreetmap.org/reverse?format=jsonv2&zoom=17&addressdetails=1&lat=${job.lat}&lon=${job.lon}`, { headers: { Accept: "application/json" } })
+    .then((r) => (r.ok ? r.json() : null))
+    .then((j) => {
+      let label = "";
+      const a = j && j.address;
+      if (a) {
+        const road = a.road || a.pedestrian || a.footway || a.cycleway || a.path || a.neighbourhood;
+        const place = a.city || a.town || a.village || a.municipality || a.suburb || a.county;
+        label = [road, place].filter(Boolean).join(", ") || (j.display_name || "").split(",").slice(0, 2).join(",");
+      }
+      _geoCache[job.key] = label;
+      job.resolve(label);
+    })
+    .catch(() => { _geoCache[job.key] = ""; job.resolve(""); })
+    .finally(() => { setTimeout(() => { _geoBusy = false; _geoPump(); }, 1100); });
+}
+function _reverseGeocode(lat, lon) {
+  if (lat == null || lon == null || isNaN(lat) || isNaN(lon)) return Promise.resolve("");
+  const key = `${lat.toFixed(4)},${lon.toFixed(4)}`;
+  if (_geoCache[key] !== undefined) return Promise.resolve(_geoCache[key]);
+  return new Promise((resolve) => { _geoQueue.push({ key, lat, lon, resolve }); _geoPump(); });
+}
 // Compact colour legend for the trip score bands (matches _scoreColor).
 const _scoreLegend = () =>
   `<div class="score-legend">` +
@@ -1499,6 +1533,42 @@ class EvTripListCard extends HTMLElement {
     this._config = config || {};
     this._device = this._config.device || null;
     this._temps = this._temps || {}; // trip id -> {start,end} | 'loading'
+    this._streets = this._streets || {}; // trip id -> {start,end} | 'loading'
+  }
+  // Resolve the street the car was at for the open trip's start/end. Trips
+  // carry no coordinates, so pull the position from the device_tracker history
+  // around started_at/ended_at, then reverse-geocode. Cached per trip id.
+  _fetchOpenTripStreets(rows) {
+    const ent = this._config.locationEntity;
+    if (!ent || this._openTripId == null) return;
+    const t = rows.find((x) => String(x.id) === String(this._openTripId));
+    if (!t || !t.started_at || !t.ended_at) return;
+    const id = t.id;
+    if (this._streets[id] !== undefined) return;
+    this._streets[id] = "loading";
+    let start, end;
+    try {
+      start = new Date(new Date(t.started_at).getTime() - 120000).toISOString();
+      end = new Date(new Date(t.ended_at).getTime() + 120000).toISOString();
+    } catch (_e) { this._streets[id] = {}; return; }
+    // NOTE: need attributes (lat/lon) so do NOT use minimal_response.
+    Promise.resolve(this._hass.callApi("GET", `history/period/${start}?end_time=${end}&filter_entity_id=${ent}&significant_changes_only=0`))
+      .then((res) => {
+        const ser = Array.isArray(res) && res[0] ? res[0] : [];
+        const pts = [];
+        for (const x of ser) {
+          const a = x.attributes || {};
+          const lat = parseFloat(a.latitude), lon = parseFloat(a.longitude);
+          if (!isNaN(lat) && !isNaN(lon)) pts.push({ lat, lon });
+        }
+        if (!pts.length) { this._streets[id] = {}; this._render(); return; }
+        const first = pts[0], last = pts[pts.length - 1];
+        this._streets[id] = { start: "loading", end: "loading" };
+        this._render();
+        Promise.all([_reverseGeocode(first.lat, first.lon), _reverseGeocode(last.lat, last.lon)])
+          .then(([s, e]) => { this._streets[id] = { start: s, end: e }; this._render(); });
+      })
+      .catch(() => { this._streets[id] = {}; this._render(); });
   }
   // Fetch the outside-temperature at the open trip's start/end from recorder
   // history (the logger only stores avg_temp_c). Cached per trip id.
@@ -1701,6 +1771,15 @@ class EvTripListCard extends HTMLElement {
             </div>
           </div>
           <div class="d-sub">${_fmtDate(t.ended_at, true)}</div>
+          <div class="d-route">${_endpoint(t.start_address, t.origin)}<ha-icon icon="mdi:arrow-right"></ha-icon>${_endpoint(t.end_address, t.destination)}</div>
+          ${(() => {
+            const ss = this._streets[t.id];
+            if (!this._config.locationEntity) return "";
+            if (ss === undefined || ss === "loading") return `<div class="d-streets"><ha-icon icon="mdi:map-marker"></ha-icon> locating…</div>`;
+            const part = (lbl, v) => (v === "loading" ? `${lbl} …` : v ? `${lbl} ${_esc(v)}` : "");
+            const segs = [part("From", ss.start), part("To", ss.end)].filter(Boolean);
+            return segs.length ? `<div class="d-streets"><ha-icon icon="mdi:map-marker"></ha-icon><span>${segs.join(" · ")}</span></div>` : "";
+          })()}
           <div class="d-grid">
             ${tile("mdi:map-marker-distance", "Distance", fmtNum(t.distance_km), "km")}
             ${tile("mdi:timer-outline", "Duration", fmtNum(t.duration_min == null ? null : Math.round(t.duration_min)), "min")}
@@ -1908,6 +1987,12 @@ class EvTripListCard extends HTMLElement {
           .d-charge-head ha-icon{--mdc-icon-size:16px;}
           .d-charge-loc{margin-left:auto;font-weight:400;text-transform:none;letter-spacing:0;
                         color:var(--secondary-text-color);}
+          .d-route{display:flex;align-items:center;gap:5px;flex-wrap:wrap;font-weight:600;
+                   font-size:.95em;margin-top:-2px;}
+          .d-route ha-icon{--mdc-icon-size:15px;color:var(--secondary-text-color);}
+          .d-streets{display:flex;align-items:flex-start;gap:5px;font-size:.82em;
+                     color:var(--secondary-text-color);line-height:1.35;}
+          .d-streets ha-icon{--mdc-icon-size:15px;flex:0 0 auto;color:var(--info-color,#039be5);margin-top:1px;}
           .d-cmp{display:flex;flex-direction:column;gap:8px;margin-top:2px;}
           .d-cmp-row{display:flex;justify-content:space-between;align-items:center;
                      font-size:.95em;}
@@ -1924,8 +2009,9 @@ class EvTripListCard extends HTMLElement {
         <div class="list">${rowsHtml}</div>
       </ha-card>`;
 
-    // Lazily fetch the open trip's start/end outside temperature.
+    // Lazily fetch the open trip's start/end outside temperature + street.
     this._fetchOpenTripTemp(rows);
+    this._fetchOpenTripStreets(rows);
   }
 }
 customElements.define("ev-trip-list-card", EvTripListCard);
@@ -4207,13 +4293,23 @@ function tripsView(D, hass, V, cfg) {
   const chargingEntity = hass ? pickVehicleEntity(hass, V, "charging", cfg) : null;
   const powerEntity = hass ? resolveChargePower(hass, D, cfg) : `sensor.${D}_current_charge_power`;
   const tempEntity = (cfg && cfg.outside_temp_entity) || (hass ? pickVehicleEntity(hass, V, "outside_temp", cfg) : null);
-  // Right column: records, plus the helper-backed Search & filter card ONLY
-  // when the input helpers exist (input_text.<D>_trip_search is the canary).
-  // Without them the ev-trip-list-card still shows all trips, newest-first —
-  // so on a clean install we just omit the (otherwise broken) filter card.
-  const rightCards = [heading("Records", "mdi:trophy-variant"), recordsCard(D)];
-  if (hass && has(hass, `input_text.${D}_trip_search`)) {
-    rightCards.push(heading("Search & filter", "mdi:filter-variant"), {
+  const locationEntity = (cfg && cfg.location_entity) || (hass ? pickVehicleEntity(hass, V, "location", cfg) : null);
+  // Right column = the helper-backed Search & filter card ONLY when the input
+  // helpers exist (input_text.<D>_trip_search is the canary). Without them the
+  // ev-trip-list-card still shows all trips newest-first, so we drop the right
+  // column entirely and let the list span both columns.
+  const hasFilter = hass && has(hass, `input_text.${D}_trip_search`);
+  const listCard = {
+    type: "custom:ev-trip-list-card",
+    device: D, title: "Trips",
+    plugEntity, chargingEntity, powerEntity, tempEntity, locationEntity,
+  };
+  const sections = [
+    { type: "grid", column_span: 2, cards: [heading("Last 30 days", "mdi:calendar-range"), trips30dKpis(D)] },
+  ];
+  if (hasFilter) {
+    sections.push(grid([heading("Trips", "mdi:map-marker-path"), listCard]));
+    sections.push(grid([heading("Search & filter", "mdi:filter-variant"), {
       type: "entities",
       show_header_toggle: false,
       entities: [
@@ -4226,20 +4322,12 @@ function tripsView(D, hass, V, cfg) {
         { entity: `input_number.${D}_trip_max_cost`, name: "Max cost" },
         { entity: `input_number.${D}_trip_max_consumption`, name: "Max kWh/100" },
       ],
-    });
+    }]));
+  } else {
+    // No filter helpers → trips list full-width.
+    sections.push({ type: "grid", column_span: 2, cards: [heading("Trips", "mdi:map-marker-path"), listCard] });
   }
-  return {
-    title: "Trips",
-    path: "trips",
-    icon: "mdi:map-search",
-    type: "sections",
-    max_columns: 2,
-    sections: [
-      { type: "grid", column_span: 2, cards: [heading("Last 30 days", "mdi:calendar-range"), trips30dKpis(D)] },
-      grid([heading("Trips", "mdi:map-marker-path"), { type: "custom:ev-trip-list-card", device: D, title: "Trips", plugEntity, chargingEntity, powerEntity, tempEntity }]),
-      grid(rightCards),
-    ],
-  };
+  return { title: "Trips", path: "trips", icon: "mdi:map-search", type: "sections", max_columns: 2, sections };
 }
 
 
@@ -4271,14 +4359,14 @@ class EvTripDashboardStrategy {
       };
     }
     const views = [
-      // Restored pre-2.0 favourites first (Driving + Trips with records/search).
+      // Restored pre-2.0 favourites first (Driving + Trips with search).
       drivingView(D, V, hass, config),
       tripsView(D, hass, V, config),
       calendarioView(D, hass, V, config),
       tendenciasView(D, hass),
       patternsView(D, hass),
       eficienciaView(D, hass),
-      topsView(D, hass),
+      // (Records/Tops view removed — per-trip "biggest/best" rankings weren't useful.)
       cargasView(D, hass),
     ];
     // Swap any uninstalled HACS custom card (button-card/mushroom/apex/mini-graph)
