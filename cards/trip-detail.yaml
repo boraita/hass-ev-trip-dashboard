@@ -227,19 +227,46 @@ cards:
         {% set t = state_attr('sensor.__DEVICE___recent_trips', 'trips')[0] %}
         https://www.google.com/maps?q={{ t.end_lat }},{{ t.end_lon }}
 
+  # v0.5.25 — route map with NUMBERED waypoints from
+  # sensor.<device>_last_trip_route.points (populated for both live and
+  # synthetic trips). Falls through to the previous start/end-only map
+  # for older trips without route data.
   - type: markdown
     content: >-
+      {% set pts = state_attr('sensor.__DEVICE___last_trip_route', 'points') or [] %}
       {% set t = state_attr('sensor.__DEVICE___recent_trips', 'trips')[0] %}
-      {% if t and t.start_lat is not none and t.end_lat is not none %}
+      {% if pts | length >= 2 %}
+      {%- set lats = pts | map(attribute='lat') | list %}
+      {%- set lons = pts | map(attribute='lon') | list %}
+      {%- set c_lat = (lats | sum) / (lats | length) %}
+      {%- set c_lon = (lons | sum) / (lons | length) %}
+      {%- set markers = [] %}
+      {%- for p in pts %}
+      {%-   if loop.first %}
+      {%-     set _ = markers.append(p.lat ~ ',' ~ p.lon ~ ',lightgreen') %}
+      {%-   elif loop.last %}
+      {%-     set _ = markers.append(p.lat ~ ',' ~ p.lon ~ ',red') %}
+      {%-   else %}
+      {%-     set _ = markers.append(p.lat ~ ',' ~ p.lon ~ ',lightblue') %}
+      {%-   endif %}
+      {%- endfor %}
+      ![map](https://staticmap.openstreetmap.de/staticmap.php?center={{ c_lat }},{{ c_lon }}&zoom=12&size=640x360&markers={{ markers | join('|') }})
+
+      **Recorrido — {{ pts | length }} puntos**
+
+      {% for p in pts -%}
+      {%- if loop.first -%}🟢{%- elif loop.last -%}🔴{%- else -%}🔵{%- endif %} **{{ p.index }}.** [{{ '%.5f, %.5f'|format(p.lat, p.lon) }}](https://www.google.com/maps?q={{ p.lat }},{{ p.lon }})
+      {% endfor %}
+
+      [🗺 Ver ruta completa en Google Maps](https://www.google.com/maps/dir/?api=1&origin={{ pts[0].lat }},{{ pts[0].lon }}&destination={{ pts[-1].lat }},{{ pts[-1].lon }}{% if pts | length > 2 %}&waypoints={{ pts[1:-1][:9] | map(attribute='lat') | list | zip(pts[1:-1][:9] | map(attribute='lon') | list) | map('join', ',') | list | join('|') }}{% endif %}&travelmode=driving)
+
+      {% elif t and t.start_lat is not none and t.end_lat is not none %}
       {%- set s_lat = t.start_lat | float %}
       {%- set s_lon = t.start_lon | float %}
       {%- set e_lat = t.end_lat | float %}
       {%- set e_lon = t.end_lon | float %}
       {%- set c_lat = (s_lat + e_lat) / 2 %}
       {%- set c_lon = (s_lon + e_lon) / 2 %}
-      {%- set bbox = "%s,%s,%s,%s"|format(
-            [s_lon, e_lon] | min - 0.005, [s_lat, e_lat] | min - 0.005,
-            [s_lon, e_lon] | max + 0.005, [s_lat, e_lat] | max + 0.005) %}
       ![map](https://staticmap.openstreetmap.de/staticmap.php?center={{ c_lat }},{{ c_lon }}&zoom=13&size=600x350&markers={{ s_lat }},{{ s_lon }},lightgreen|{{ e_lat }},{{ e_lon }},red)
 
       [🗺 Ver ruta completa en Google Maps](https://www.google.com/maps/dir/?api=1&origin={{ s_lat }},{{ s_lon }}&destination={{ e_lat }},{{ e_lon }}&travelmode=driving)
