@@ -175,18 +175,19 @@ cards:
         grey
       {% endif %}
 
-  # ── Regen during trip — energy "recharged" by braking ──────────
-  # `regen_kwh` is the trapezoidal integral of negative power during
-  # the trip. It's ALREADY netted out of `energy_kwh` (SoC delta
-  # accounts for it). Shown as a separate metric so the user can see
-  # how much was recovered.
+  # ── ¿Cargó durante el trip? ──────────────────────────────────────
+  # The car "charges" itself during a trip via regenerative braking
+  # (downhills, decelerations). `regen_kwh` is the trapezoidal
+  # integral of negative power — it's already netted into energy_kwh
+  # via the SoC delta. Display it as a yes/no + amount so the user
+  # can see at a glance whether this trip generated any recovery.
   - type: custom:mushroom-template-card
     primary: >-
-      {% set r = state_attr('sensor.__DEVICE___recent_trips', 'trips')[0].regen_kwh %}
-      {% if r and r > 0 %}
-        🔄 Regen: {{ r | round(2) }} kWh recuperados
+      {% set r = state_attr('sensor.__DEVICE___recent_trips', 'trips')[0].regen_kwh | float(0) %}
+      {% if r > 0 %}
+        ✅ Sí, cargó {{ r | round(2) }} kWh
       {% else %}
-        🔄 Sin regen registrada en este trip
+        ❌ No cargó nada
       {% endif %}
     secondary: >-
       {% set t = state_attr('sensor.__DEVICE___recent_trips', 'trips')[0] %}
@@ -194,12 +195,13 @@ cards:
       {% set e = t.energy_kwh | float(0) %}
       {% set gross = e + r %}
       {% if r > 0 and gross > 0 %}
-        Bruto: {{ gross | round(2) }} kWh · Neto: {{ e | round(2) }} kWh ·
-        {{ (r / gross * 100) | round(1) }}% recuperado
+        Recuperación por frenada regenerativa ·
+        {{ (r / gross * 100) | round(1) }}% del consumo bruto
+        ({{ gross | round(2) }} kWh) volvió a la batería
       {% elif r > 0 %}
-        {{ r | round(2) }} kWh recuperados (SoC neto inalterado por el bajón de la batería)
+        Recuperación por frenada regenerativa
       {% else %}
-        El coche no recuperó energía por frenada regenerativa
+        Sin recuperación por frenada regenerativa en este trip
       {% endif %}
     icon: mdi:battery-charging
     icon_color: >-
