@@ -2592,6 +2592,14 @@ class EvTripJourneyCard extends HTMLElement {
   getCardSize() {
     return 3;
   }
+  connectedCallback() {
+    if (this._clickBound) return;
+    this._clickBound = true;
+    this.addEventListener("click", (ev) => {
+      const h = ev.target && ev.target.closest && ev.target.closest(".jhead.jclickable");
+      if (h && this.contains(h)) { this._open = !this._open; this._render(); }
+    });
+  }
   // Recompute the in-progress journey from recent_trips so it reflects only the
   // current run away from home — the logger leaves a journey open across an
   // overnight home charge (it anchors close on a →home TRIP only). The current
@@ -2616,14 +2624,46 @@ class EvTripJourneyCard extends HTMLElement {
     const sum = (k) => stages.reduce((s, x) => s + (Number(x[k]) || 0), 0);
     return {
       stages: stages.length,
+      stagesList: stages,
       started_at: stages[0].started_at,
       distance_km: sum("distance_km"),
       energy_kwh: sum("energy_kwh"),
       cost: stages.some((x) => x.cost != null) ? sum("cost") : null,
     };
   }
+  // Stages (sub-trips) of a finished journey, by its journey_id, oldest first.
+  _journeyStagesById(D, jid) {
+    if (jid == null) return [];
+    const trips = ((this._hass.states[`sensor.${D}_recent_trips`] || {}).attributes || {}).trips || [];
+    return trips
+      .filter((t) => String(t.journey_id) === String(jid))
+      .sort((a, b) => new Date(a.started_at) - new Date(b.started_at));
+  }
+  // Render the expandable list of stages (one row per sub-trip).
+  _stagesHtml(stages) {
+    if (!stages || !stages.length) return "";
+    const DASH = "—";
+    const f0 = (v) => (v == null || isNaN(v) ? DASH : Number(v).toFixed(0));
+    const f1 = (v) => (v == null || isNaN(v) ? DASH : Number(v).toFixed(1));
+    const tod = (iso) => { const d = new Date(iso); return isNaN(d) ? DASH : `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`; };
+    const rows = stages
+      .map((t, i) => {
+        const cons = t.consumption_kwh_100km != null && Number(t.consumption_kwh_100km) >= 0 ? `${f1(t.consumption_kwh_100km)} kWh/100` : DASH;
+        const pill = t.score != null ? `<span class="js-pill" style="background:${_scoreColor(t.score)}">${f1(t.score)}</span>` : "";
+        return `<div class="jstage">
+          <span class="js-n">${i + 1}</span>
+          <span class="js-time">${tod(t.started_at)}</span>
+          <span class="js-route">${_endpoint(t.start_address, t.origin)}<ha-icon icon="mdi:arrow-right"></ha-icon>${_endpoint(t.end_address, t.destination)}</span>
+          <span class="js-meta">${f0(t.distance_km)} km · ${cons}</span>
+          ${pill}
+        </div>`;
+      })
+      .join("");
+    return `<div class="jstages-list">${rows}</div>`;
+  }
   _render() {
     if (!this._hass) return;
+    if (!this._clickBound && typeof this.addEventListener === "function") this.connectedCallback();
     const D = this._device || detectDevice(this._hass);
     this._device = D;
     const DASH = "—";
@@ -2641,6 +2681,8 @@ class EvTripJourneyCard extends HTMLElement {
     const lastState = last ? String(last.state).toLowerCase() : "";
     const hasLast = last && !["unknown", "unavailable", "0", "none", ""].includes(lastState);
 
+    // Stages (sub-trips) of the journey being shown, for the expandable detail.
+    let stages = [];
     // status colors / glyph / label
     let dotColor, badgeBg, icon, statusLabel, statusSub, a, stagesNum;
     if (inProgress) {
@@ -2662,6 +2704,9 @@ class EvTripJourneyCard extends HTMLElement {
         a = { ...at, started_at: fix.started_at, distance_km: fix.distance_km, energy_kwh: fix.energy_kwh, cost: fix.cost };
         stagesNum = fix.stages;
         statusSub = "Left " + _fmtDate(fix.started_at) + " · en route";
+        stages = fix.stagesList || [];
+      } else {
+        stages = this._journeyStagesById(D, at.journey_id);
       }
     } else if (hasLast) {
       const at = last.attributes || {};
@@ -2674,6 +2719,7 @@ class EvTripJourneyCard extends HTMLElement {
         " · Arrived " + (at.ended_at ? _fmtDate(at.ended_at) : DASH);
       a = at;
       stagesNum = parseInt(last.state, 10);
+      stages = this._journeyStagesById(D, at.journey_id);
     } else {
       this.innerHTML = `
         <ha-card>
@@ -2747,8 +2793,25 @@ class EvTripJourneyCard extends HTMLElement {
           .jt-value{font-size:1.25em;font-weight:800;color:var(--primary-text-color);
                     font-variant-numeric:tabular-nums;line-height:1.1;}
           .jt-unit{font-size:.55em;font-weight:600;color:var(--secondary-text-color);}
+          .jhead.jclickable{cursor:pointer;}
+          .jcaret{flex:0 0 auto;color:var(--secondary-text-color);transition:transform .15s ease;}
+          .jcaret ha-icon{--mdc-icon-size:22px;}
+          .jhead.jopen .jcaret{transform:rotate(180deg);}
+          .jstages-list{display:flex;flex-direction:column;gap:8px;padding:2px 14px 14px;
+                        border-top:1px solid var(--divider-color);margin-top:2px;}
+          .jstage{display:grid;grid-template-columns:auto auto 1fr auto auto;align-items:center;
+                  gap:8px;font-size:.85em;padding:8px 0;}
+          .jstage + .jstage{border-top:1px dashed var(--divider-color);}
+          .js-n{width:18px;height:18px;border-radius:50%;background:var(--secondary-background-color,var(--divider-color));
+                color:var(--secondary-text-color);font-size:.72em;font-weight:700;display:flex;align-items:center;justify-content:center;}
+          .js-time{font-weight:700;font-variant-numeric:tabular-nums;color:var(--primary-text-color);}
+          .js-route{display:flex;align-items:center;gap:4px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+          .js-route ha-icon{--mdc-icon-size:13px;color:var(--secondary-text-color);flex:0 0 auto;}
+          .js-meta{color:var(--secondary-text-color);font-variant-numeric:tabular-nums;white-space:nowrap;}
+          .js-pill{min-width:26px;text-align:center;padding:1px 6px;border-radius:999px;color:#fff;
+                   font-weight:800;font-size:.78em;font-variant-numeric:tabular-nums;}
         </style>
-        <div class="jhead">
+        <div class="jhead${stages.length ? " jclickable" : ""}${this._open ? " jopen" : ""}">
           <div class="jbadge"><ha-icon icon="${icon}"></ha-icon></div>
           <div class="jhead-body">
             <div class="jtitle">${_esc(this._config.title || "Journey")}</div>
@@ -2758,12 +2821,14 @@ class EvTripJourneyCard extends HTMLElement {
               <span class="jsub">${_esc(stageStr)} · ${_esc(statusSub)}</span>
             </div>
           </div>
+          ${stages.length ? `<div class="jcaret"><ha-icon icon="mdi:chevron-down"></ha-icon></div>` : ""}
         </div>
         <div class="jtiles">
           ${tile("mdi:map-marker-distance", "Distance", fmtNum(a.distance_km), "km")}
           ${tile("mdi:lightning-bolt", "Energy", fmtNum(a.energy_kwh), "kWh")}
           ${tile("mdi:currency-eur", "Cost", fmtNum(a.cost, a.cost != null ? 2 : undefined), "€")}
         </div>
+        ${this._open ? this._stagesHtml(stages) : ""}
       </ha-card>`;
   }
 }
