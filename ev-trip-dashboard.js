@@ -2579,6 +2579,36 @@ class EvTripJourneyCard extends HTMLElement {
   getCardSize() {
     return 3;
   }
+  // Recompute the in-progress journey from recent_trips so it reflects only the
+  // current run away from home — the logger leaves a journey open across an
+  // overnight home charge (it anchors close on a →home TRIP only). The current
+  // run starts after the latest moment the car was home: a trip that ended at
+  // "home", OR a charge whose location is "home".
+  _correctedLiveJourney(D) {
+    const ms = (x) => { const t = new Date(x).getTime(); return isNaN(t) ? null : t; };
+    const trips = ((this._hass.states[`sensor.${D}_recent_trips`] || {}).attributes || {}).trips || [];
+    const charges = ((this._hass.states[`sensor.${D}_recent_charges`] || {}).attributes || {}).charges || [];
+    if (!Array.isArray(trips) || !trips.length) return null;
+    let anchor = 0;
+    for (const t of trips) {
+      if (String(t.destination || "").toLowerCase() === "home" && t.ended_at) { const e = ms(t.ended_at); if (e != null) anchor = Math.max(anchor, e); }
+    }
+    for (const c of charges) {
+      if (String(c.location || "").toLowerCase() === "home" && c.ended_at) { const e = ms(c.ended_at); if (e != null) anchor = Math.max(anchor, e); }
+    }
+    const stages = trips
+      .filter((t) => { const s = ms(t.started_at); return s != null && s >= anchor - 60000; })
+      .sort((x, y) => ms(x.started_at) - ms(y.started_at));
+    if (!stages.length) return null;
+    const sum = (k) => stages.reduce((s, x) => s + (Number(x[k]) || 0), 0);
+    return {
+      stages: stages.length,
+      started_at: stages[0].started_at,
+      distance_km: sum("distance_km"),
+      energy_kwh: sum("energy_kwh"),
+      cost: stages.some((x) => x.cost != null) ? sum("cost") : null,
+    };
+  }
   _render() {
     if (!this._hass) return;
     const D = this._device || detectDevice(this._hass);
@@ -2606,9 +2636,20 @@ class EvTripJourneyCard extends HTMLElement {
       badgeBg = "rgba(67,160,71,.16)";
       icon = "mdi:road-variant";
       statusLabel = "🟢 En route";
-      statusSub = "Left " + (at.started_at ? _fmtDate(at.started_at) : DASH) + " · en route";
       a = at;
       stagesNum = curStages;
+      statusSub = "Left " + (at.started_at ? _fmtDate(at.started_at) : DASH) + " · en route";
+      // The logger only closes a journey on a trip that ARRIVES home, so an
+      // overnight home CHARGE (no →home trip logged) leaves the journey open and
+      // it wrongly spans back to yesterday. Recompute today's run from
+      // recent_trips: the stages since the car was last home (a →home trip OR a
+      // home charge). This fixes the inflated "2 stages / started yesterday".
+      const fix = this._correctedLiveJourney(D);
+      if (fix) {
+        a = { ...at, started_at: fix.started_at, distance_km: fix.distance_km, energy_kwh: fix.energy_kwh, cost: fix.cost };
+        stagesNum = fix.stages;
+        statusSub = "Left " + _fmtDate(fix.started_at) + " · en route";
+      }
     } else if (hasLast) {
       const at = last.attributes || {};
       dotColor = "var(--info-color, #039be5)";
