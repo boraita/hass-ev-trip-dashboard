@@ -618,6 +618,19 @@ function tendenciasView(D, hass, cfg) {
     square: false,
     cards: [distTile("today", "Today"), distTile("this_week", "Week"), distTile("this_month", "Month"), distTile("this_year", "Year")],
   });
+  // "Year" only counts since the logger started recording, not the real
+  // calendar year — clarify with the first recorded trip date so 444 km
+  // (= everything since install) doesn't read as a full-year figure.
+  cards.push(
+    md(
+      `{%- set trips = state_attr('sensor.${D}_recent_trips', 'trips') or [] %}` +
+      `{%- set firsts = trips | map(attribute='started_at') | reject('none') | list %}` +
+      `{%- if firsts | length > 0 %}` +
+      `{%- set first = firsts | min %}` +
+      `_📅 Totals count from when the logger started — first trip {{ as_timestamp(first) | timestamp_custom('%d/%m/%Y') }}. The “Year” figure grows from there._` +
+      `{%- endif %}`
+    )
+  );
 
   // ---- KPI 2x2 ----------------------------------------------------------
   // Tile 1 leans on trip_records.attributes.totals.longest_trip_date — colour
