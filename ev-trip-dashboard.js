@@ -875,6 +875,12 @@ function eficienciaView(D, hass) {
   // Apex "Efficiency vs Distance" scatter removed — superseded by
   // ev-trip-efficiency-card above (cleaner, rounded axis labels).
 
+  // ---- Consumption by SPEED band (works on existing data) --------------
+  // Always useful (highway vs city efficiency) and doesn't depend on a temp
+  // sensor, unlike the temperature chart below which stays empty until the
+  // logger records avg_temp_c per trip.
+  cards.push({ type: "custom:ev-trip-speed-card", device: D });
+
   // ---- Consumption by temperature bucket (BAR) -------------------------
   // by_bucket keys are stringified ints; sort them numerically ascending so
   // the x-axis goes cold → hot. Each label gets a "°C" suffix.
@@ -909,19 +915,10 @@ function eficienciaView(D, hass) {
       },
     ],
     });
-  } else {
-    // The bucket data is empty until trips are logged with an outside-temp
-    // reading — show a placeholder so the chart isn't silently missing.
-    cards.push(
-      mushroomTpl({
-        primary: "Consumption by temperature",
-        secondary: "Collecting data — appears once trips are logged with an outside-temperature reading.",
-        icon: "mdi:thermometer-lines",
-        iconColor: "blue-grey",
-        fillContainer: true,
-      })
-    );
   }
+  // (No temperature placeholder card: by_bucket stays empty until the logger
+  // records avg_temp_c per trip, and a permanently-empty card reads as broken.
+  // The speed-band card above already shows what drives consumption.)
 
   // ---- Footer hint — colored advice -------------------------------------
   cards.push(
@@ -3544,6 +3541,85 @@ class EvTripEfficiencyCard extends HTMLElement {
 customElements.define("ev-trip-efficiency-card", EvTripEfficiencyCard);
 window.customCards = window.customCards || [];
 window.customCards.push({ type: "ev-trip-efficiency-card", name: "EV Trip — efficiency scatter", description: "Efficiency-vs-distance SVG scatter from recent_trips (score-colored)." });
+
+// ==========================================================================
+// Custom card: consumption by SPEED band — distance-weighted kWh/100km for
+// city / mixed / road / highway, computed from recent_trips (avg_speed_kmh +
+// consumption). Works on existing data (no temp sensor needed), so it's the
+// useful counterpart to the consumption-by-temperature chart that stays empty
+// until the logger samples outside temperature.
+// ==========================================================================
+class EvTripSpeedCard extends HTMLElement {
+  setConfig(config) { this._config = config || {}; this._device = this._config.device || null; }
+  set hass(hass) { this._hass = hass; this._render(); }
+  getCardSize() { return 3; }
+  _render() {
+    if (!this._hass) return;
+    const D = this._device || detectDevice(this._hass);
+    this._device = D;
+    const st = this._hass.states[`sensor.${D}_recent_trips`];
+    const trips = (st && st.attributes && Array.isArray(st.attributes.trips) && st.attributes.trips) || [];
+    const bands = [
+      { key: "city", label: "City", sub: "<30 km/h", icon: "mdi:city-variant-outline", color: "#8b5cf6", lo: 0, hi: 30 },
+      { key: "mixed", label: "Mixed", sub: "30–60", icon: "mdi:road-variant", color: "#039be5", lo: 30, hi: 60 },
+      { key: "road", label: "Road", sub: "60–90", icon: "mdi:highway", color: "#22c55e", lo: 60, hi: 90 },
+      { key: "highway", label: "Highway", sub: "90+", icon: "mdi:car-speed-limiter", color: "#f59e0b", lo: 90, hi: Infinity },
+    ];
+    for (const b of bands) { b.e = 0; b.x = 0; b.n = 0; }
+    for (const t of trips) {
+      const sp = Number(t.avg_speed_kmh), km = Number(t.distance_km), cons = Number(t.consumption_kwh_100km);
+      if (isNaN(sp) || isNaN(km) || km <= 0 || isNaN(cons) || cons < 0) continue;
+      const energy = !isNaN(Number(t.energy_kwh)) && Number(t.energy_kwh) >= 0 ? Number(t.energy_kwh) : (cons * km) / 100;
+      const b = bands.find((z) => sp >= z.lo && sp < z.hi);
+      if (!b) continue;
+      b.e += energy; b.x += km; b.n += 1;
+    }
+    const active = bands.filter((b) => b.x > 0).map((b) => ({ ...b, cons: (b.e / b.x) * 100 }));
+    if (active.length < 1) {
+      this.innerHTML = `<ha-card><div class="sp-head">Consumption by speed</div>
+        <div class="sp-empty">Not enough trips with speed data yet.</div>
+        <style>.sp-head{padding:14px 16px 4px;font-weight:600;font-size:1.05em;}
+        .sp-empty{padding:18px 16px 22px;text-align:center;color:var(--secondary-text-color);}</style></ha-card>`;
+      return;
+    }
+    const maxC = Math.max(...active.map((b) => b.cons));
+    const rows = active
+      .map((b) => {
+        const pct = Math.round((b.cons / maxC) * 100);
+        return `<div class="sp-row">
+          <span class="sp-ic" style="color:${b.color}"><ha-icon icon="${b.icon}"></ha-icon></span>
+          <span class="sp-lbl"><span class="sp-l1">${b.label}</span><span class="sp-l2">${b.sub} · ${b.n} ${b.n === 1 ? "trip" : "trips"} · ${b.x.toFixed(0)} km</span></span>
+          <span class="sp-track"><span class="sp-fill" style="width:${pct}%;background:${b.color}"></span></span>
+          <span class="sp-val">${b.cons.toFixed(1)}</span>
+        </div>`;
+      })
+      .join("");
+    const best = active.reduce((m, b) => (b.cons < m.cons ? b : m));
+    this.innerHTML = `
+      <ha-card>
+        <div class="sp-head">Consumption by speed <span class="sp-sub">kWh/100km · lower is better</span></div>
+        <div class="sp-list">${rows}</div>
+        <div class="sp-foot">Most efficient: <b style="color:${best.color}">${best.label}</b> at ${best.cons.toFixed(1)} kWh/100km</div>
+        <style>
+          .sp-head{display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:4px;
+                   padding:14px 16px 8px;font-weight:600;font-size:1.05em;}
+          .sp-sub{color:var(--secondary-text-color);font-weight:400;font-size:.78em;}
+          .sp-list{display:flex;flex-direction:column;gap:10px;padding:2px 16px 8px;}
+          .sp-row{display:grid;grid-template-columns:26px 1fr 90px auto;align-items:center;gap:10px;}
+          .sp-ic ha-icon{--mdc-icon-size:22px;}
+          .sp-lbl{display:flex;flex-direction:column;line-height:1.15;min-width:0;}
+          .sp-l1{font-weight:600;}
+          .sp-l2{font-size:.72em;color:var(--secondary-text-color);}
+          .sp-track{height:10px;border-radius:6px;background:var(--divider-color);overflow:hidden;}
+          .sp-fill{display:block;height:100%;border-radius:6px;}
+          .sp-val{font-weight:800;font-variant-numeric:tabular-nums;min-width:40px;text-align:right;}
+          .sp-foot{padding:6px 16px 16px;font-size:.84em;color:var(--secondary-text-color);}
+        </style>
+      </ha-card>`;
+  }
+}
+customElements.define("ev-trip-speed-card", EvTripSpeedCard);
+window.customCards.push({ type: "ev-trip-speed-card", name: "EV Trip — consumption by speed", description: "Distance-weighted kWh/100km per speed band from recent_trips." });
 
 // ==========================================================================
 // Custom card: all-time records board from sensor.<device>_tops. Each category
