@@ -839,46 +839,10 @@ function eficienciaView(D, hass) {
   cards.push({ type: "custom:ev-trip-efficiency-card", device: D });
 
   // ---- Monthly efficiency: per-month chips + this-vs-last delta ---------
-  // A 2-point line chart looks broken; instead show each month's kWh/100 as
-  // chips and a clear "this month vs last" trend (computed at generate time).
-  {
-    const mh = hass && hass.states[`sensor.${D}_monthly_history`];
-    const months = (mh && mh.attributes && Array.isArray(mh.attributes.months) && mh.attributes.months) || [];
-    const eff = (m) => { const km = Number(m.distance_km) || 0, kwh = Number(m.energy_kwh) || 0; return km > 0 ? (kwh / km) * 100 : null; };
-    const withEff = months.map((m) => ({ m, e: eff(m) })).filter((x) => x.e != null);
-    if (withEff.length >= 2) {
-      const cur = withEff[withEff.length - 1].e, prev = withEff[withEff.length - 2].e;
-      const better = cur <= prev;
-      cards.push(
-        mushroomTpl({
-          primary: "Efficiency · this month vs last",
-          secondary: `${cur.toFixed(1)} vs ${prev.toFixed(1)} kWh/100km · ${better ? "▼" : "▲"} ${Math.abs(cur - prev).toFixed(1)} (${better ? "better" : "worse"})`,
-          icon: better ? "mdi:trending-down" : "mdi:trending-up",
-          iconColor: better ? "green" : "orange",
-          fillContainer: true,
-        })
-      );
-    }
-    if (withEff.length) {
-      const M = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-      const chips = withEff
-        .map((x) => {
-          const [y, mo] = String(x.m.month || "").split("-").map(Number);
-          const lbl = y && mo ? `${M[mo - 1]} '${String(y).slice(2)}` : String(x.m.month);
-          return `<span class="me-chip"><span class="me-m">${lbl}</span><span class="me-v">${x.e.toFixed(1)}</span></span>`;
-        })
-        .join("");
-      cards.push(
-        md(
-          `<div class="me-wrap"><div class="me-h">Per-month efficiency (kWh/100km)</div><div class="me-chips">${chips}</div></div>` +
-            `<style>.me-wrap{padding:2px 2px}.me-h{font-size:.8em;color:var(--secondary-text-color);text-transform:uppercase;letter-spacing:.04em;margin-bottom:6px}` +
-            `.me-chips{display:flex;flex-wrap:wrap;gap:6px}.me-chip{display:flex;flex-direction:column;align-items:center;gap:1px;` +
-            `background:var(--secondary-background-color,var(--card-background-color));border:1px solid var(--divider-color);border-radius:10px;padding:6px 10px}` +
-            `.me-m{font-size:.62em;color:var(--secondary-text-color);text-transform:uppercase}.me-v{font-weight:800;font-variant-numeric:tabular-nums}</style>`
-        )
-      );
-    }
-  }
+  // Custom card (not a markdown blob): some HA markdown sanitisers strip the
+  // inline <style> and leave its CSS visible as text, so this is rendered by a
+  // real custom element where scoped styles are reliable.
+  cards.push({ type: "custom:ev-trip-monthly-eff-card", device: D });
 
   // Apex "Efficiency vs Distance" scatter removed — superseded by
   // ev-trip-efficiency-card above (cleaner, rounded axis labels).
@@ -3652,6 +3616,70 @@ class EvTripSpeedCard extends HTMLElement {
 }
 customElements.define("ev-trip-speed-card", EvTripSpeedCard);
 window.customCards.push({ type: "ev-trip-speed-card", name: "EV Trip — consumption by speed", description: "Distance-weighted kWh/100km per speed band from recent_trips." });
+
+// ==========================================================================
+// Custom card: per-month efficiency (kWh/100km) — a "this month vs last" delta
+// plus one chip per month, computed from monthly_history. Rendered as a real
+// custom element (not markdown) so the scoped <style> always applies.
+// ==========================================================================
+class EvTripMonthlyEffCard extends HTMLElement {
+  setConfig(config) { this._config = config || {}; this._device = this._config.device || null; }
+  set hass(hass) { this._hass = hass; this._render(); }
+  getCardSize() { return 2; }
+  _render() {
+    if (!this._hass) return;
+    const D = this._device || detectDevice(this._hass);
+    this._device = D;
+    const mh = this._hass.states[`sensor.${D}_monthly_history`];
+    const months = (mh && mh.attributes && Array.isArray(mh.attributes.months) && mh.attributes.months) || [];
+    const eff = (m) => { const km = Number(m.distance_km) || 0, kwh = Number(m.energy_kwh) || 0; return km > 0 ? (kwh / km) * 100 : null; };
+    const withEff = months.map((m) => ({ m, e: eff(m) })).filter((x) => x.e != null);
+    if (!withEff.length) { this.innerHTML = ""; return; }
+    const M = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    let delta = "";
+    if (withEff.length >= 2) {
+      const cur = withEff[withEff.length - 1].e, prev = withEff[withEff.length - 2].e;
+      const better = cur <= prev;
+      const col = better ? "var(--success-color,#43a047)" : "var(--warning-color,#fb8c00)";
+      delta = `<div class="mef-delta">
+        <ha-icon icon="${better ? "mdi:trending-down" : "mdi:trending-up"}" style="color:${col}"></ha-icon>
+        <span><b>${cur.toFixed(1)}</b> vs ${prev.toFixed(1)} kWh/100km</span>
+        <span class="mef-tag" style="color:${col}">${better ? "▼" : "▲"} ${Math.abs(cur - prev).toFixed(1)} ${better ? "better" : "worse"}</span>
+      </div>`;
+    }
+    const effCol = (e) =>
+      e < 16 ? "var(--success-color,#43a047)" : e < 19 ? "var(--light-green-color,#7cb342)" : e < 22 ? "var(--warning-color,#fbc02d)" : "var(--error-color,#e53935)";
+    const chips = withEff
+      .map((x) => {
+        const [y, mo] = String(x.m.month || "").split("-").map(Number);
+        const lbl = y && mo ? `${M[mo - 1]} '${String(y).slice(2)}` : String(x.m.month);
+        return `<span class="mef-chip"><span class="mef-m">${_esc(lbl)}</span><span class="mef-v" style="color:${effCol(x.e)}">${x.e.toFixed(1)}</span></span>`;
+      })
+      .join("");
+    this.innerHTML = `
+      <ha-card>
+        <div class="mef-head">Per-month efficiency <span class="mef-sub">kWh/100km · lower is better</span></div>
+        ${delta}
+        <div class="mef-chips">${chips}</div>
+        <style>
+          .mef-head{display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:4px;
+                    padding:14px 16px 6px;font-weight:600;font-size:1.05em;}
+          .mef-sub{color:var(--secondary-text-color);font-weight:400;font-size:.78em;}
+          .mef-delta{display:flex;align-items:center;gap:8px;padding:2px 16px 8px;font-size:.92em;flex-wrap:wrap;}
+          .mef-delta ha-icon{--mdc-icon-size:20px;}
+          .mef-tag{margin-left:auto;font-weight:700;font-variant-numeric:tabular-nums;}
+          .mef-chips{display:flex;flex-wrap:wrap;gap:6px;padding:2px 16px 16px;}
+          .mef-chip{display:flex;flex-direction:column;align-items:center;gap:1px;
+                    background:var(--secondary-background-color,var(--card-background-color));
+                    border:1px solid var(--divider-color);border-radius:10px;padding:6px 10px;}
+          .mef-m{font-size:.62em;color:var(--secondary-text-color);text-transform:uppercase;}
+          .mef-v{font-weight:800;font-variant-numeric:tabular-nums;}
+        </style>
+      </ha-card>`;
+  }
+}
+customElements.define("ev-trip-monthly-eff-card", EvTripMonthlyEffCard);
+window.customCards.push({ type: "ev-trip-monthly-eff-card", name: "EV Trip — per-month efficiency", description: "Per-month kWh/100km chips + this-vs-last delta from monthly_history." });
 
 // Shared: distance-weighted kWh/100km per speed band from recent_trips.
 function _speedBandStats(trips) {
