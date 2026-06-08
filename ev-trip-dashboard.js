@@ -1414,6 +1414,18 @@ const _fmtDate = (iso, withYear) => {
     : `${p(d.getDate())}/${p(d.getMonth() + 1)}`;
   return `${date} ${p(d.getHours())}:${p(d.getMinutes())}`;
 };
+// "HH:MM–HH:MM" time range for a trip/stage. When start and end fall on the
+// same calendar day → just the two times; if it crosses midnight, the end gets
+// a "+1d" marker so the range stays unambiguous. Empty if timestamps missing.
+const _timeRange = (started, ended) => {
+  if (!started || !ended) return "";
+  const s = new Date(started), e = new Date(ended);
+  if (isNaN(s) || isNaN(e)) return "";
+  const p = (n) => String(n).padStart(2, "0");
+  const hm = (d) => `${p(d.getHours())}:${p(d.getMinutes())}`;
+  const sameDay = s.getFullYear() === e.getFullYear() && s.getMonth() === e.getMonth() && s.getDate() === e.getDate();
+  return sameDay ? `${hm(s)}–${hm(e)}` : `${hm(s)}–${hm(e)} +1d`;
+};
 const _scoreColor = (s) =>
   s == null
     ? "var(--disabled-text-color)"
@@ -1732,7 +1744,7 @@ class EvTripListCard extends HTMLElement {
               <span class="d-score-max">/10</span>
             </div>
           </div>
-          <div class="d-sub">${_fmtDate(t.ended_at, true)}</div>
+          <div class="d-sub">${_fmtDate(t.ended_at, true)}${(() => { const r = _timeRange(t.started_at, t.ended_at); return r ? ` · ${r}` : ""; })()}</div>
           ${(() => {
             // One location line: a HA zone/area name when the endpoint was
             // inside a zone, otherwise the reverse-geocoded street (not_home).
@@ -2703,7 +2715,7 @@ class EvTripJourneyCard extends HTMLElement {
         return `<div class="jstage">
           <div class="jstage-head">
             <span class="js-n">${i + 1}</span>
-            <span class="js-time">${tod(t.started_at)}</span>
+            <span class="js-time">${_timeRange(t.started_at, t.ended_at) || tod(t.started_at)}</span>
             <span class="js-route">${_endpoint(t.start_address, t.origin)}<ha-icon icon="mdi:arrow-right"></ha-icon>${_endpoint(t.end_address, t.destination)}</span>
             ${pill}
           </div>
@@ -3460,7 +3472,7 @@ class EvTripCalendarCard extends HTMLElement {
 
       const stage = (t) => `
         <div class="cal-stage">
-          <span class="cal-stime">${_timeOfDay(t.started_at)}</span>
+          <span class="cal-stime">${_timeRange(t.started_at, t.ended_at) || _timeOfDay(t.started_at)}</span>
           <span class="cal-sroute">${_endpoint(t.start_address, t.origin)}<ha-icon class="cal-arr" icon="mdi:arrow-right"></ha-icon>${_endpoint(t.end_address, t.destination)}</span>
           <span class="cal-smeta">${f0(t.distance_km)} km · ${t.consumption_kwh_100km != null && Number(t.consumption_kwh_100km) >= 0 ? f1(t.consumption_kwh_100km) + " kWh/100" : "—"}</span>
           ${t.score != null ? `<span class="cal-pill" style="background:${_scoreColor(t.score)}">${f1(t.score)}</span>` : ""}
