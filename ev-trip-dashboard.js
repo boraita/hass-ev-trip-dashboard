@@ -2810,6 +2810,17 @@ class EvTripDailyCard extends HTMLElement {
     const totKm = vals.reduce((a, b) => a + b, 0);
     const drivenDays = vals.filter((v) => v > 0).length;
     const avgKm = drivenDays ? totKm / drivenDays : 0;
+    // Rolling week-over-week: last 7 days vs the 7 before them.
+    const sum = (arr) => arr.reduce((a, b) => a + b, 0);
+    const last7 = sum(vals.slice(-7)), prev7 = sum(vals.slice(-14, -7));
+    let wow = "";
+    if (vals.length >= 14) {
+      const pct = prev7 > 0 ? Math.round(((last7 - prev7) / prev7) * 100) : null;
+      const up = last7 > prev7, flat = last7 === prev7;
+      const arrow = flat ? "→" : up ? "▲" : "▼";
+      const cls = flat ? "dk-flat" : up ? "dk-up" : "dk-down";
+      wow = `<span class="dk-wow"><b>${last7.toFixed(0)} km</b> last 7d <span class="${cls}">${arrow}${pct == null ? "" : ` ${pct > 0 ? "+" : ""}${pct}%`}</span> vs prev</span>`;
+    }
     // Label the first day, ~middle and last day of the window.
     const lblIdx = new Set([0, Math.floor(days.length / 2), days.length - 1]);
     const fmtDay = (iso) => {
@@ -2830,12 +2841,19 @@ class EvTripDailyCard extends HTMLElement {
         <div class="dk-head">Daily km · 60 days
           <span class="dk-tot">${totKm.toFixed(0)} km · ${avgKm.toFixed(1)} km/active-day</span>
         </div>
+        ${wow ? `<div class="dk-wowrow">${wow}</div>` : ""}
         <div class="dk-chart">${bars}</div>
         <style>
           .dk-head{display:flex;justify-content:space-between;align-items:baseline;
                    padding:14px 16px 8px;font-weight:600;font-size:1.05em;flex-wrap:wrap;gap:4px;}
           .dk-tot{color:var(--secondary-text-color);font-weight:400;font-size:.8em;
                   font-variant-numeric:tabular-nums;}
+          .dk-wowrow{padding:0 16px 8px;}
+          .dk-wow{font-size:.82em;color:var(--secondary-text-color);font-variant-numeric:tabular-nums;}
+          .dk-wow b{color:var(--primary-text-color);}
+          .dk-up{color:var(--info-color,#039be5);font-weight:700;}
+          .dk-down{color:var(--secondary-text-color);font-weight:700;}
+          .dk-flat{color:var(--secondary-text-color);font-weight:700;}
           .dk-chart{display:flex;align-items:flex-end;gap:1px;height:96px;
                     padding:0 14px 22px;position:relative;}
           .dk-bar{flex:1 1 0;height:100%;display:flex;flex-direction:column;
@@ -3455,8 +3473,12 @@ class EvTripRecordsCard extends HTMLElement {
     const cur = { EUR: "€", USD: "$", GBP: "£" };
     return [
       { key: "longest", icon: "mdi:map-marker-distance", label: "Longest", color: "#3b82f6", val: (t) => `${(Number(t.distance_km) || 0).toFixed(0)} km` },
-      { key: "longest_duration", icon: "mdi:timer-outline", label: "Longest drive", color: "#8b5cf6", val: (t) => _recDur(t.duration_min) },
+      // Exclude parked-with-ignition sessions (long duration, ~0 movement) so
+      // "Longest drive" reflects real driving, not a car left on.
+      { key: "longest_duration", icon: "mdi:timer-outline", label: "Longest drive", color: "#8b5cf6", filter: (t) => Number(t.avg_speed_kmh) > 5, val: (t) => _recDur(t.duration_min) },
       { key: "top_efficiency", icon: "mdi:leaf", label: "Most efficient", color: "#22c55e", val: (t) => `${(Number(t.consumption_kwh_100km) || 0).toFixed(1)} kWh/100` },
+      // Highest consumption — the counterpart to "most efficient" (emitted by the logger as top_consumption).
+      { key: "top_consumption", icon: "mdi:gauge-full", label: "Least efficient", color: "#ef4444", filter: (t) => Number(t.consumption_kwh_100km) > 0, val: (t) => `${(Number(t.consumption_kwh_100km) || 0).toFixed(1)} kWh/100` },
       { key: "top_speed", icon: "mdi:speedometer", label: "Fastest avg", color: "#f59e0b", val: (t) => `${(Number(t.avg_speed_kmh) || 0).toFixed(0)} km/h` },
       // Skip cost<=0 entries: a 0 here is a mis-costed trip (charge price was
       // stale at trip-close), not a genuinely free trip — surface the real
@@ -3501,7 +3523,7 @@ class EvTripRecordsCard extends HTMLElement {
               .map(
                 (t, i) =>
                   `<div class="rec-li"><span class="rec-rank">${i + 1}</span>` +
-                  `<span class="rec-lmain">${_esc(t.origin || "?")} → ${_esc(t.destination || "?")}</span>` +
+                  `<span class="rec-lmain">${_endpoint(t.start_address, t.origin)} → ${_endpoint(t.end_address, t.destination)}</span>` +
                   `<span class="rec-ldate">${_recDate(t.started_at || t.ended_at)}</span>` +
                   `<span class="rec-lval">${c.val(t)}</span></div>`
               )
@@ -3514,7 +3536,7 @@ class EvTripRecordsCard extends HTMLElement {
               <span class="rec-badge" style="background:${c.color}22;color:${c.color}"><ha-icon icon="${c.icon}"></ha-icon></span>
               <span class="rec-body">
                 <span class="rec-label">${c.label}</span>
-                <span class="rec-meta">${_recDate(top.started_at || top.ended_at)} · ${_esc(top.origin || "?")} → ${_esc(top.destination || "?")}</span>
+                <span class="rec-meta">${_recDate(top.started_at || top.ended_at)} · ${_endpoint(top.start_address, top.origin)} → ${_endpoint(top.end_address, top.destination)}</span>
               </span>
               <span class="rec-val" style="color:${c.color}">${c.val(top)}</span>
               <ha-icon class="rec-caret" icon="mdi:chevron-down"></ha-icon>
