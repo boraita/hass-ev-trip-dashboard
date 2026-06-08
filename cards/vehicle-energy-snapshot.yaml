@@ -1,0 +1,162 @@
+# Vehicle energy snapshot — manufacturer-provided day/week/lifetime
+# consumption stats. These are NOT real-time sensors; they refresh only
+# when the manufacturer's "fetch energy data" button is pressed (manual
+# or via automation). The card includes a button to trigger that fetch.
+#
+# Replace placeholders:
+#   __VEHICLE__       → manufacturer prefix (e.g. byd_sealion_7)
+#   __FETCH_BUTTON__  → the on-demand fetch button entity_id
+#                       (e.g. button.byd_sealion_7_fetch_energy_data)
+#
+# Sensors used (BYD example — adapt names for your integration):
+#   sensor.__VEHICLE___today_s_energy_consumption
+#   sensor.__VEHICLE___today_s_model_average_consumption
+#   sensor.__VEHICLE___last_50km_average_ev_consumption
+#   sensor.__VEHICLE___last_50km_ev_consumption
+#   sensor.__VEHICLE___lifetime_average_ev_consumption
+#   sensor.__VEHICLE___cumulative_total_mileage
+#   sensor.__VEHICLE___last_energy_fetch_at
+#   sensor.__VEHICLE___last_energy_fetch_status
+
+type: vertical-stack
+cards:
+  # ── HEADER ────────────────────────────────────────────────────────
+  - type: custom:mushroom-title-card
+    title: Energía del vehículo
+    subtitle: >-
+      Actualizado:
+      {% set ts = states('sensor.__VEHICLE___last_energy_fetch_at') %}
+      {% if ts in ('unknown','unavailable',None) %}
+        nunca
+      {% else %}
+        {{ as_timestamp(ts) | timestamp_custom('%d %b %H:%M') }}
+        ({{ relative_time(as_datetime(ts)) }})
+      {% endif %}
+
+  # ── TODAY KPIs (consumption + flota average) ──────────────────────
+  - type: grid
+    columns: 2
+    square: false
+    cards:
+      - type: custom:button-card
+        entity: sensor.__VEHICLE___today_s_energy_consumption
+        name: Hoy
+        show_state: true
+        icon: mdi:calendar-today
+        styles:
+          card:
+            - padding: 12px
+            - border-radius: 16px
+          name:
+            - font-size: 12px
+            - opacity: "0.7"
+          state:
+            - font-size: 22px
+            - font-weight: bold
+
+      - type: custom:button-card
+        entity: sensor.__VEHICLE___today_s_model_average_consumption
+        name: Media flota
+        show_state: true
+        icon: mdi:account-group
+        styles:
+          card:
+            - padding: 12px
+            - border-radius: 16px
+          name:
+            - font-size: 12px
+            - opacity: "0.7"
+          state:
+            - font-size: 22px
+            - font-weight: bold
+
+  # ── RECENT 50 km ──────────────────────────────────────────────────
+  - type: grid
+    columns: 2
+    square: false
+    cards:
+      - type: custom:button-card
+        entity: sensor.__VEHICLE___last_50km_average_ev_consumption
+        name: Avg 50 km
+        show_state: true
+        icon: mdi:speedometer-medium
+        styles:
+          card:
+            - padding: 12px
+            - border-radius: 16px
+          name:
+            - font-size: 12px
+            - opacity: "0.7"
+          state:
+            - font-size: 20px
+            - font-weight: bold
+
+      - type: custom:button-card
+        entity: sensor.__VEHICLE___last_50km_ev_consumption
+        name: kWh 50 km
+        show_state: true
+        icon: mdi:battery-charging-50
+        styles:
+          card:
+            - padding: 12px
+            - border-radius: 16px
+          name:
+            - font-size: 12px
+            - opacity: "0.7"
+          state:
+            - font-size: 20px
+            - font-weight: bold
+
+  # ── LIFETIME stats ────────────────────────────────────────────────
+  - type: grid
+    columns: 2
+    square: false
+    cards:
+      - type: custom:button-card
+        entity: sensor.__VEHICLE___lifetime_average_ev_consumption
+        name: Media histórica
+        show_state: true
+        icon: mdi:infinity
+        styles:
+          card:
+            - padding: 12px
+            - border-radius: 16px
+          name:
+            - font-size: 12px
+            - opacity: "0.7"
+          state:
+            - font-size: 22px
+            - font-weight: bold
+
+      - type: custom:button-card
+        entity: sensor.__VEHICLE___cumulative_total_mileage
+        name: Km totales
+        show_state: true
+        icon: mdi:counter
+        styles:
+          card:
+            - padding: 12px
+            - border-radius: 16px
+          name:
+            - font-size: 12px
+            - opacity: "0.7"
+          state:
+            - font-size: 22px
+            - font-weight: bold
+
+  # ── FETCH BUTTON + STATUS ─────────────────────────────────────────
+  - type: custom:mushroom-template-card
+    primary: >-
+      {% set st = states('sensor.__VEHICLE___last_energy_fetch_status') %}
+      {{ '✅ Última actualización OK' if st == 'ok' else '⚠️ ' ~ (st or 'sin datos') }}
+    secondary: Toca para forzar refresco desde el coche
+    icon: mdi:cloud-download
+    icon_color: >-
+      {% set st = states('sensor.__VEHICLE___last_energy_fetch_status') %}
+      {{ 'green' if st == 'ok' else 'red' }}
+    tap_action:
+      action: call-service
+      service: button.press
+      target:
+        entity_id: __FETCH_BUTTON__
+    fill_container: true
