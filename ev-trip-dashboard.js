@@ -3716,8 +3716,8 @@ class EvTripSavingsCard extends HTMLElement {
     if (!this._hass) return;
     const D = this._device || detectDevice(this._hass);
     this._device = D;
-    const L = Number(this._config.gas_l_per_100km) || 7;     // petrol car L/100km
-    const P = Number(this._config.gas_price_per_l) || 1.65;  // €/L
+    const L = Number(this._config.gas_l_per_100km) || 5.7;   // petrol car L/100km
+    const P = Number(this._config.gas_price_per_l) || 1.6;   // €/L
     const sym = _deviceCurrency(this._hass, D);
     const num = (e) => { const s = this._hass.states[e]; const v = s ? parseFloat(s.state) : NaN; return isNaN(v) ? null : v; };
     const tot = (this._hass.states[`sensor.${D}_trip_records`] || {}).attributes || {};
