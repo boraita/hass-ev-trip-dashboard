@@ -584,10 +584,15 @@ function calendarioView(D, hass, V, cfg) {
 // 4 KPI tiles (Long trip / Avg trip / Driving time / Monthly cost) +
 // dual-axis monthly bar (km + kWh) + last-60-days km line.
 // ==========================================================================
-function tendenciasView(D, hass) {
+function tendenciasView(D, hass, cfg) {
+  cfg = cfg || {};
   const cards = [];
 
   cards.push(mushroomTitle("Trends", "Summary of the last 30/60 days", "mdi:chart-line"));
+
+  // Savings vs petrol + cost per 100 km (computed in custom cards from data).
+  cards.push({ type: "custom:ev-trip-savings-card", device: D, gas_l_per_100km: cfg.gas_l_per_100km, gas_price_per_l: cfg.gas_price_per_l });
+  cards.push({ type: "custom:ev-trip-cost-card", device: D });
 
   // Distance by period — at-a-glance totals (today / week / month / year).
   const distStyles = {
@@ -825,6 +830,9 @@ function eficienciaView(D, hass) {
     state_display:
       "[[[ const n = entity && Number(entity.state); return (n==null||isNaN(n)) ? '—' : `${n.toFixed(1)} kWh/100km`; ]]]",
   });
+
+  // ---- Real range now (range at recent efficiency + per-band estimate) ---
+  cards.push({ type: "custom:ev-trip-range-card", device: D });
 
   // ---- NEW: robust efficiency-vs-distance scatter (works on existing data) --
   // Additive: above the apex scatter below; retire the apex once validated.
@@ -1388,6 +1396,9 @@ function cargasView(D, hass) {
       },
     ],
   });
+
+  // ---- Charging insights (AC/DC split, prices, cheapest, avg session) --
+  cards.push({ type: "custom:ev-trip-charge-insights-card", device: D });
 
   // ---- Reactive charges history (custom element from this plugin) ------
   // Replaces the Jinja markdown blob; groups sessions by calendar day with
@@ -3621,6 +3632,267 @@ class EvTripSpeedCard extends HTMLElement {
 customElements.define("ev-trip-speed-card", EvTripSpeedCard);
 window.customCards.push({ type: "ev-trip-speed-card", name: "EV Trip — consumption by speed", description: "Distance-weighted kWh/100km per speed band from recent_trips." });
 
+// Shared: distance-weighted kWh/100km per speed band from recent_trips.
+function _speedBandStats(trips) {
+  const bands = [
+    { key: "city", label: "City", icon: "mdi:city-variant-outline", color: "#8b5cf6", lo: 0, hi: 30 },
+    { key: "mixed", label: "Mixed", icon: "mdi:road-variant", color: "#039be5", lo: 30, hi: 60 },
+    { key: "road", label: "Road", icon: "mdi:highway", color: "#22c55e", lo: 60, hi: 90 },
+    { key: "highway", label: "Highway", icon: "mdi:car-speed-limiter", color: "#f59e0b", lo: 90, hi: Infinity },
+  ];
+  for (const b of bands) { b.e = 0; b.x = 0; b.n = 0; }
+  for (const t of trips || []) {
+    const sp = Number(t.avg_speed_kmh), km = Number(t.distance_km), cons = Number(t.consumption_kwh_100km);
+    if (isNaN(sp) || isNaN(km) || km <= 0 || isNaN(cons) || cons < 0) continue;
+    const energy = !isNaN(Number(t.energy_kwh)) && Number(t.energy_kwh) >= 0 ? Number(t.energy_kwh) : (cons * km) / 100;
+    const b = bands.find((z) => sp >= z.lo && sp < z.hi);
+    if (b) { b.e += energy; b.x += km; b.n += 1; }
+  }
+  return bands.filter((b) => b.x > 0).map((b) => ({ ...b, cons: (b.e / b.x) * 100 }));
+}
+
+// ==========================================================================
+// Custom card: savings vs an equivalent petrol car. Compares your real
+// electric cost against what the same distance would cost on petrol, using a
+// configurable consumption (L/100km) and fuel price. All-time figures come
+// from trip_records.totals; "this month" from the monthly distance/cost.
+// ==========================================================================
+class EvTripSavingsCard extends HTMLElement {
+  setConfig(config) { this._config = config || {}; this._device = this._config.device || null; }
+  set hass(hass) { this._hass = hass; this._render(); }
+  getCardSize() { return 3; }
+  _render() {
+    if (!this._hass) return;
+    const D = this._device || detectDevice(this._hass);
+    this._device = D;
+    const L = Number(this._config.gas_l_per_100km) || 7;     // petrol car L/100km
+    const P = Number(this._config.gas_price_per_l) || 1.65;  // €/L
+    const sym = _deviceCurrency(this._hass, D);
+    const num = (e) => { const s = this._hass.states[e]; const v = s ? parseFloat(s.state) : NaN; return isNaN(v) ? null : v; };
+    const tot = (this._hass.states[`sensor.${D}_trip_records`] || {}).attributes || {};
+    const totals = tot.totals || {};
+    const petrol = (km) => (km / 100) * L * P;
+    const block = (km, eur, label) => {
+      if (km == null || eur == null || km <= 0) return "";
+      const pc = petrol(km), save = pc - eur, max = Math.max(pc, eur, 0.01);
+      return `<div class="sv-blk">
+        <div class="sv-blabel">${label} · ${km.toFixed(0)} km</div>
+        <div class="sv-bar"><div class="sv-bf sv-elec" style="width:${Math.round((eur / max) * 100)}%"></div></div>
+        <div class="sv-brow"><span>⚡ Electric</span><b>${eur.toFixed(2)} ${_esc(sym)}</b></div>
+        <div class="sv-bar"><div class="sv-bf sv-gas" style="width:${Math.round((pc / max) * 100)}%"></div></div>
+        <div class="sv-brow"><span>⛽ Petrol (${L} L/100)</span><b>${pc.toFixed(2)} ${_esc(sym)}</b></div>
+        <div class="sv-save">Saved <b>${save.toFixed(2)} ${_esc(sym)}</b></div>
+      </div>`;
+    };
+    const allKm = Number(totals.distance_km), allEur = Number(totals.cost);
+    const moKm = num(`sensor.${D}_distance_this_month`), moEur = num(`sensor.${D}_cost_this_month`);
+    const blocks = [block(allKm, allEur, "All-time"), block(moKm, moEur, "This month")].filter(Boolean).join("");
+    if (!blocks) { this.innerHTML = ""; return; }
+    const allSave = allKm > 0 && allEur != null ? petrol(allKm) - allEur : null;
+    this.innerHTML = `
+      <ha-card>
+        <div class="sv-head"><ha-icon icon="mdi:fuel"></ha-icon> Savings vs petrol
+          ${allSave != null ? `<span class="sv-hero">${allSave.toFixed(0)} ${_esc(sym)}</span>` : ""}</div>
+        <div class="sv-blocks">${blocks}</div>
+        <div class="sv-foot">Assumes a petrol car at ${L} L/100km · ${P.toFixed(2)} ${_esc(sym)}/L${this._config.gas_l_per_100km || this._config.gas_price_per_l ? "" : " (defaults — set gas_l_per_100km / gas_price_per_l)"}</div>
+        <style>
+          .sv-head{display:flex;align-items:center;gap:6px;padding:14px 16px 8px;font-weight:600;font-size:1.05em;}
+          .sv-head ha-icon{--mdc-icon-size:20px;color:var(--success-color,#43a047);}
+          .sv-hero{margin-left:auto;font-weight:800;color:var(--success-color,#43a047);font-variant-numeric:tabular-nums;}
+          .sv-blocks{display:flex;flex-direction:column;gap:14px;padding:2px 16px 8px;}
+          .sv-blabel{font-size:.72em;text-transform:uppercase;letter-spacing:.04em;color:var(--secondary-text-color);margin-bottom:4px;}
+          .sv-bar{height:9px;border-radius:6px;background:var(--divider-color);overflow:hidden;margin:2px 0;}
+          .sv-bf{display:block;height:100%;border-radius:6px;}
+          .sv-elec{background:var(--success-color,#43a047);}
+          .sv-gas{background:var(--error-color,#e53935);}
+          .sv-brow{display:flex;justify-content:space-between;align-items:center;font-size:.85em;}
+          .sv-brow b{font-variant-numeric:tabular-nums;}
+          .sv-save{text-align:right;font-size:.9em;margin-top:4px;}
+          .sv-save b{color:var(--success-color,#43a047);}
+          .sv-foot{padding:4px 16px 14px;font-size:.72em;color:var(--secondary-text-color);}
+        </style>
+      </ha-card>`;
+  }
+}
+customElements.define("ev-trip-savings-card", EvTripSavingsCard);
+window.customCards.push({ type: "ev-trip-savings-card", name: "EV Trip — savings vs petrol", description: "Electric cost vs an equivalent petrol car." });
+
+// ==========================================================================
+// Custom card: cost per 100 km + projected month-end cost, from the monthly
+// distance/cost sensors and trip_records.totals.
+// ==========================================================================
+class EvTripCostCard extends HTMLElement {
+  setConfig(config) { this._config = config || {}; this._device = this._config.device || null; }
+  set hass(hass) { this._hass = hass; this._render(); }
+  getCardSize() { return 2; }
+  _render() {
+    if (!this._hass) return;
+    const D = this._device || detectDevice(this._hass);
+    this._device = D;
+    const sym = _deviceCurrency(this._hass, D);
+    const num = (e) => { const s = this._hass.states[e]; const v = s ? parseFloat(s.state) : NaN; return isNaN(v) ? null : v; };
+    const moKm = num(`sensor.${D}_distance_this_month`), moEur = num(`sensor.${D}_cost_this_month`);
+    const tot = ((this._hass.states[`sensor.${D}_trip_records`] || {}).attributes || {}).totals || {};
+    const allKm = Number(tot.distance_km), allEur = Number(tot.cost);
+    const per100 = (km, eur) => (km > 0 && eur != null ? (eur / km) * 100 : null);
+    const moP = per100(moKm, moEur), allP = per100(allKm, allEur);
+    // Projection: scale this-month cost to the full month by elapsed fraction.
+    const now = new Date();
+    const dom = now.getDate(), dim = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+    const proj = moEur != null && dom > 0 ? (moEur / dom) * dim : null;
+    if (moP == null && allP == null) { this.innerHTML = ""; return; }
+    const stat = (v, unit, label, color) =>
+      `<div class="co-stat"><div class="co-sv"${color ? ` style="color:${color}"` : ""}>${v == null ? "—" : v}<span class="co-su">${unit}</span></div><div class="co-sl">${label}</div></div>`;
+    this.innerHTML = `
+      <ha-card>
+        <div class="co-head"><ha-icon icon="mdi:cash-multiple"></ha-icon> Cost</div>
+        <div class="co-grid">
+          ${stat(moP == null ? null : moP.toFixed(2), ` ${sym}/100km`, "This month", "var(--primary-color)")}
+          ${stat(allP == null ? null : allP.toFixed(2), ` ${sym}/100km`, "All-time")}
+          ${stat(proj == null ? null : proj.toFixed(2), ` ${sym}`, `Projected (${dom}/${dim} d)`, "var(--warning-color,#fb8c00)")}
+        </div>
+        <style>
+          .co-head{display:flex;align-items:center;gap:6px;padding:14px 16px 6px;font-weight:600;font-size:1.05em;}
+          .co-head ha-icon{--mdc-icon-size:20px;color:var(--warning-color,#fb8c00);}
+          .co-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;padding:4px 12px 16px;}
+          .co-stat{text-align:center;}
+          .co-sv{font-size:1.25em;font-weight:800;font-variant-numeric:tabular-nums;line-height:1.1;}
+          .co-su{font-size:.5em;font-weight:600;color:var(--secondary-text-color);}
+          .co-sl{font-size:.66em;text-transform:uppercase;letter-spacing:.03em;color:var(--secondary-text-color);margin-top:2px;}
+        </style>
+      </ha-card>`;
+  }
+}
+customElements.define("ev-trip-cost-card", EvTripCostCard);
+window.customCards.push({ type: "ev-trip-cost-card", name: "EV Trip — cost per 100km", description: "Cost per 100 km and projected month-end cost." });
+
+// ==========================================================================
+// Custom card: charging insights from recent_charges — AC/DC split, average
+// price per type, cheapest/priciest session, average session.
+// ==========================================================================
+class EvTripChargeInsightsCard extends HTMLElement {
+  setConfig(config) { this._config = config || {}; this._device = this._config.device || null; }
+  set hass(hass) { this._hass = hass; this._render(); }
+  getCardSize() { return 3; }
+  _render() {
+    if (!this._hass) return;
+    const D = this._device || detectDevice(this._hass);
+    this._device = D;
+    const sym = _deviceCurrency(this._hass, D);
+    const a = (this._hass.states[`sensor.${D}_recent_charges`] || {}).attributes || {};
+    const charges = (Array.isArray(a.charges) && a.charges) || [];
+    if (!charges.length) { this.innerHTML = ""; return; }
+    const grp = (isDc) => {
+      const list = charges.filter((c) => (isDc ? c.is_dcfc === true : c.is_dcfc !== true) && Number(c.kwh) > 0);
+      const kwh = list.reduce((s, c) => s + Number(c.kwh), 0);
+      const priced = list.filter((c) => Number(c.price_per_kwh) > 0);
+      const avgP = priced.length ? priced.reduce((s, c) => s + Number(c.price_per_kwh), 0) / priced.length : null;
+      return { n: list.length, kwh, avgP };
+    };
+    const ac = grp(false), dc = grp(true);
+    const priced = charges.filter((c) => Number(c.price_per_kwh) > 0);
+    const cheapest = priced.length ? priced.reduce((m, c) => (Number(c.price_per_kwh) < Number(m.price_per_kwh) ? c : m)) : null;
+    const priciest = priced.length ? priced.reduce((m, c) => (Number(c.price_per_kwh) > Number(m.price_per_kwh) ? c : m)) : null;
+    const withK = charges.filter((c) => Number(c.kwh) > 0);
+    const avgKwh = withK.length ? withK.reduce((s, c) => s + Number(c.kwh), 0) / withK.length : null;
+    const avgCost = withK.length ? withK.reduce((s, c) => s + (Number(c.total_cost) || 0), 0) / withK.length : null;
+    const fmtP = (v) => (v == null ? "—" : `${v.toFixed(3)} ${sym}/kWh`);
+    const typeRow = (label, g, color) =>
+      g.n ? `<div class="ci-trow"><span class="ci-tdot" style="background:${color}"></span><span class="ci-tl">${label}</span>` +
+        `<span class="ci-tn">${g.n} · ${g.kwh.toFixed(0)} kWh</span><span class="ci-tp">${fmtP(g.avgP)}</span></div>` : "";
+    const line = (icon, label, val) => `<div class="ci-row"><ha-icon icon="${icon}"></ha-icon><span>${label}</span><b>${val}</b></div>`;
+    this.innerHTML = `
+      <ha-card>
+        <div class="ci-head"><ha-icon icon="mdi:lightning-bolt-circle"></ha-icon> Charging insights <span class="ci-sub">${charges.length} sessions</span></div>
+        <div class="ci-types">
+          ${typeRow("Home / AC", ac, "var(--info-color,#039be5)")}
+          ${typeRow("DC fast", dc, "var(--warning-color,#fb8c00)")}
+        </div>
+        <div class="ci-rows">
+          ${cheapest ? line("mdi:tag-arrow-down", "Cheapest" + (cheapest.location ? ` · ${_esc(cheapest.location)}` : ""), fmtP(Number(cheapest.price_per_kwh))) : ""}
+          ${priciest && priciest !== cheapest ? line("mdi:tag-arrow-up", "Priciest" + (priciest.location ? ` · ${_esc(priciest.location)}` : ""), fmtP(Number(priciest.price_per_kwh))) : ""}
+          ${avgKwh != null ? line("mdi:battery-charging", "Avg session", `${avgKwh.toFixed(1)} kWh · ${(avgCost || 0).toFixed(2)} ${_esc(sym)}`) : ""}
+        </div>
+        <style>
+          .ci-head{display:flex;align-items:center;gap:6px;padding:14px 16px 8px;font-weight:600;font-size:1.05em;}
+          .ci-head ha-icon{--mdc-icon-size:20px;color:var(--warning-color,#fb8c00);}
+          .ci-sub{margin-left:auto;color:var(--secondary-text-color);font-weight:400;font-size:.78em;}
+          .ci-types{display:flex;flex-direction:column;gap:8px;padding:2px 16px 6px;}
+          .ci-trow{display:flex;align-items:center;gap:8px;font-size:.9em;}
+          .ci-tdot{width:10px;height:10px;border-radius:50%;flex:0 0 auto;}
+          .ci-tl{font-weight:600;}
+          .ci-tn{margin-left:auto;color:var(--secondary-text-color);font-variant-numeric:tabular-nums;}
+          .ci-tp{font-weight:700;font-variant-numeric:tabular-nums;min-width:96px;text-align:right;}
+          .ci-rows{display:flex;flex-direction:column;gap:8px;padding:6px 16px 16px;border-top:1px solid var(--divider-color);margin-top:4px;}
+          .ci-row{display:flex;align-items:center;gap:8px;font-size:.9em;}
+          .ci-row ha-icon{--mdc-icon-size:17px;color:var(--secondary-text-color);}
+          .ci-row b{margin-left:auto;font-variant-numeric:tabular-nums;}
+        </style>
+      </ha-card>`;
+  }
+}
+customElements.define("ev-trip-charge-insights-card", EvTripChargeInsightsCard);
+window.customCards.push({ type: "ev-trip-charge-insights-card", name: "EV Trip — charging insights", description: "AC/DC split, average price, cheapest/priciest, avg session." });
+
+// ==========================================================================
+// Custom card: real range NOW — range at recent efficiency plus a per-speed-
+// band estimate (battery energy ÷ band consumption) so you see city vs highway
+// range from the same charge.
+// ==========================================================================
+class EvTripRangeCard extends HTMLElement {
+  setConfig(config) { this._config = config || {}; this._device = this._config.device || null; }
+  set hass(hass) { this._hass = hass; this._render(); }
+  getCardSize() { return 3; }
+  _render() {
+    if (!this._hass) return;
+    const D = this._device || detectDevice(this._hass);
+    this._device = D;
+    const num = (e) => { const s = this._hass.states[e]; const v = s ? parseFloat(s.state) : NaN; return isNaN(v) ? null : v; };
+    const battery = num(`sensor.${D}_battery_energy`);          // kWh available now
+    const soc = num(`sensor.${D}_battery_percent`);
+    const heroRange = num(`sensor.${D}_range_at_recent_efficiency`);
+    const avgCons = num(`sensor.${D}_avg_consumption_30_days`);
+    const hero = heroRange != null ? heroRange : (battery != null && avgCons > 0 ? (battery / avgCons) * 100 : null);
+    if (hero == null && battery == null) { this.innerHTML = ""; return; }
+    const trips = ((this._hass.states[`sensor.${D}_recent_trips`] || {}).attributes || {}).trips || [];
+    const bands = battery != null ? _speedBandStats(trips) : [];
+    const chips = bands
+      .map((b) => `<span class="rg-chip"><ha-icon icon="${b.icon}" style="color:${b.color}"></ha-icon><span class="rg-ck">${b.label}</span><span class="rg-cv">${((battery / b.cons) * 100).toFixed(0)}<span class="rg-cu"> km</span></span></span>`)
+      .join("");
+    this.innerHTML = `
+      <ha-card>
+        <div class="rg-top">
+          <div class="rg-badge"><ha-icon icon="mdi:map-marker-distance"></ha-icon></div>
+          <div class="rg-main">
+            <div class="rg-label">Range now${soc != null ? ` · ${soc.toFixed(0)}% · ${battery != null ? battery.toFixed(1) + " kWh" : ""}` : ""}</div>
+            <div class="rg-val">${hero == null ? "—" : hero.toFixed(0)}<span class="rg-u"> km</span></div>
+            <div class="rg-sub">at your recent efficiency${avgCons ? ` (${avgCons.toFixed(1)} kWh/100km)` : ""}</div>
+          </div>
+        </div>
+        ${chips ? `<div class="rg-bandcap">Estimated range by driving type</div><div class="rg-chips">${chips}</div>` : ""}
+        <style>
+          .rg-top{display:flex;align-items:center;gap:12px;padding:14px 16px 8px;}
+          .rg-badge{flex:0 0 auto;width:46px;height:46px;border-radius:50%;display:flex;align-items:center;justify-content:center;background:rgba(3,155,229,.16);}
+          .rg-badge ha-icon{--mdc-icon-size:25px;color:var(--info-color,#039be5);}
+          .rg-label{font-size:.8em;color:var(--secondary-text-color);}
+          .rg-val{font-size:2em;font-weight:800;line-height:1;font-variant-numeric:tabular-nums;}
+          .rg-u{font-size:.45em;font-weight:600;color:var(--secondary-text-color);}
+          .rg-sub{font-size:.78em;color:var(--secondary-text-color);margin-top:2px;}
+          .rg-bandcap{padding:2px 16px 4px;font-size:.66em;text-transform:uppercase;letter-spacing:.04em;color:var(--secondary-text-color);}
+          .rg-chips{display:flex;flex-wrap:wrap;gap:8px;padding:2px 16px 16px;}
+          .rg-chip{display:flex;align-items:center;gap:6px;background:var(--secondary-background-color,var(--card-background-color));
+                   border:1px solid var(--divider-color);border-radius:12px;padding:7px 11px;}
+          .rg-chip ha-icon{--mdc-icon-size:18px;}
+          .rg-ck{font-size:.78em;color:var(--secondary-text-color);}
+          .rg-cv{font-weight:800;font-variant-numeric:tabular-nums;}
+          .rg-cu{font-size:.6em;font-weight:600;color:var(--secondary-text-color);}
+        </style>
+      </ha-card>`;
+  }
+}
+customElements.define("ev-trip-range-card", EvTripRangeCard);
+window.customCards.push({ type: "ev-trip-range-card", name: "EV Trip — range now", description: "Range at recent efficiency + per-speed-band estimate." });
+
 // ==========================================================================
 // Custom card: all-time records board from sensor.<device>_tops. Each category
 // (longest / longest drive / most efficient / fastest / cheapest) shows its
@@ -4439,7 +4711,7 @@ class EvTripDashboardStrategy {
       drivingView(D, V, hass, config),
       tripsView(D, hass, V, config),
       calendarioView(D, hass, V, config),
-      tendenciasView(D, hass),
+      tendenciasView(D, hass, config),
       patternsView(D, hass),
       eficienciaView(D, hass),
       // (Records/Tops view removed — per-trip "biggest/best" rankings weren't useful.)
