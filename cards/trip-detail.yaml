@@ -22,9 +22,21 @@ cards:
   - type: custom:mushroom-title-card
     title: Detalle del viaje
     subtitle: >-
-      {{ state_attr('sensor.__DEVICE___last_trip', 'started_at')
-         | as_timestamp(0) | timestamp_custom('%d %b %H:%M', true)
-         if state_attr('sensor.__DEVICE___last_trip', 'started_at') else '—' }}
+      {% set s = state_attr('sensor.__DEVICE___last_trip', 'started_at') %}
+      {% set e = state_attr('sensor.__DEVICE___last_trip', 'ended_at') %}
+      {% if s and e %}
+        {% set s_ts = s | as_timestamp(0) %}
+        {% set e_ts = e | as_timestamp(0) %}
+        {% set same_day = s_ts | timestamp_custom('%Y-%m-%d', true) ==
+                          e_ts | timestamp_custom('%Y-%m-%d', true) %}
+        {{ s_ts | timestamp_custom('%d %b %H:%M', true) }}
+        →
+        {{ e_ts | timestamp_custom('%H:%M' if same_day else '%d %b %H:%M', true) }}
+      {% elif s %}
+        {{ s | as_timestamp(0) | timestamp_custom('%d %b %H:%M', true) }}
+      {% else %}
+        —
+      {% endif %}
     icon: mdi:magnify
 
   # ── KPI grid (2×2) ────────────────────────────────────────────────
