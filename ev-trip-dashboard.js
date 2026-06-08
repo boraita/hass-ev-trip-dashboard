@@ -2639,27 +2639,79 @@ class EvTripJourneyCard extends HTMLElement {
       .filter((t) => String(t.journey_id) === String(jid))
       .sort((a, b) => new Date(a.started_at) - new Date(b.started_at));
   }
-  // Render the expandable list of stages (one row per sub-trip).
+  // Fetch outside-temperature at each stage's start/end from recorder history
+  // (the logger doesn't populate avg_temp_c). Cached per trip id, lazy.
+  _fetchStageTemps(stages) {
+    const ent = this._config.tempEntity;
+    this._temps = this._temps || {};
+    if (!ent || !this._hass) return;
+    for (const t of stages) {
+      const id = t.id != null ? t.id : t.trip_id;
+      if (id == null || !t.started_at || !t.ended_at || this._temps[id] !== undefined) continue;
+      this._temps[id] = "loading";
+      let start, end;
+      try {
+        start = new Date(new Date(t.started_at).getTime() - 120000).toISOString();
+        end = new Date(new Date(t.ended_at).getTime() + 120000).toISOString();
+      } catch (_e) { this._temps[id] = {}; continue; }
+      Promise.resolve(this._hass.callApi("GET", `history/period/${start}?end_time=${end}&filter_entity_id=${ent}&minimal_response`))
+        .then((res) => {
+          const ser = Array.isArray(res) && res[0] ? res[0] : [];
+          const vals = ser.map((p) => parseFloat(p.state)).filter((v) => !isNaN(v));
+          this._temps[id] = vals.length ? { start: vals[0], end: vals[vals.length - 1] } : {};
+          this._render();
+        })
+        .catch(() => { this._temps[id] = {}; this._render(); });
+    }
+  }
+  // Render the expandable list of stages (one rich block per sub-trip) + totals.
   _stagesHtml(stages) {
     if (!stages || !stages.length) return "";
+    this._temps = this._temps || {};
     const DASH = "—";
     const f0 = (v) => (v == null || isNaN(v) ? DASH : Number(v).toFixed(0));
     const f1 = (v) => (v == null || isNaN(v) ? DASH : Number(v).toFixed(1));
+    const f2 = (v) => (v == null || isNaN(v) ? DASH : Number(v).toFixed(2));
     const tod = (iso) => { const d = new Date(iso); return isNaN(d) ? DASH : `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`; };
+    const sym = (c) => ({ EUR: "€", USD: "$", GBP: "£" }[c] || c || "€");
+    const sum = (k) => stages.reduce((s, x) => s + (Number(x[k]) || 0), 0);
+    const totCost = stages.some((x) => x.cost != null) ? sum("cost") : null;
+    const totRegen = stages.some((x) => x.regen_kwh != null) ? sum("regen_kwh") : null;
+    const totals = `<div class="jstotals">
+        <b>${f0(sum("distance_km"))}</b> km · <b>${f1(sum("energy_kwh"))}</b> kWh${totCost != null ? ` · <b>${f2(totCost)} ${_esc(sym(stages.find((x) => x.currency) && stages.find((x) => x.currency).currency))}</b>` : ""}${totRegen ? ` · ↻ <b>${f1(totRegen)}</b> kWh regen` : ""} · ${stages.length} ${stages.length === 1 ? "stage" : "stages"}
+      </div>`;
+    const chip = (icon, label, value) => (value == null || value === "" ? "" : `<span class="jm"><ha-icon icon="${icon}"></ha-icon>${label ? `<span class="jm-l">${label}</span>` : ""}<b>${value}</b></span>`);
     const rows = stages
       .map((t, i) => {
-        const cons = t.consumption_kwh_100km != null && Number(t.consumption_kwh_100km) >= 0 ? `${f1(t.consumption_kwh_100km)} kWh/100` : DASH;
+        const id = t.id != null ? t.id : t.trip_id;
+        const tp = this._temps[id];
+        const tempVal = tp === "loading" ? "…" : tp && (tp.start != null || tp.end != null) ? `${tp.start != null ? f0(tp.start) : DASH}→${tp.end != null ? f0(tp.end) : DASH}°C` : null;
+        const cons = t.consumption_kwh_100km != null && Number(t.consumption_kwh_100km) >= 0 ? `${f1(t.consumption_kwh_100km)} kWh/100` : null;
+        const soc = t.soc_start != null && t.soc_end != null ? `${f0(t.soc_start)}→${f0(t.soc_end)}%${t.soc_used_pct != null ? ` (${f0(t.soc_used_pct)})` : ""}` : null;
         const pill = t.score != null ? `<span class="js-pill" style="background:${_scoreColor(t.score)}">${f1(t.score)}</span>` : "";
+        const metrics =
+          chip("mdi:timer-outline", "", t.duration_min != null ? `${f0(t.duration_min)} min` : null) +
+          chip("mdi:speedometer", "", t.avg_speed_kmh != null ? `${f0(t.avg_speed_kmh)} km/h` : null) +
+          chip("mdi:lightning-bolt", "", t.energy_kwh != null ? `${f1(t.energy_kwh)} kWh` : null) +
+          chip("mdi:chart-line", "", cons) +
+          chip("mdi:battery", "", soc) +
+          chip("mdi:cash", "", t.cost != null ? `${f2(t.cost)} ${sym(t.currency)}` : null) +
+          chip("mdi:sync", "regen", t.regen_kwh != null ? `${f1(t.regen_kwh)} kWh` : null) +
+          chip("mdi:thermometer", "", tempVal) +
+          chip("mdi:flash", "max", t.max_power_kw != null ? `${f0(t.max_power_kw)} kW` : null) +
+          chip("mdi:speedometer-medium", "max", t.max_speed_kmh != null ? `${f0(t.max_speed_kmh)} km/h` : null);
         return `<div class="jstage">
-          <span class="js-n">${i + 1}</span>
-          <span class="js-time">${tod(t.started_at)}</span>
-          <span class="js-route">${_endpoint(t.start_address, t.origin)}<ha-icon icon="mdi:arrow-right"></ha-icon>${_endpoint(t.end_address, t.destination)}</span>
-          <span class="js-meta">${f0(t.distance_km)} km · ${cons}</span>
-          ${pill}
+          <div class="jstage-head">
+            <span class="js-n">${i + 1}</span>
+            <span class="js-time">${tod(t.started_at)}</span>
+            <span class="js-route">${_endpoint(t.start_address, t.origin)}<ha-icon icon="mdi:arrow-right"></ha-icon>${_endpoint(t.end_address, t.destination)}</span>
+            ${pill}
+          </div>
+          <div class="jstage-metrics">${metrics}</div>
         </div>`;
       })
       .join("");
-    return `<div class="jstages-list">${rows}</div>`;
+    return `<div class="jstages-list">${totals}${rows}</div>`;
   }
   _render() {
     if (!this._hass) return;
@@ -2756,6 +2808,7 @@ class EvTripJourneyCard extends HTMLElement {
     else if (chargedThis)
       chargeChip = `<span class="jchip jchg"><ha-icon icon="mdi:lightning-bolt"></ha-icon>Charged ${fmtNum(lc.state, 2)} kWh${lcLoc ? ` · ${_esc(lcLoc)}` : ""}</span>`;
 
+    if (this._open) this._fetchStageTemps(stages);
     const stageStr = `${isNaN(stagesNum) ? DASH : stagesNum} ${stagesNum === 1 ? "stage" : "stages"}`;
     const tile = (tIcon, label, value, unit) => `
       <div class="jt">
@@ -2797,19 +2850,27 @@ class EvTripJourneyCard extends HTMLElement {
           .jcaret{flex:0 0 auto;color:var(--secondary-text-color);transition:transform .15s ease;}
           .jcaret ha-icon{--mdc-icon-size:22px;}
           .jhead.jopen .jcaret{transform:rotate(180deg);}
-          .jstages-list{display:flex;flex-direction:column;gap:8px;padding:2px 14px 14px;
+          .jstages-list{display:flex;flex-direction:column;gap:10px;padding:6px 14px 14px;
                         border-top:1px solid var(--divider-color);margin-top:2px;}
-          .jstage{display:grid;grid-template-columns:auto auto 1fr auto auto;align-items:center;
-                  gap:8px;font-size:.85em;padding:8px 0;}
-          .jstage + .jstage{border-top:1px dashed var(--divider-color);}
-          .js-n{width:18px;height:18px;border-radius:50%;background:var(--secondary-background-color,var(--divider-color));
+          .jstotals{font-size:.85em;color:var(--secondary-text-color);font-variant-numeric:tabular-nums;padding-bottom:2px;}
+          .jstotals b{color:var(--primary-text-color);}
+          .jstage{display:flex;flex-direction:column;gap:6px;font-size:.85em;}
+          .jstage + .jstage{border-top:1px dashed var(--divider-color);padding-top:10px;}
+          .jstage-head{display:flex;align-items:center;gap:8px;}
+          .js-n{flex:0 0 auto;width:18px;height:18px;border-radius:50%;background:var(--secondary-background-color,var(--divider-color));
                 color:var(--secondary-text-color);font-size:.72em;font-weight:700;display:flex;align-items:center;justify-content:center;}
-          .js-time{font-weight:700;font-variant-numeric:tabular-nums;color:var(--primary-text-color);}
-          .js-route{display:flex;align-items:center;gap:4px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+          .js-time{flex:0 0 auto;font-weight:700;font-variant-numeric:tabular-nums;color:var(--primary-text-color);}
+          .js-route{flex:1 1 auto;display:flex;align-items:center;gap:4px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
           .js-route ha-icon{--mdc-icon-size:13px;color:var(--secondary-text-color);flex:0 0 auto;}
-          .js-meta{color:var(--secondary-text-color);font-variant-numeric:tabular-nums;white-space:nowrap;}
-          .js-pill{min-width:26px;text-align:center;padding:1px 6px;border-radius:999px;color:#fff;
+          .js-pill{flex:0 0 auto;min-width:26px;text-align:center;padding:1px 6px;border-radius:999px;color:#fff;
                    font-weight:800;font-size:.78em;font-variant-numeric:tabular-nums;}
+          .jstage-metrics{display:flex;flex-wrap:wrap;gap:6px;}
+          .jm{display:inline-flex;align-items:center;gap:4px;background:var(--secondary-background-color,var(--card-background-color));
+              border:1px solid var(--divider-color);border-radius:8px;padding:3px 8px;font-size:.92em;
+              color:var(--secondary-text-color);font-variant-numeric:tabular-nums;}
+          .jm ha-icon{--mdc-icon-size:14px;}
+          .jm-l{text-transform:uppercase;font-size:.82em;letter-spacing:.03em;}
+          .jm b{color:var(--primary-text-color);font-weight:700;}
         </style>
         <div class="jhead${stages.length ? " jclickable" : ""}${this._open ? " jopen" : ""}">
           <div class="jbadge"><ha-icon icon="${icon}"></ha-icon></div>
@@ -4890,9 +4951,10 @@ function drivingView(D, V, hass, cfg) {
   // Two fixed columns (exactly two sections, so each takes one column):
   //  • LEFT  = the sensor/status list, with Today's journey below it.
   //  • RIGHT = the live charts (Charging, Driving) with Last trip below them.
+  const jTempEntity = (cfg && cfg.outside_temp_entity) || pickVehicleEntity(hass, V, "outside_temp", cfg);
   const leftCards = status.concat([
     heading("Today's journey", "mdi:map-marker-path"),
-    { type: "custom:ev-trip-journey-card", device: D },
+    { type: "custom:ev-trip-journey-card", device: D, tempEntity: jTempEntity },
   ]);
   const rightCards = chartCards.concat(now);
 
