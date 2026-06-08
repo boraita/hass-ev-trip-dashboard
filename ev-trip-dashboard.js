@@ -1218,7 +1218,9 @@ function trips30dKpis(D) {
 // ev-trip-history-card (kind=charges) for the per-day grouped list ·
 // Floating "+" button to fire the ev_trip_logger.log_charge service.
 // ==========================================================================
-function cargasView(D, hass) {
+function cargasView(D, hass, V, cfg) {
+  cfg = cfg || {};
+  V = V || D;
   const cards = [];
 
   cards.push(mushroomTitle("Charges", "Last 30 days", "mdi:battery-charging"));
@@ -1367,46 +1369,12 @@ function cargasView(D, hass) {
   cards.push({ type: "custom:ev-trip-charge-insights-card", device: D });
 
   // ---- Reactive charges history (custom element from this plugin) ------
-  // Replaces the Jinja markdown blob; groups sessions by calendar day with
-  // expandable detail panels.
-  cards.push({ type: "custom:ev-trip-history-card", device: D, kind: "charges", title: "Charge history" });
-
-  // ---- Quick-fix the last charge's €/kWh -------------------------------
-  // Auto-detect saves charges at the home price; this lets you correct the
-  // most recent one on the fly. button-card can't template service_data, so
-  // the Apply button calls a runtime HA script `script.<device>_apply_charge_price`
-  // which reads the input_number via server-side Jinja and calls
-  // ev_trip_logger.set_last_charge_price. Set the value to 0 for a free charge.
-  // Shown only when BOTH the input_number helper and the script exist.
-  if (has(hass, `input_number.${D}_charge_price_edit`) && has(hass, `script.${D}_apply_charge_price`)) {
-    cards.push({
-      type: "vertical-stack",
-      cards: [
-        {
-          type: "entities",
-          title: "Fix last charge €/kWh",
-          show_header_toggle: false,
-          entities: [{ entity: `input_number.${D}_charge_price_edit`, name: "New €/kWh" }],
-        },
-        {
-          type: "custom:button-card",
-          name: "Apply to last charge",
-          icon: "mdi:content-save-outline",
-          show_state: false,
-          styles: {
-            card: [{ padding: "10px" }, { "border-radius": "12px" }, { "background-color": "var(--primary-color)" }],
-            name: [{ color: "white" }, { "font-weight": "600" }],
-            icon: [{ color: "white" }, { width: "22px" }],
-          },
-          tap_action: {
-            action: "call-service",
-            service: `script.${D}_apply_charge_price`,
-            service_data: {},
-          },
-        },
-      ],
-    });
-  }
+  // Groups sessions by calendar day with expandable detail panels. Each charge
+  // detail has an inline €/kWh editor (sets that specific charge by charge_id)
+  // and, for not_home charges, the geocoded street + a Google Maps link. This
+  // replaces the old "fix last charge" helper+script editor entirely.
+  const locationEntity = (cfg && cfg.location_entity) || (hass ? pickVehicleEntity(hass, V, "location", cfg) : null);
+  cards.push({ type: "custom:ev-trip-history-card", device: D, kind: "charges", title: "Charge history", locationEntity });
 
   return {
     title: "Charges",
@@ -2039,9 +2007,13 @@ class EvTripHistoryCard extends HTMLElement {
     this._device = this._config.device || null;
     this._kind = this._config.kind === "charges" ? "charges" : "journeys";
     this._curves = this._curves || {}; // charge_id -> points | 'loading'
+    this._streets = this._streets || {}; // charge_id -> {label,lat,lon} | 'loading'
   }
   set hass(hass) {
     this._hass = hass;
+    // Don't blow away an in-progress price edit when an unrelated state update
+    // arrives — re-render is resumed once the input loses focus / is applied.
+    if (this._editing) return;
     this._render();
   }
   getCardSize() {
@@ -2054,6 +2026,15 @@ class EvTripHistoryCard extends HTMLElement {
     this.addEventListener("click", (ev) => {
       const tgt = ev.target;
       if (!tgt || !tgt.closest) return;
+      // Inline price editor: Apply button sets THIS charge's €/kWh.
+      const apply = tgt.closest(".cp-apply[data-charge-id]");
+      if (apply && this.contains(apply)) {
+        ev.stopPropagation();
+        this._applyPrice(apply.getAttribute("data-charge-id"));
+        return;
+      }
+      // Clicks inside the editor row must not toggle the day open/closed.
+      if (tgt.closest(".cp-edit")) { ev.stopPropagation(); return; }
       const j = tgt.closest(".journey[data-journey-id]");
       if (j && this.contains(j)) {
         const id = j.getAttribute("data-journey-id");
@@ -2070,6 +2051,25 @@ class EvTripHistoryCard extends HTMLElement {
         this._render();
       }
     });
+    // Pause re-render while the user is typing in a price input.
+    this.addEventListener("focusin", (ev) => { if (ev.target && ev.target.closest && ev.target.closest(".cp-input")) this._editing = true; });
+    this.addEventListener("focusout", (ev) => { if (ev.target && ev.target.closest && ev.target.closest(".cp-input")) this._editing = false; });
+  }
+  _applyPrice(chargeId) {
+    const id = parseInt(chargeId, 10);
+    if (isNaN(id)) return;
+    const input = this.querySelector(`.cp-input[data-charge-id="${chargeId}"]`);
+    if (!input) return;
+    const price = parseFloat(String(input.value).replace(",", "."));
+    if (isNaN(price) || price < 0) { input.focus(); return; }
+    this._editing = false;
+    const data = { charge_id: id, price_per_kwh: price };
+    if (this._config.entry_id) data.entry_id = this._config.entry_id;
+    // ev_trip_logger.set_last_charge_price targets a specific charge when
+    // charge_id is given, and sets price_locked=1 (so the editor then hides).
+    Promise.resolve(this._hass.callService("ev_trip_logger", "set_last_charge_price", data))
+      .then(() => { this._render(); })
+      .catch((e) => { console.error("set charge price failed", e); this._render(); });
   }
   _render() {
     if (!this._hass) return;
@@ -2098,7 +2098,7 @@ class EvTripHistoryCard extends HTMLElement {
     const fmtNum = (v, dp) => (v == null || isNaN(v) ? DASH : dp == null ? String(v) : Number(v).toFixed(dp));
 
     const inner = kind === "journeys" ? this._journeysHtml(rows, D, sym, DASH, fmtNum) : this._chargesHtml(rows, sym, DASH, fmtNum);
-    if (kind === "charges") this._fetchOpenDayCurves(rows);
+    if (kind === "charges") { this._fetchOpenDayCurves(rows); this._fetchOpenChargeStreets(rows); }
 
     this.innerHTML = `
       <ha-card>
@@ -2189,6 +2189,24 @@ class EvTripHistoryCard extends HTMLElement {
           .session .smetrics{font-size:.8em;color:var(--secondary-text-color);
                              font-variant-numeric:tabular-nums;}
           .session .smetrics b{color:var(--primary-text-color);font-weight:700;}
+          /* ---- not_home street + maps link ---- */
+          .s-loc{display:flex;align-items:center;gap:5px;font-size:.82em;padding:4px 4px 0;color:var(--secondary-text-color);}
+          .s-loc ha-icon{--mdc-icon-size:15px;color:var(--info-color,#039be5);flex:0 0 auto;}
+          .s-loc a{color:var(--info-color,#039be5);text-decoration:none;font-weight:600;}
+          .s-loc a:hover{text-decoration:underline;}
+          /* ---- inline per-charge price editor ---- */
+          .cp-edit{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:8px 4px 4px;}
+          .cp-lbl{font-size:.8em;color:var(--secondary-text-color);}
+          .cp-input{width:92px;padding:6px 8px;border-radius:8px;border:1px solid var(--divider-color);
+                    background:var(--card-background-color);color:var(--primary-text-color);
+                    font-size:.95em;font-variant-numeric:tabular-nums;}
+          .cp-apply{display:inline-flex;align-items:center;gap:3px;cursor:pointer;border:none;
+                    border-radius:8px;padding:6px 12px;font-size:.85em;font-weight:700;
+                    background:var(--primary-color);color:#fff;}
+          .cp-apply ha-icon{--mdc-icon-size:16px;}
+          .cp-locked{display:flex;align-items:center;gap:5px;font-size:.82em;padding:8px 4px 4px;
+                     color:var(--success-color,#43a047);font-weight:600;font-variant-numeric:tabular-nums;}
+          .cp-locked ha-icon{--mdc-icon-size:15px;}
           .chip--ac{color:var(--success-color, #43a047);
                     border-color:var(--success-color, #43a047);}
           .chip--dc{color:var(--warning-color, #fb8c00);
@@ -2418,16 +2436,41 @@ class EvTripHistoryCard extends HTMLElement {
         if (cv == null || cv === "loading") curve = `<div class="cv-msg">Loading power curve…</div>`;
         else if (!Array.isArray(cv) || cv.length < 2) curve = `<div class="cv-msg">No power history for this charge.</div>`;
         else curve = _miniPowerSvg(cv);
+        const cid = c.charge_id != null ? c.charge_id : c.id;
+        const locked = c.price_locked === true;
+        // not_home → street + Google Maps link (geocoded from device_tracker
+        // history at charge time; charges carry no coordinates).
+        const isAway = !c.location || String(c.location).toLowerCase() === "not_home";
+        let locHtml = "";
+        if (this._config.locationEntity && isAway) {
+          const ss = this._streets[cid];
+          if (ss === undefined || ss === "loading") locHtml = `<div class="s-loc"><ha-icon icon="mdi:map-marker"></ha-icon> locating…</div>`;
+          else if (ss && ss.lat != null) {
+            const q = `${ss.lat},${ss.lon}`;
+            locHtml = `<div class="s-loc"><ha-icon icon="mdi:map-marker"></ha-icon><a href="https://www.google.com/maps/search/?api=1&query=${q}" target="_blank" rel="noopener">${_esc(ss.label || "View on map")}</a></div>`;
+          }
+        }
+        // Inline €/kWh editor — sets THIS charge (charge_id). Hides once the
+        // price is locked (the service sets price_locked=1).
+        const priceHtml = locked
+          ? `<div class="cp-locked"><ha-icon icon="mdi:lock-check"></ha-icon>${fmtNum(c.price_per_kwh, 3)} ${_esc(sym(c.currency))}/kWh · set</div>`
+          : `<div class="cp-edit">
+               <span class="cp-lbl">Set €/kWh</span>
+               <input class="cp-input" data-charge-id="${_esc(cid)}" type="number" inputmode="decimal" step="0.001" min="0" placeholder="${fmtNum(c.price_per_kwh, 3)}" />
+               <button class="cp-apply" data-charge-id="${_esc(cid)}"><ha-icon icon="mdi:check"></ha-icon>Set</button>
+             </div>`;
         return `
           <div class="csession">
             <div class="session">
               <div class="sbody">
                 <div class="sroute">
                   <span class="stime">${timeOf(c.ended_at)}</span>
-                  <span class="chip">${_esc(c.location || DASH)}</span>
+                  <span class="chip">${_endpoint(null, c.location)}</span>
                   ${typeChip}
                 </div>
                 <div class="smetrics"><b>${fmtNum(c.kwh)}</b> kWh · <b>${fmtNum(c.price_per_kwh)}</b> ${_esc(sym(c.currency))}/kWh${extra}</div>
+                ${locHtml}
+                ${priceHtml}
               </div>
               <div class="score-pill" style="background:var(--info-color, #039be5)">${total}</div>
             </div>
@@ -2453,6 +2496,41 @@ class EvTripHistoryCard extends HTMLElement {
       if (id == null || this._curves[id] !== undefined) continue;
       this._curves[id] = "loading";
       this._fetchCurve(D, c, id);
+    }
+  }
+
+  // For not_home charges of the open day, resolve the street: charges store no
+  // coordinates, so pull the device_tracker position during the charge window
+  // and reverse-geocode it (cached per charge_id).
+  _fetchOpenChargeStreets(rows) {
+    const ent = this._config.locationEntity;
+    if (!ent || this._openId == null || !this._hass) return;
+    const p = (n) => String(n).padStart(2, "0");
+    const dayKey = (iso) => { const d = new Date(iso); return isNaN(d) ? "unknown" : `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`; };
+    const sessions = rows.filter((c) => dayKey(c.ended_at) === this._openId);
+    for (const c of sessions) {
+      const id = c.charge_id != null ? c.charge_id : c.id;
+      const isAway = !c.location || String(c.location).toLowerCase() === "not_home";
+      if (id == null || !isAway || this._streets[id] !== undefined) continue;
+      this._streets[id] = "loading";
+      let start, end;
+      try {
+        start = new Date(new Date(c.started_at).getTime() - 120000).toISOString();
+        end = new Date(new Date(c.ended_at || c.started_at).getTime() + 120000).toISOString();
+      } catch (_e) { this._streets[id] = {}; continue; }
+      Promise.resolve(this._hass.callApi("GET", `history/period/${start}?end_time=${end}&filter_entity_id=${ent}&significant_changes_only=0`))
+        .then((res) => {
+          const ser = Array.isArray(res) && res[0] ? res[0] : [];
+          let lat = null, lon = null;
+          for (const x of ser) {
+            const a = x.attributes || {};
+            const la = parseFloat(a.latitude), lo = parseFloat(a.longitude);
+            if (!isNaN(la) && !isNaN(lo)) { lat = la; lon = lo; break; }
+          }
+          if (lat == null) { this._streets[id] = {}; this._render(); return; }
+          _reverseGeocode(lat, lon).then((label) => { this._streets[id] = { label: label || null, lat, lon }; this._render(); });
+        })
+        .catch(() => { this._streets[id] = {}; this._render(); });
     }
   }
   _fetchCurve(D, c, id) {
@@ -4629,14 +4707,14 @@ function drivingView(D, V, hass, cfg) {
   // (The live "Charging now" details are already rendered by the richer
   // ev-charge-status-card in the status grid above — no duplicate glance here.)
 
-  const sections = [grid(status), grid(now)];
-
   // Live time-series: charging (SoC + power) and driving (SoC + speed + range).
   // Real entity-history apex charts (graph_span based) — they render fine,
   // unlike the category apex charts we replaced. Resolved generically so they
   // work across car integrations; each series is added only when its entity
   // currently has a value, and a chart is shown only with SoC + ≥1 other line.
   // Gated on apexcharts so the heading never orphans when the dep is absent.
+  // Placed just ABOVE the "Last trip" section.
+  const chartSections = [];
   if (hass && hasCard("apexcharts-card")) {
     // Resolve by EXISTENCE (not current value): apex plots recorder history,
     // so a momentarily-unknown reading (e.g. a Tesla asleep) must not hide a
@@ -4656,7 +4734,7 @@ function drivingView(D, V, hass, cfg) {
     if (powerEnt && has(hass, powerEnt)) chgSeries.push({ entity: powerEnt, name: "Power kW", yaxis_id: "power", stroke_width: 2, color: "#9C27B0", ...(wTransform(powerEnt) ? { transform: wTransform(powerEnt) } : {}) });
     if (curveEnt !== powerEnt && has(hass, curveEnt)) chgSeries.push({ entity: curveEnt, name: "Curve kW", yaxis_id: "power", stroke_width: 1, color: "#FFC107", ...(wTransform(curveEnt) ? { transform: wTransform(curveEnt) } : {}) });
     if (chgSeries.length >= 2) {
-      sections.push({
+      chartSections.push({
         type: "grid", column_span: 2,
         cards: [
           heading("Charging (6h)", "mdi:ev-station"),
@@ -4676,7 +4754,7 @@ function drivingView(D, V, hass, cfg) {
     if (speedEnt && has(hass, speedEnt)) drvSeries.push({ entity: speedEnt, name: "Speed km/h", yaxis_id: "speed", stroke_width: 2, color: "#F44336" });
     if (rangeEnt && has(hass, rangeEnt)) drvSeries.push({ entity: rangeEnt, name: "Range km", yaxis_id: "speed", stroke_width: 1, color: "#9E9E9E" });
     if (drvSeries.length >= 2) {
-      sections.push({
+      chartSections.push({
         type: "grid", column_span: 2,
         cards: [
           heading("Driving (3h)", "mdi:speedometer"),
@@ -4689,6 +4767,9 @@ function drivingView(D, V, hass, cfg) {
       });
     }
   }
+
+  // Order: status → live charts → Last trip → Today's journey.
+  const sections = [grid(status), ...chartSections, grid(now)];
 
   // Today's journey — full width across both columns (replaces the map).
   sections.push({
@@ -4825,7 +4906,7 @@ class EvTripDashboardStrategy {
       patternsView(D, hass),
       eficienciaView(D, hass),
       // (Records/Tops view removed — per-trip "biggest/best" rankings weren't useful.)
-      cargasView(D, hass),
+      cargasView(D, hass, V, config),
     ];
     // Swap any uninstalled HACS custom card (button-card/mushroom/apex/mini-graph)
     // for a native fallback so the dashboard never shows "Configuration error".
