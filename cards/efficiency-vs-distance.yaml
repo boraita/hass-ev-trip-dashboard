@@ -1,0 +1,55 @@
+# Efficiency vs Distance scatter — kWh/100km on Y vs distance_km on X.
+# Mirrors the BYD-app scatter chart and surfaces patterns like
+# "short trips waste more energy" or "highway dominant trips cluster
+# around 17 kWh/100km". Uses apex-charts (HACS Frontend dependency).
+#
+# Replace __DEVICE__ with your ev_trip_logger device slug.
+
+type: custom:apexcharts-card
+header:
+  show: true
+  title: Eficiencia vs distancia
+  show_states: false
+graph_span: 30d
+chart_type: scatter
+apex_config:
+  chart:
+    height: 320
+  xaxis:
+    type: numeric
+    logarithmic: true
+    title:
+      text: Distancia (km)
+    min: 1
+    max: 500
+  yaxis:
+    title:
+      text: kWh / 100 km
+    min: 0
+    max: 40
+  markers:
+    size: 5
+  tooltip:
+    custom: |
+      EVAL:function({seriesIndex, dataPointIndex, w}) {
+        const p = w.config.series[seriesIndex].data[dataPointIndex];
+        return `<div style="padding:6px 10px">` +
+          `<b>${p.tripId ? '#' + p.tripId : ''}</b><br>` +
+          `${p.x} km · ${p.y} kWh/100km<br>` +
+          `${p.origin || ''} → ${p.destination || ''}` +
+          `</div>`;
+      }
+series:
+  - entity: sensor.__DEVICE___recent_trips
+    name: Trips
+    data_generator: |
+      const trips = entity.attributes.trips || [];
+      return trips
+        .filter(t => t.distance_km > 0 && t.consumption_kwh_100km > 0)
+        .map(t => ({
+          x: t.distance_km,
+          y: t.consumption_kwh_100km,
+          tripId: t.trip_id,
+          origin: t.origin,
+          destination: t.destination,
+        }));

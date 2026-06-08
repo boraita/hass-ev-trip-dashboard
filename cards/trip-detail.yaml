@@ -229,17 +229,29 @@ cards:
 
   # v0.5.25 — route map with NUMBERED waypoints from
   # sensor.<device>_last_trip_route.points (populated for both live and
-  # synthetic trips). Falls through to the previous start/end-only map
-  # for older trips without route data.
+  # synthetic trips). v0.5.26 — when __GEOAPIFY_KEY__ is set, the map
+  # uses Geoapify's static-map with a road-fit polyline (mirrors the
+  # BYD app's "Ruta ajustada a carretera"). Fallback to OSM markers.
+  # Falls through to the previous start/end-only map for older trips.
   - type: markdown
     content: >-
       {% set pts = state_attr('sensor.__DEVICE___last_trip_route', 'points') or [] %}
       {% set t = state_attr('sensor.__DEVICE___recent_trips', 'trips')[0] %}
+      {% set api_key = '__GEOAPIFY_KEY__' %}
+      {% set gps_km = t.gps_distance_km if t and t.gps_distance_km is not none else None %}
       {% if pts | length >= 2 %}
       {%- set lats = pts | map(attribute='lat') | list %}
       {%- set lons = pts | map(attribute='lon') | list %}
       {%- set c_lat = (lats | sum) / (lats | length) %}
       {%- set c_lon = (lons | sum) / (lons | length) %}
+      {%- if api_key != '__' ~ 'GEOAPIFY_KEY__' %}
+      {%- set geom_pairs = [] %}
+      {%- for p in pts %}{%- set _ = geom_pairs.append(p.lon ~ ',' ~ p.lat) %}{%- endfor %}
+      {%- set route = geom_pairs | join('%7C') %}
+      {%- set marker_start = pts[0].lon ~ ',' ~ pts[0].lat ~ ';type:awesome;color:green;size:medium' %}
+      {%- set marker_end = pts[-1].lon ~ ',' ~ pts[-1].lat ~ ';type:awesome;color:red;size:medium' %}
+      ![map](https://maps.geoapify.com/v1/staticmap?style=osm-bright&width=640&height=360&geometry=polyline:{{ route }};linecolor:%2300bfff;linewidth:5&marker=lonlat:{{ marker_start }}|lonlat:{{ marker_end }}&apiKey={{ api_key }})
+      {%- else %}
       {%- set markers = [] %}
       {%- for p in pts %}
       {%-   if loop.first %}
@@ -251,8 +263,9 @@ cards:
       {%-   endif %}
       {%- endfor %}
       ![map](https://staticmap.openstreetmap.de/staticmap.php?center={{ c_lat }},{{ c_lon }}&zoom=12&size=640x360&markers={{ markers | join('|') }})
+      {%- endif %}
 
-      **Recorrido — {{ pts | length }} puntos**
+      **Recorrido — {{ pts | length }} puntos GPS{% if gps_km is not none %} · {{ gps_km }} km{% endif %}**
 
       {% for p in pts -%}
       {%- if loop.first -%}🟢{%- elif loop.last -%}🔴{%- else -%}🔵{%- endif %} **{{ p.index }}.** [{{ '%.5f, %.5f'|format(p.lat, p.lon) }}](https://www.google.com/maps?q={{ p.lat }},{{ p.lon }})

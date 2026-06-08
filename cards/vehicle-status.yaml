@@ -1,0 +1,149 @@
+# Vehicle physical status — doors, windows, hood/trunk, cabin air,
+# thermal sensors. Inspired by the BYD app's "Vehicle Details" modal.
+# All entities are manufacturer-specific; replace placeholders:
+#
+#   __VEHICLE__       → manufacturer prefix (e.g. byd_sealion_7)
+#
+# Sensors/binary_sensors expected (BYD example):
+#   binary_sensor.__VEHICLE___door_fl  / _fr / _rl / _rr / _hood / _trunk
+#   binary_sensor.__VEHICLE___window_fl / _fr / _rl / _rr
+#   sensor.__VEHICLE___cabin_temperature
+#   sensor.__VEHICLE___exterior_temperature
+#   sensor.__VEHICLE___pm25_interior
+#   sensor.__VEHICLE___pm25_exterior
+#
+# If your integration uses different names, edit the entity_id lines —
+# the placeholder substitution only replaces __VEHICLE__.
+
+type: vertical-stack
+cards:
+  - type: custom:mushroom-title-card
+    title: Estado del vehículo
+    subtitle: Puertas, ventanas, cabina, calidad de aire
+
+  # ── DOORS / HOOD / TRUNK ──────────────────────────────────────────
+  - type: custom:mushroom-template-card
+    primary: Aperturas
+    secondary: >-
+      {% set parts = namespace(open=[]) %}
+      {% for key in [
+        ('door_fl','FL'),('door_fr','FR'),('door_rl','RL'),('door_rr','RR'),
+        ('hood','Capó'),('trunk','Maletero')
+      ] %}
+        {% set st = states('binary_sensor.__VEHICLE___' ~ key[0]) %}
+        {% if st == 'on' %}{% set parts.open = parts.open + [key[1]] %}{% endif %}
+      {% endfor %}
+      {% if parts.open | length == 0 %}
+        Todo cerrado
+      {% else %}
+        Abierto: {{ parts.open | join(', ') }}
+      {% endif %}
+    icon: mdi:car-door
+    icon_color: >-
+      {% set ns = namespace(any_open=false) %}
+      {% for key in ['door_fl','door_fr','door_rl','door_rr','hood','trunk'] %}
+        {% if states('binary_sensor.__VEHICLE___' ~ key) == 'on' %}
+          {% set ns.any_open = true %}
+        {% endif %}
+      {% endfor %}
+      {{ 'red' if ns.any_open else 'green' }}
+    fill_container: true
+
+  # ── WINDOWS ───────────────────────────────────────────────────────
+  - type: custom:mushroom-template-card
+    primary: Ventanas
+    secondary: >-
+      {% set parts = namespace(open=[]) %}
+      {% for key in [('window_fl','FL'),('window_fr','FR'),('window_rl','RL'),('window_rr','RR')] %}
+        {% set st = states('binary_sensor.__VEHICLE___' ~ key[0]) %}
+        {% if st == 'on' %}{% set parts.open = parts.open + [key[1]] %}{% endif %}
+      {% endfor %}
+      {% if parts.open | length == 0 %}
+        Todas cerradas
+      {% else %}
+        Abierta: {{ parts.open | join(', ') }}
+      {% endif %}
+    icon: mdi:car-windshield
+    icon_color: >-
+      {% set ns = namespace(any_open=false) %}
+      {% for key in ['window_fl','window_fr','window_rl','window_rr'] %}
+        {% if states('binary_sensor.__VEHICLE___' ~ key) == 'on' %}
+          {% set ns.any_open = true %}
+        {% endif %}
+      {% endfor %}
+      {{ 'amber' if ns.any_open else 'green' }}
+    fill_container: true
+
+  # ── THERMAL SENSORS ───────────────────────────────────────────────
+  - type: grid
+    columns: 2
+    square: false
+    cards:
+      - type: custom:button-card
+        entity: sensor.__VEHICLE___cabin_temperature
+        name: Cabina
+        show_state: true
+        icon: mdi:car-seat
+        styles:
+          card:
+            - padding: 12px
+            - border-radius: 16px
+          name:
+            - font-size: 12px
+            - opacity: "0.7"
+          state:
+            - font-size: 22px
+            - font-weight: bold
+
+      - type: custom:button-card
+        entity: sensor.__VEHICLE___exterior_temperature
+        name: Exterior
+        show_state: true
+        icon: mdi:thermometer
+        styles:
+          card:
+            - padding: 12px
+            - border-radius: 16px
+          name:
+            - font-size: 12px
+            - opacity: "0.7"
+          state:
+            - font-size: 22px
+            - font-weight: bold
+
+  # ── AIR QUALITY (PM2.5 interior / exterior) ───────────────────────
+  - type: grid
+    columns: 2
+    square: false
+    cards:
+      - type: custom:button-card
+        entity: sensor.__VEHICLE___pm25_interior
+        name: AQ Interior
+        show_state: true
+        icon: mdi:air-filter
+        styles:
+          card:
+            - padding: 12px
+            - border-radius: 16px
+          name:
+            - font-size: 12px
+            - opacity: "0.7"
+          state:
+            - font-size: 22px
+            - font-weight: bold
+
+      - type: custom:button-card
+        entity: sensor.__VEHICLE___pm25_exterior
+        name: AQ Exterior
+        show_state: true
+        icon: mdi:weather-windy
+        styles:
+          card:
+            - padding: 12px
+            - border-radius: 16px
+          name:
+            - font-size: 12px
+            - opacity: "0.7"
+          state:
+            - font-size: 22px
+            - font-weight: bold
