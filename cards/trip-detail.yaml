@@ -175,6 +175,36 @@ cards:
         grey
       {% endif %}
 
+  # ── Charging context (kWh added BEFORE / DURING this trip) ──────
+  # When the SoC delta of a trip would be misleading because the car
+  # was charged between the previous trip and this one (or — rare —
+  # DURING this trip), show the kWh added so the user can interpret
+  # the numbers. Hidden when no charging happened in either window.
+  - type: conditional
+    conditions:
+      - condition: template
+        value_template: >-
+          {% set t = state_attr('sensor.__DEVICE___recent_trips', 'trips')[0] %}
+          {{ t and ((t.kwh_charged_before or 0) > 0 or (t.kwh_charged_during or 0) > 0) }}
+    card:
+      type: custom:mushroom-template-card
+      primary: Carga relacionada
+      secondary: >-
+        {% set t = state_attr('sensor.__DEVICE___recent_trips', 'trips')[0] %}
+        {% set b = t.kwh_charged_before or 0 %}
+        {% set d = t.kwh_charged_during or 0 %}
+        {% if b > 0 and d > 0 %}
+          ↩ Antes: {{ b }} kWh · 🛑 Durante: {{ d }} kWh
+        {% elif b > 0 %}
+          ↩ Antes: {{ b }} kWh (cargó entre el trip anterior y éste)
+        {% elif d > 0 %}
+          🛑 Durante: {{ d }} kWh (carga dentro de la ventana del trip)
+        {% endif %}
+      icon: mdi:battery-plus
+      icon_color: teal
+      fill_container: true
+      multiline_secondary: true
+
   # ── Estimated cost for this trip ──────────────────────────────────
   - type: custom:button-card
     entity: sensor.__DEVICE___last_trip_cost
