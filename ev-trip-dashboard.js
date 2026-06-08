@@ -4719,8 +4719,8 @@ function drivingView(D, V, hass, cfg) {
   // work across car integrations; each series is added only when its entity
   // currently has a value, and a chart is shown only with SoC + ≥1 other line.
   // Gated on apexcharts so the heading never orphans when the dep is absent.
-  // Placed just ABOVE the "Last trip" section.
-  const chartSections = [];
+  // These go in the RIGHT column (with Last trip below them).
+  const chartCards = [];
   if (hass && hasCard("apexcharts-card")) {
     // Resolve by EXISTENCE (not current value): apex plots recorder history,
     // so a momentarily-unknown reading (e.g. a Tesla asleep) must not hide a
@@ -4740,17 +4740,14 @@ function drivingView(D, V, hass, cfg) {
     if (powerEnt && has(hass, powerEnt)) chgSeries.push({ entity: powerEnt, name: "Power kW", yaxis_id: "power", stroke_width: 2, color: "#9C27B0", ...(wTransform(powerEnt) ? { transform: wTransform(powerEnt) } : {}) });
     if (curveEnt !== powerEnt && has(hass, curveEnt)) chgSeries.push({ entity: curveEnt, name: "Curve kW", yaxis_id: "power", stroke_width: 1, color: "#FFC107", ...(wTransform(curveEnt) ? { transform: wTransform(curveEnt) } : {}) });
     if (chgSeries.length >= 2) {
-      chartSections.push({
-        type: "grid", column_span: 2,
-        cards: [
-          heading("Charging (6h)", "mdi:ev-station"),
-          apexChart({
-            title: "Charging (6h)", chartType: "line", graphSpan: "6h", headerShowStates: true,
-            yaxis: [{ id: "soc", min: 0, max: 100, decimals: 0, apex_config: { forceNiceScale: true } }, { id: "power", opposite: true, min: 0, decimals: 1, apex_config: { forceNiceScale: true } }],
-            series: chgSeries,
-          }),
-        ],
-      });
+      chartCards.push(
+        heading("Charging (6h)", "mdi:ev-station"),
+        apexChart({
+          title: "Charging (6h)", chartType: "line", graphSpan: "6h", headerShowStates: true,
+          yaxis: [{ id: "soc", min: 0, max: 100, decimals: 0, apex_config: { forceNiceScale: true } }, { id: "power", opposite: true, min: 0, decimals: 1, apex_config: { forceNiceScale: true } }],
+          series: chgSeries,
+        })
+      );
     }
 
     // --- Driving (3h): SoC + speed + range --------------------------------
@@ -4760,32 +4757,27 @@ function drivingView(D, V, hass, cfg) {
     if (speedEnt && has(hass, speedEnt)) drvSeries.push({ entity: speedEnt, name: "Speed km/h", yaxis_id: "speed", stroke_width: 2, color: "#F44336" });
     if (rangeEnt && has(hass, rangeEnt)) drvSeries.push({ entity: rangeEnt, name: "Range km", yaxis_id: "speed", stroke_width: 1, color: "#9E9E9E" });
     if (drvSeries.length >= 2) {
-      chartSections.push({
-        type: "grid", column_span: 2,
-        cards: [
-          heading("Driving (3h)", "mdi:speedometer"),
-          apexChart({
-            title: "Driving (3h)", chartType: "line", graphSpan: "3h", headerShowStates: true,
-            yaxis: [{ id: "soc", min: 0, max: 100, decimals: 0, apex_config: { forceNiceScale: true } }, { id: "speed", opposite: true, min: 0, decimals: 0, apex_config: { forceNiceScale: true } }],
-            series: drvSeries,
-          }),
-        ],
-      });
+      chartCards.push(
+        heading("Driving (3h)", "mdi:speedometer"),
+        apexChart({
+          title: "Driving (3h)", chartType: "line", graphSpan: "3h", headerShowStates: true,
+          yaxis: [{ id: "soc", min: 0, max: 100, decimals: 0, apex_config: { forceNiceScale: true } }, { id: "speed", opposite: true, min: 0, decimals: 0, apex_config: { forceNiceScale: true } }],
+          series: drvSeries,
+        })
+      );
     }
   }
 
-  // Order: status → live charts → Last trip → Today's journey.
-  const sections = [grid(status), ...chartSections, grid(now)];
+  // Two fixed columns (exactly two sections, so each takes one column):
+  //  • LEFT  = the sensor/status list, with Today's journey below it.
+  //  • RIGHT = the live charts (Charging, Driving) with Last trip below them.
+  const leftCards = status.concat([
+    heading("Today's journey", "mdi:map-marker-path"),
+    { type: "custom:ev-trip-journey-card", device: D },
+  ]);
+  const rightCards = chartCards.concat(now);
 
-  // Today's journey — full width across both columns (replaces the map).
-  sections.push({
-    type: "grid",
-    column_span: 2,
-    cards: [
-      heading("Today's journey", "mdi:map-marker-path"),
-      { type: "custom:ev-trip-journey-card", device: D },
-    ],
-  });
+  const sections = [grid(leftCards), grid(rightCards)];
 
   return { title: "Driving", path: "driving", icon: "mdi:car", type: "sections", max_columns: 2, sections };
 }
