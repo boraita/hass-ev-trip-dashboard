@@ -1,0 +1,87 @@
+# Monthly calendar — mirrors the BYD app's per-month grid with
+# trip / charge / today indicators.
+#
+# Each day cell can show:
+#   ⚡  — there was ≥1 trip ending that day
+#   🔌 — there was ≥1 charge ending that day
+#   ⚡🔌 — both
+#   [N] — today (square brackets)
+#
+# Replace __DEVICE__ with your ev_trip_logger device slug.
+#
+# Data sources:
+#   sensor.__DEVICE___daily_km_60d.days[]      → per-day distance
+#   sensor.__DEVICE___recent_charges.charges[] → recent charges
+
+type: vertical-stack
+cards:
+  - type: custom:mushroom-title-card
+    title: Calendario mensual
+    subtitle: >-
+      {% set names = ['Enero','Febrero','Marzo','Abril','Mayo','Junio',
+                      'Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'] %}
+      {{ names[now().month - 1] }} {{ now().year }}
+
+  - type: markdown
+    content: |
+      {% set today = now() %}
+      {% set y = today.year %}
+      {% set m = today.month %}
+      {% set d_today = today.day %}
+      {% set first_day = today.replace(day=1, hour=12, minute=0, second=0, microsecond=0) %}
+      {% set first_wd = first_day.weekday() %}
+      {% if m in [1,3,5,7,8,10,12] %}{% set dim = 31 %}
+      {% elif m == 2 %}
+        {% set leap = (y % 4 == 0 and (y % 100 != 0 or y % 400 == 0)) %}
+        {% set dim = 29 if leap else 28 %}
+      {% else %}{% set dim = 30 %}
+      {% endif %}
+
+      {% set trips_set = namespace(s=[]) %}
+      {% for d in (state_attr('sensor.__DEVICE___daily_km_60d', 'days') or []) %}
+        {% if d.day is string and d.day.startswith('%04d-%02d'|format(y, m))
+              and (d.distance_km | float(0)) > 0 %}
+          {% set _ = trips_set.s.append(d.day[-2:] | int) %}
+        {% endif %}
+      {% endfor %}
+
+      {% set charges_set = namespace(s=[]) %}
+      {% for c in (state_attr('sensor.__DEVICE___recent_charges', 'charges') or []) %}
+        {% if c.ended_at and c.ended_at.startswith('%04d-%02d'|format(y, m)) %}
+          {% set _ = charges_set.s.append(c.ended_at[8:10] | int) %}
+        {% endif %}
+      {% endfor %}
+
+      {% set cells = namespace(list=[]) %}
+      {% for _ in range(first_wd) %}
+        {% set _ = cells.list.append('    ') %}
+      {% endfor %}
+      {% for day in range(1, dim + 1) %}
+        {% set has_t = day in trips_set.s %}
+        {% set has_c = day in charges_set.s %}
+        {% if has_t and has_c %}{% set ind = '⚡🔌' %}
+        {% elif has_t %}{% set ind = ' ⚡ ' %}
+        {% elif has_c %}{% set ind = ' 🔌 ' %}
+        {% else %}{% set ind = '   ' %}
+        {% endif %}
+        {% if day == d_today %}
+          {% set txt = '[%2d]'|format(day) %}
+        {% else %}
+          {% set txt = ' %2d '|format(day) %}
+        {% endif %}
+        {% set _ = cells.list.append(txt ~ ind) %}
+      {% endfor %}
+      {% set total = cells.list | length %}
+      {% set pad = (7 - (total % 7)) % 7 %}
+      {% for _ in range(pad) %}{% set _ = cells.list.append('    ') %}{% endfor %}
+
+      ```
+        L     M     X     J     V     S     D
+      {% for i in range(0, cells.list | length, 7) -%}
+      {{ cells.list[i:i+7] | join(' ') }}
+      {% endfor %}
+      ```
+
+      **Leyenda:** ⚡ viaje · 🔌 carga · `[N]` hoy
+      · 🚗 {{ trips_set.s | length }} días conducidos
+      · 🔌 {{ charges_set.s | length }} días cargados
