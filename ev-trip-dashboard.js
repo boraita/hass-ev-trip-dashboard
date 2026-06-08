@@ -71,6 +71,7 @@ function pickVehicleEntity(hass, V, concept, cfg) {
     location: [`device_tracker.${V}_location`, `device_tracker.${V}`],
     plug: [`binary_sensor.${V}_plug`, `binary_sensor.${V}_charge_cable`, `binary_sensor.${V}_charging_cable`, `binary_sensor.${V}_charge_port`],
     charging: [`binary_sensor.${V}_charging`, `binary_sensor.${V}_charging_system`],
+    speed: [`sensor.${V}_speed`, `sensor.${V}_vehicle_speed`],
   };
   for (const e of NAMES[concept] || []) if (hasVal(hass, e)) return e;
   // Match the vehicle slug even when the car integration PREFIXES it
@@ -90,6 +91,7 @@ function pickVehicleEntity(hass, V, concept, cfg) {
     case "location": return find((id) => id.startsWith("device_tracker.")) || null;
     case "plug": return find((id) => id.startsWith("binary_sensor.") && (dc(id) === "plug" || /(plug|cable)/.test(id))) || null;
     case "charging": return find((id) => id.startsWith("binary_sensor.") && dc(id) === "battery_charging") || null;
+    case "speed": return find((id) => id.startsWith("sensor.") && (dc(id) === "speed" || /\b(km\/h|mph)\b/.test((hass.states[id].attributes || {}).unit_of_measurement || ""))) || null;
     default: return null;
   }
 }
@@ -4628,6 +4630,65 @@ function drivingView(D, V, hass, cfg) {
   // ev-charge-status-card in the status grid above — no duplicate glance here.)
 
   const sections = [grid(status), grid(now)];
+
+  // Live time-series: charging (SoC + power) and driving (SoC + speed + range).
+  // Real entity-history apex charts (graph_span based) — they render fine,
+  // unlike the category apex charts we replaced. Resolved generically so they
+  // work across car integrations; each series is added only when its entity
+  // currently has a value, and a chart is shown only with SoC + ≥1 other line.
+  // Gated on apexcharts so the heading never orphans when the dep is absent.
+  if (hass && hasCard("apexcharts-card")) {
+    // Resolve by EXISTENCE (not current value): apex plots recorder history,
+    // so a momentarily-unknown reading (e.g. a Tesla asleep) must not hide a
+    // chart that still has hours of real history behind it.
+    const socEnt =
+      (cfg && cfg.soc_entity && has(hass, cfg.soc_entity) && cfg.soc_entity) ||
+      (has(hass, `sensor.${D}_battery_percent`) ? `sensor.${D}_battery_percent` : null) ||
+      (has(hass, `sensor.${V}_battery_level`) ? `sensor.${V}_battery_level` : null);
+    const socSeries = socEnt ? [{ entity: socEnt, name: "SoC %", yaxis_id: "soc", stroke_width: 2, color: "#4CAF50" }] : [];
+
+    // --- Charging (6h): SoC + charge power (+ optional charge curve) -------
+    const powerEnt = resolveChargePower(hass, D, cfg);
+    const unitOf = (e) => ((hass.states[e] || {}).attributes || {}).unit_of_measurement || "";
+    const wTransform = (e) => (/^w$/i.test(unitOf(e).trim()) ? "return x / 1000;" : undefined); // only W→kW
+    const curveEnt = (cfg && cfg.charge_curve_entity) || `sensor.${V}_charge_curve`;
+    const chgSeries = socSeries.slice();
+    if (powerEnt && has(hass, powerEnt)) chgSeries.push({ entity: powerEnt, name: "Power kW", yaxis_id: "power", stroke_width: 2, color: "#9C27B0", ...(wTransform(powerEnt) ? { transform: wTransform(powerEnt) } : {}) });
+    if (curveEnt !== powerEnt && has(hass, curveEnt)) chgSeries.push({ entity: curveEnt, name: "Curve kW", yaxis_id: "power", stroke_width: 1, color: "#FFC107", ...(wTransform(curveEnt) ? { transform: wTransform(curveEnt) } : {}) });
+    if (chgSeries.length >= 2) {
+      sections.push({
+        type: "grid", column_span: 2,
+        cards: [
+          heading("Charging (6h)", "mdi:ev-station"),
+          apexChart({
+            title: "Charging (6h)", chartType: "line", graphSpan: "6h", headerShowStates: true,
+            yaxis: [{ id: "soc", min: 0, max: 100, decimals: 0, apex_config: { forceNiceScale: true } }, { id: "power", opposite: true, min: 0, decimals: 1, apex_config: { forceNiceScale: true } }],
+            series: chgSeries,
+          }),
+        ],
+      });
+    }
+
+    // --- Driving (3h): SoC + speed + range --------------------------------
+    const speedEnt = (cfg && cfg.speed_entity) || pickVehicleEntity(hass, V, "speed", cfg);
+    const rangeEnt = pickVehicleEntity(hass, V, "range", cfg) || (has(hass, `sensor.${D}_range_at_recent_efficiency`) ? `sensor.${D}_range_at_recent_efficiency` : null);
+    const drvSeries = socEnt ? [{ entity: socEnt, name: "SoC %", yaxis_id: "soc", stroke_width: 2, color: "#03A9F4" }] : [];
+    if (speedEnt && has(hass, speedEnt)) drvSeries.push({ entity: speedEnt, name: "Speed km/h", yaxis_id: "speed", stroke_width: 2, color: "#F44336" });
+    if (rangeEnt && has(hass, rangeEnt)) drvSeries.push({ entity: rangeEnt, name: "Range km", yaxis_id: "speed", stroke_width: 1, color: "#9E9E9E" });
+    if (drvSeries.length >= 2) {
+      sections.push({
+        type: "grid", column_span: 2,
+        cards: [
+          heading("Driving (3h)", "mdi:speedometer"),
+          apexChart({
+            title: "Driving (3h)", chartType: "line", graphSpan: "3h", headerShowStates: true,
+            yaxis: [{ id: "soc", min: 0, max: 100, decimals: 0, apex_config: { forceNiceScale: true } }, { id: "speed", opposite: true, min: 0, decimals: 0, apex_config: { forceNiceScale: true } }],
+            series: drvSeries,
+          }),
+        ],
+      });
+    }
+  }
 
   // Today's journey — full width across both columns (replaces the map).
   sections.push({
