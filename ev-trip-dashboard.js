@@ -4574,6 +4574,11 @@ class EvChargeStatusCard extends HTMLElement {
         .cs-badge ha-icon{--mdc-icon-size:23px;}
         .cs-title{font-weight:700;}
         .cs-sub{color:var(--secondary-text-color);font-size:.82em;font-variant-numeric:tabular-nums;}
+        .cs-eta{display:flex;align-items:center;gap:7px;margin:0 16px 8px;padding:8px 12px;
+                border-radius:10px;background:rgba(67,160,71,.12);color:var(--success-color,#43a047);
+                font-size:.9em;font-variant-numeric:tabular-nums;}
+        .cs-eta ha-icon{--mdc-icon-size:18px;flex:0 0 auto;}
+        .cs-eta b{font-weight:800;}
         .cs-svg{display:block;width:100%;height:120px;padding:0 10px;box-sizing:border-box;}
         .cs-axis{stroke:var(--divider-color);stroke-width:1;}
         .cs-area{fill:var(--info-color,#039be5);opacity:.13;}
@@ -4616,6 +4621,18 @@ class EvChargeStatusCard extends HTMLElement {
       const dur = durMin == null ? DASH : durMin >= 60 ? `${Math.floor(durMin / 60)}h ${Math.round(durMin % 60)}m` : `${Math.round(durMin)} min`;
       const energy = st.energy != null ? st.energy : st.lastEnergy;
       const sym = cur[st.type] || "€";
+      // ETA to full: energy still needed (kWh to 100%) ÷ current power (kW).
+      const etf = parseFloat(((this._hass.states[`sensor.${D}_energy_to_full_charge`] || {}).state));
+      let etaHtml = "";
+      if (charging && st.power != null && st.power > 0.1 && !isNaN(etf) && etf > 0.05) {
+        const etaMin = (etf / st.power) * 60;
+        const etaStr = etaMin >= 60 ? `${Math.floor(etaMin / 60)}h ${Math.round(etaMin % 60)}m` : `${Math.round(etaMin)} min`;
+        const ready = new Date(Date.now() + etaMin * 60000);
+        const p2 = (n) => String(n).padStart(2, "0");
+        etaHtml =
+          `<div class="cs-eta"><ha-icon icon="mdi:timer-sand"></ha-icon>` +
+          `<span>Full in <b>~${etaStr}</b> · ${num(etf, 1)} kWh left · ready ≈ <b>${p2(ready.getHours())}:${p2(ready.getMinutes())}</b></span></div>`;
+      }
       this.innerHTML = `
         <ha-card>
           <div class="cs-head">
@@ -4627,6 +4644,7 @@ class EvChargeStatusCard extends HTMLElement {
               <div class="cs-sub">${charging ? "Cable connected · drawing power" : "Cable connected · not charging"}</div>
             </div>
           </div>
+          ${etaHtml}
           ${curveSvg()}
           <div class="cs-tiles">
             ${tile("mdi:battery-charging-high", "SoC", num(st.soc, 0), "%")}
