@@ -4621,17 +4621,32 @@ class EvChargeStatusCard extends HTMLElement {
       const dur = durMin == null ? DASH : durMin >= 60 ? `${Math.floor(durMin / 60)}h ${Math.round(durMin % 60)}m` : `${Math.round(durMin)} min`;
       const energy = st.energy != null ? st.energy : st.lastEnergy;
       const sym = cur[st.type] || "€";
-      // ETA to full: energy still needed (kWh to 100%) ÷ current power (kW).
+      // ETA: energy still needed ÷ current power. Honours an optional charge
+      // target (e.g. 80%) so the estimate matches where you actually stop —
+      // energy-to-target is derived from the pack capacity (battery_energy +
+      // energy_to_full) and the gap between the current SoC and the target.
       const etf = parseFloat(((this._hass.states[`sensor.${D}_energy_to_full_charge`] || {}).state));
+      const batt = parseFloat(((this._hass.states[`sensor.${D}_battery_energy`] || {}).state));
+      const target = Math.min(100, Math.max(1, Number(this._config.chargeTarget) || 100));
       let etaHtml = "";
-      if (charging && st.power != null && st.power > 0.1 && !isNaN(etf) && etf > 0.05) {
-        const etaMin = (etf / st.power) * 60;
-        const etaStr = etaMin >= 60 ? `${Math.floor(etaMin / 60)}h ${Math.round(etaMin % 60)}m` : `${Math.round(etaMin)} min`;
-        const ready = new Date(Date.now() + etaMin * 60000);
-        const p2 = (n) => String(n).padStart(2, "0");
-        etaHtml =
-          `<div class="cs-eta"><ha-icon icon="mdi:timer-sand"></ha-icon>` +
-          `<span>Full in <b>~${etaStr}</b> · ${num(etf, 1)} kWh left · ready ≈ <b>${p2(ready.getHours())}:${p2(ready.getMinutes())}</b></span></div>`;
+      if (charging && st.power != null && st.power > 0.1) {
+        let need = etf, label = "Full";
+        if (target < 100 && st.soc != null && !isNaN(batt) && !isNaN(etf)) {
+          const capacity = batt + etf; // full pack kWh
+          need = capacity * Math.max(0, target - st.soc) / 100;
+          label = `To ${target}%`;
+        }
+        if (!isNaN(need) && need > 0.05) {
+          const etaMin = (need / st.power) * 60;
+          const etaStr = etaMin >= 60 ? `${Math.floor(etaMin / 60)}h ${Math.round(etaMin % 60)}m` : `${Math.round(etaMin)} min`;
+          const ready = new Date(Date.now() + etaMin * 60000);
+          const p2 = (n) => String(n).padStart(2, "0");
+          etaHtml =
+            `<div class="cs-eta"><ha-icon icon="mdi:timer-sand"></ha-icon>` +
+            `<span>${label} in <b>~${etaStr}</b> · ${num(need, 1)} kWh left · ready ≈ <b>${p2(ready.getHours())}:${p2(ready.getMinutes())}</b></span></div>`;
+        } else if (target < 100 && st.soc != null && st.soc >= target) {
+          etaHtml = `<div class="cs-eta"><ha-icon icon="mdi:check-circle-outline"></ha-icon><span><b>${target}%</b> target reached</span></div>`;
+        }
       }
       this.innerHTML = `
         <ha-card>
@@ -4849,6 +4864,7 @@ function drivingView(D, V, hass, cfg) {
     plugEntity: (cfg && cfg.plug_entity) || pickVehicleEntity(hass, V, "plug", cfg),
     chargingEntity: pickVehicleEntity(hass, V, "charging", cfg),
     powerEntity: resolveChargePower(hass, D, cfg),
+    chargeTarget: cfg && cfg.charge_target, // % to charge to (default 100)
   });
 
   // Battery / range / odometer. Logger gives a real-world range estimate;
