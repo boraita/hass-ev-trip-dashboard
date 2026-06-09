@@ -2883,11 +2883,76 @@ class EvTripJourneyCard extends HTMLElement {
         .catch(() => { this._streets[id] = {}; this._render(); });
     }
   }
+  // Estimate per-stage regen by integrating the positive power while driving
+  // (same approach as the trip detail). Logger value wins when present. Lazy.
+  _fetchStageRegen(stages) {
+    this._regen = this._regen || {};
+    const ent = this._config.tripPowerEntity;
+    if (!ent || !this._hass) return;
+    for (const t of stages) {
+      const id = t.id != null ? t.id : t.trip_id;
+      if (id == null || !t.started_at || !t.ended_at || this._regen[id] !== undefined) continue;
+      if (t.regen_kwh != null && !isNaN(Number(t.regen_kwh))) { this._regen[id] = null; continue; }
+      this._regen[id] = "loading";
+      let start, end;
+      try { start = new Date(t.started_at).toISOString(); end = new Date(t.ended_at).toISOString(); }
+      catch (_e) { this._regen[id] = {}; continue; }
+      Promise.resolve(this._hass.callApi("GET", `history/period/${start}?end_time=${end}&filter_entity_id=${ent}&significant_changes_only=0`))
+        .then((res) => {
+          const ser = Array.isArray(res) && res[0] ? res[0] : [];
+          const pts = [];
+          for (const x of ser) {
+            const v = parseFloat(x.state), ts = Date.parse(x.last_changed || x.last_updated);
+            if (!isNaN(v) && !isNaN(ts)) pts.push([ts, v]);
+          }
+          let regen = 0;
+          for (let i = 1; i < pts.length; i++) {
+            const dtH = (pts[i][0] - pts[i - 1][0]) / 3600000, p = pts[i - 1][1];
+            if (p > 0 && dtH > 0 && dtH < 0.5) regen += p * dtH;
+          }
+          this._regen[id] = pts.length >= 3 ? { kwh: regen, est: true } : {};
+          this._render();
+        })
+        .catch(() => { this._regen[id] = {}; this._render(); });
+    }
+  }
+  // Fetch the GPS breadcrumbs each stage logged so the detail can draw the real
+  // route over OpenStreetMap (not just a start→end line). Lazy, cached per id.
+  _fetchStageRoute(stages) {
+    this._routes = this._routes || {};
+    const ent = this._config.locationEntity;
+    if (!ent || !this._hass) return;
+    for (const t of stages) {
+      const id = t.id != null ? t.id : t.trip_id;
+      if (id == null || !t.started_at || !t.ended_at || this._routes[id] !== undefined) continue;
+      this._routes[id] = "loading";
+      let start, end;
+      try { start = new Date(t.started_at).toISOString(); end = new Date(t.ended_at).toISOString(); }
+      catch (_e) { this._routes[id] = []; continue; }
+      Promise.resolve(this._hass.callApi("GET", `history/period/${start}?end_time=${end}&filter_entity_id=${ent}&significant_changes_only=0`))
+        .then((res) => {
+          const ser = Array.isArray(res) && res[0] ? res[0] : [];
+          const pts = [];
+          for (const x of ser) {
+            const a = x.attributes || {};
+            const lat = parseFloat(a.latitude), lon = parseFloat(a.longitude);
+            if (isNaN(lat) || isNaN(lon)) continue;
+            const last = pts[pts.length - 1];
+            if (!last || Math.abs(last.lat - lat) > 1e-6 || Math.abs(last.lon - lon) > 1e-6) pts.push({ lat, lon });
+          }
+          this._routes[id] = pts;
+          this._render();
+        })
+        .catch(() => { this._routes[id] = []; this._render(); });
+    }
+  }
   // Render the expandable list of stages (one rich block per sub-trip) + totals.
   _stagesHtml(stages) {
     if (!stages || !stages.length) return "";
     this._temps = this._temps || {};
     this._streets = this._streets || {};
+    this._regen = this._regen || {};
+    this._routes = this._routes || {};
     const DASH = "—";
     const f0 = (v) => (v == null || isNaN(v) ? DASH : Number(v).toFixed(0));
     const f1 = (v) => (v == null || isNaN(v) ? DASH : Number(v).toFixed(1));
@@ -2914,6 +2979,13 @@ class EvTripJourneyCard extends HTMLElement {
         const cons = t.consumption_kwh_100km != null && Number(t.consumption_kwh_100km) >= 0 ? `${f1(t.consumption_kwh_100km)} kWh/100` : null;
         const soc = t.soc_start != null && t.soc_end != null ? `${f0(t.soc_start)}→${f0(t.soc_end)}%${t.soc_used_pct != null ? ` (${f0(t.soc_used_pct)})` : ""}` : null;
         const pill = t.score != null ? `<span class="js-pill" style="background:${_scoreColor(t.score)}">${f1(t.score)}</span>` : "";
+        // Regen: logger value, else the integrated power estimate ("~").
+        const rg = this._regen[id];
+        const regenVal =
+          t.regen_kwh != null && !isNaN(Number(t.regen_kwh)) ? `${f1(t.regen_kwh)} kWh`
+          : rg === "loading" ? "…"
+          : rg && rg.kwh != null ? `~${f1(rg.kwh)} kWh`
+          : null;
         const metrics =
           chip("mdi:timer-outline", "", t.duration_min != null ? `${f0(t.duration_min)} min` : null) +
           chip("mdi:speedometer", "", t.avg_speed_kmh != null ? `${f0(t.avg_speed_kmh)} km/h` : null) +
@@ -2921,10 +2993,15 @@ class EvTripJourneyCard extends HTMLElement {
           chip("mdi:chart-line", "", cons) +
           chip("mdi:battery", "", soc) +
           chip("mdi:cash", "", t.cost != null ? `${f2(t.cost)} ${sym(t.currency)}` : null) +
-          chip("mdi:sync", "regen", t.regen_kwh != null ? `${f1(t.regen_kwh)} kWh` : null) +
+          chip("mdi:sync", "regen", regenVal) +
           chip("mdi:thermometer", "", tempVal) +
           chip("mdi:flash", "max", t.max_power_kw != null ? `${f0(t.max_power_kw)} kW` : null) +
           chip("mdi:speedometer-medium", "max", t.max_speed_kmh != null ? `${f0(t.max_speed_kmh)} km/h` : null);
+        // Real driven route for this stage, from the GPS breadcrumbs.
+        const rt = this._routes[id];
+        let mapHtml = "";
+        if (rt === "loading") mapHtml = `<div class="js-map js-map--ph">Cargando ruta…</div>`;
+        else if (Array.isArray(rt) && rt.length >= 2) { const svg = _routeSvg(rt); if (svg) mapHtml = `<div class="js-map">${svg}</div>`; }
         return `<div class="jstage">
           <div class="jstage-head">
             <span class="js-n">${i + 1}</span>
@@ -2933,6 +3010,7 @@ class EvTripJourneyCard extends HTMLElement {
             ${pill}
           </div>
           <div class="jstage-metrics">${metrics}</div>
+          ${mapHtml}
         </div>`;
       })
       .join("");
@@ -3033,7 +3111,7 @@ class EvTripJourneyCard extends HTMLElement {
     else if (chargedThis)
       chargeChip = `<span class="jchip jchg"><ha-icon icon="mdi:lightning-bolt"></ha-icon>Charged ${fmtNum(lc.state, 2)} kWh${lcLoc ? ` · ${_esc(lcLoc)}` : ""}</span>`;
 
-    if (this._open) { this._fetchStageTemps(stages); this._fetchStageStreets(stages); }
+    if (this._open) { this._fetchStageTemps(stages); this._fetchStageStreets(stages); this._fetchStageRegen(stages); this._fetchStageRoute(stages); }
     const stageStr = `${isNaN(stagesNum) ? DASH : stagesNum} ${stagesNum === 1 ? "stage" : "stages"}`;
     const tile = (tIcon, label, value, unit) => `
       <div class="jt">
@@ -3081,6 +3159,18 @@ class EvTripJourneyCard extends HTMLElement {
           .jstotals b{color:var(--primary-text-color);}
           .jstage{display:flex;flex-direction:column;gap:6px;font-size:.85em;}
           .jstage + .jstage{border-top:1px dashed var(--divider-color);padding-top:10px;}
+          .js-map{border-radius:10px;overflow:hidden;margin-top:2px;
+                  border:1px solid var(--divider-color,rgba(0,0,0,.12));}
+          .js-map--ph{height:150px;display:flex;align-items:center;justify-content:center;
+                      color:var(--secondary-text-color);font-size:.9em;background:var(--secondary-background-color);}
+          .cal-rt-svg{display:block;width:100%;height:150px;}
+          .cal-rt-bg{fill:var(--secondary-background-color,#e8eaed);}
+          .cal-rt-svg image{image-rendering:auto;}
+          .cal-rt-halo{fill:none;stroke:#fff;stroke-width:5;stroke-linejoin:round;stroke-linecap:round;opacity:.8;}
+          .cal-rt-line{fill:none;stroke:#1565c0;stroke-width:3;stroke-linejoin:round;stroke-linecap:round;}
+          .cal-rt-start{fill:var(--success-color,#43a047);stroke:#fff;stroke-width:1.5;}
+          .cal-rt-end{fill:var(--error-color,#e53935);stroke:#fff;stroke-width:1.5;}
+          .cal-rt-attr{fill:#000;opacity:.5;font-size:7px;text-anchor:end;paint-order:stroke;stroke:#fff;stroke-width:2;}
           .jstage-head{display:flex;align-items:center;gap:8px;}
           .js-n{flex:0 0 auto;width:18px;height:18px;border-radius:50%;background:var(--secondary-background-color,var(--divider-color));
                 color:var(--secondary-text-color);font-size:.72em;font-weight:700;display:flex;align-items:center;justify-content:center;}
@@ -5279,9 +5369,10 @@ function drivingView(D, V, hass, cfg) {
   //  • RIGHT = the live charts (Charging, Driving) with Last trip below them.
   const jTempEntity = (cfg && cfg.outside_temp_entity) || pickVehicleEntity(hass, V, "outside_temp", cfg);
   const jLocationEntity = (cfg && cfg.location_entity) || pickVehicleEntity(hass, V, "location", cfg);
+  const jTripPowerEntity = (cfg && cfg.trip_power_entity) || (has(hass, `sensor.${V}_power`) ? `sensor.${V}_power` : null);
   const leftCards = status.concat([
     heading("Today's journey", "mdi:map-marker-path"),
-    { type: "custom:ev-trip-journey-card", device: D, tempEntity: jTempEntity, locationEntity: jLocationEntity },
+    { type: "custom:ev-trip-journey-card", device: D, tempEntity: jTempEntity, locationEntity: jLocationEntity, tripPowerEntity: jTripPowerEntity },
   ]);
   const rightCards = chartCards.concat(now);
 
