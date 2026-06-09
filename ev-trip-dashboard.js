@@ -2234,6 +2234,39 @@ class EvTripHistoryCard extends HTMLElement {
       .then(() => { this._render(); })
       .catch((e) => { console.error("set charge price failed", e); this._render(); });
   }
+  // Synthesise the charge that is happening RIGHT NOW from the live sensors —
+  // the logger only writes a charge to recent_charges once it ENDS, so an
+  // ongoing (e.g. overnight) charge would otherwise be missing from the
+  // history. Returns null when not charging. Marked in_progress for the UI.
+  _liveCharge(D) {
+    const st = (id) => this._hass.states[id];
+    const cip = st(`sensor.${D}_charge_in_progress`);
+    const cipOn = cip && String(cip.state).toLowerCase() === "charging";
+    if (!cipOn) return null;
+    const numOf = (id) => { const s = st(id); const v = s ? parseFloat(s.state) : NaN; return isNaN(v) ? null : v; };
+    const energy = numOf(`sensor.${D}_current_charge_energy`);
+    const durMin = numOf(`sensor.${D}_current_charge_duration`);
+    const typeS = st(`sensor.${D}_current_charge_type`);
+    const type = typeS && typeS.state && !["unknown", "unavailable"].includes(String(typeS.state).toLowerCase()) ? String(typeS.state).toUpperCase() : null;
+    const socStart = cip.attributes && cip.attributes.soc_start != null ? Number(cip.attributes.soc_start) : null;
+    const socNow = numOf(`sensor.${D}_battery_percent`);
+    const costEnt = st(`sensor.${D}_current_charge_cost`);
+    const currency = (costEnt && costEnt.attributes && costEnt.attributes.unit_of_measurement) || "EUR";
+    const le = this._config.locationEntity ? st(this._config.locationEntity) : null;
+    const location = le && String(le.state).toLowerCase() === "home" ? "home" : null;
+    let now, started;
+    try { now = new Date(); started = durMin != null ? new Date(now.getTime() - durMin * 60000) : null; }
+    catch (_e) { return null; }
+    return {
+      id: "__live__", charge_id: "__live__", in_progress: true,
+      started_at: started ? started.toISOString() : null,
+      ended_at: now.toISOString(),
+      kwh: energy, total_cost: numOf(`sensor.${D}_current_charge_cost`),
+      price_per_kwh: numOf(`sensor.${D}_current_charge_price_per_kwh`),
+      soc_start: socStart, soc_end: socNow,
+      is_dcfc: type === "DC", type, currency, location,
+    };
+  }
   _render() {
     if (!this._hass) return;
     // Lazy-bind the click delegation in case connectedCallback hasn't run.
@@ -2255,6 +2288,12 @@ class EvTripHistoryCard extends HTMLElement {
       const bx = b[sortKey] || b[fallback] || "";
       return bx.localeCompare(ax);
     });
+    // Prepend the charge in progress (not yet in recent_charges) so it shows
+    // at the top of today, instead of vanishing until it finishes.
+    if (kind === "charges") {
+      const live = this._liveCharge(D);
+      if (live) rows.unshift(live);
+    }
     const cur = { EUR: "€", USD: "$", GBP: "£" };
     const sym = (c) => cur[c] || c || "€";
     const DASH = "—";
@@ -2376,6 +2415,13 @@ class EvTripHistoryCard extends HTMLElement {
                     border-color:var(--warning-color, #fb8c00);}
           .chip--soc{color:var(--info-color, #039be5);border-color:var(--info-color, #039be5);}
           .chip--soc ha-icon{--mdc-icon-size:13px;}
+          .chip--live{color:var(--success-color,#43a047);border-color:var(--success-color,#43a047);
+                      font-weight:700;animation:evpulse 1.6s ease-in-out infinite;}
+          .chip--live ha-icon{--mdc-icon-size:13px;}
+          @keyframes evpulse{0%,100%{opacity:1;}50%{opacity:.45;}}
+          .chargeday--live{border-color:var(--success-color,#43a047);}
+          .session--live{position:relative;}
+          .score-pill--live{background:var(--success-color,#43a047);}
           .stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;}
           .stat{background:var(--secondary-background-color);border:1px solid var(--divider-color);
                 border-radius:12px;padding:10px 8px;display:flex;flex-direction:column;
@@ -2555,16 +2601,18 @@ class EvTripHistoryCard extends HTMLElement {
         const costStr = haveCost ? `${fmtNum(totCost, 2)} ${_esc(curSym)}` : DASH;
         const n = sessions.length;
         const isOpen = String(this._openId) === String(key);
+        const hasLive = sessions.some((c) => c.in_progress);
 
         const detail = isOpen ? this._chargeDayDetailHtml(sessions, sym, DASH, fmtNum, timeOf) : "";
 
         return `
-          <div class="chargeday${isOpen ? " chargeday--open" : ""}" data-day="${_esc(key)}">
+          <div class="chargeday${isOpen ? " chargeday--open" : ""}${hasLive ? " chargeday--live" : ""}" data-day="${_esc(key)}">
             <div class="badge badge--ev"><ha-icon icon="mdi:ev-station"></ha-icon></div>
             <div class="body">
               <div class="title-line">
                 <span class="title">${_esc(dayLabel(key))}</span>
                 <span class="chip"><ha-icon icon="mdi:counter"></ha-icon>${n} ${n === 1 ? "charge" : "charges"}</span>
+                ${hasLive ? `<span class="chip chip--live"><ha-icon icon="mdi:flash"></ha-icon>cargando</span>` : ""}
               </div>
               <div class="sub"><b>${kwhStr}</b> · <b>${costStr}</b></div>
             </div>
@@ -2578,6 +2626,34 @@ class EvTripHistoryCard extends HTMLElement {
   _chargeDayDetailHtml(sessions, sym, DASH, fmtNum, timeOf) {
     const items = sessions
       .map((c) => {
+        // Charge in progress: live row from current sensors — no end time,
+        // price editor, geocode or stored curve (it's ongoing).
+        if (c.in_progress) {
+          const r0 = (v) => (v == null || isNaN(v) ? null : Math.round(Number(v)));
+          const ss0 = r0(c.soc_start), se0 = r0(c.soc_end);
+          const socStr = se0 != null ? (ss0 != null ? `${ss0}→${se0}% (+${se0 - ss0})` : `→${se0}%`) : null;
+          const socChip = socStr ? `<span class="chip chip--soc"><ha-icon icon="mdi:battery-charging-high"></ha-icon>${socStr}</span>` : "";
+          const type = c.type ? String(c.type).toUpperCase() : (c.is_dcfc ? "DC" : null);
+          const typeChip = type ? `<span class="chip chip--${type === "DC" ? "dc" : "ac"}">${_esc(type)}</span>` : "";
+          const pwrEnt = this._hass.states[`sensor.${this._device}_current_charge_power`];
+          const pwr = pwrEnt && !isNaN(parseFloat(pwrEnt.state)) ? `${Number(pwrEnt.state).toFixed(1)} kW` : null;
+          const total = c.total_cost != null ? `${fmtNum(c.total_cost, 2)} ${_esc(sym(c.currency))}` : DASH;
+          return `
+            <div class="csession">
+              <div class="session session--live">
+                <div class="sbody">
+                  <div class="sroute">
+                    <span class="chip chip--live"><ha-icon icon="mdi:flash"></ha-icon>Cargando ahora</span>
+                    <span class="chip">${_endpoint(null, c.location)}</span>
+                    ${typeChip}
+                    ${socChip}
+                  </div>
+                  <div class="smetrics"><b>${fmtNum(c.kwh)}</b> kWh${pwr ? ` · <b>${pwr}</b>` : ""}${c.price_per_kwh != null ? ` · <b>${fmtNum(c.price_per_kwh)}</b> ${_esc(sym(c.currency))}/kWh` : ""}${c.started_at ? ` · desde ${timeOf(c.started_at)}` : ""}</div>
+                </div>
+                <div class="score-pill score-pill--live">${total}</div>
+              </div>
+            </div>`;
+        }
         const type = c.type ? String(c.type).toUpperCase() : (c.is_dcfc ? "DC" : null);
         const typeChip = type ? `<span class="chip chip--${type === "DC" ? "dc" : "ac"}">${_esc(type)}</span>` : "";
         const total = c.total_cost != null ? `${fmtNum(c.total_cost, 2)} ${_esc(sym(c.currency))}` : DASH;
@@ -2670,6 +2746,7 @@ class EvTripHistoryCard extends HTMLElement {
     const dayKey = (iso) => { const d = new Date(iso); return isNaN(d) ? "unknown" : `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`; };
     const sessions = rows.filter((c) => dayKey(c.ended_at) === this._openId);
     for (const c of sessions) {
+      if (c.in_progress) continue; // ongoing charge: no stored curve to fetch
       const id = c.charge_id != null ? c.charge_id : c.id;
       if (id == null || this._curves[id] !== undefined) continue;
       this._curves[id] = "loading";
@@ -2687,6 +2764,7 @@ class EvTripHistoryCard extends HTMLElement {
     const dayKey = (iso) => { const d = new Date(iso); return isNaN(d) ? "unknown" : `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`; };
     const sessions = rows.filter((c) => dayKey(c.ended_at) === this._openId);
     for (const c of sessions) {
+      if (c.in_progress) continue; // ongoing charge handled by live sensors
       const id = c.charge_id != null ? c.charge_id : c.id;
       const isAway = !c.location || String(c.location).toLowerCase() === "not_home";
       if (id == null || !isAway || this._streets[id] !== undefined) continue;
