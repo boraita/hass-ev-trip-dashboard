@@ -1510,11 +1510,6 @@ class EvTripListCard extends HTMLElement {
     if (!ent || this._openTripId == null) return;
     const t = rows.find((x) => String(x.id) === String(this._openTripId));
     if (!t || !t.started_at || !t.ended_at) return;
-    // Only geocode endpoints that were OUTSIDE any HA zone — when origin/dest
-    // is a named zone (home / "Trabajo ele") we show the area name, no lookup.
-    const needStart = _zoneLabel(t.origin) == null;
-    const needEnd = _zoneLabel(t.destination) == null;
-    if (!needStart && !needEnd) return;
     const id = t.id;
     if (this._streets[id] !== undefined) return;
     this._streets[id] = "loading";
@@ -1523,7 +1518,11 @@ class EvTripListCard extends HTMLElement {
       start = new Date(new Date(t.started_at).getTime() - 120000).toISOString();
       end = new Date(new Date(t.ended_at).getTime() + 120000).toISOString();
     } catch (_e) { this._streets[id] = {}; return; }
-    // NOTE: need attributes (lat/lon) so do NOT use minimal_response.
+    // Label BOTH endpoints from their actual GPS — a containing HA zone wins
+    // (shown as the area name), otherwise the reverse-geocoded street. This is
+    // independent of the logger's origin/destination, which is often "home"
+    // even when the trip really started elsewhere (so the start street never
+    // showed before). NOTE: need attributes (lat/lon) so no minimal_response.
     Promise.resolve(this._hass.callApi("GET", `history/period/${start}?end_time=${end}&filter_entity_id=${ent}&significant_changes_only=0`))
       .then((res) => {
         const ser = Array.isArray(res) && res[0] ? res[0] : [];
@@ -1535,12 +1534,15 @@ class EvTripListCard extends HTMLElement {
         }
         if (!pts.length) { this._streets[id] = {}; this._render(); return; }
         const first = pts[0], last = pts[pts.length - 1];
-        this._streets[id] = { start: needStart ? "loading" : null, end: needEnd ? "loading" : null };
+        const label = (p) => {
+          const z = _zoneForPoint(this._hass, p.lat, p.lon);
+          if (z) return Promise.resolve({ text: z, zone: true });
+          return _reverseGeocode(p.lat, p.lon).then((s) => ({ text: s || null, zone: false }));
+        };
+        this._streets[id] = { start: "loading", end: "loading" };
         this._render();
-        Promise.all([
-          needStart ? _reverseGeocode(first.lat, first.lon) : Promise.resolve(null),
-          needEnd ? _reverseGeocode(last.lat, last.lon) : Promise.resolve(null),
-        ]).then(([s, e]) => { this._streets[id] = { start: s, end: e }; this._render(); });
+        Promise.all([label(first), label(last)])
+          .then(([s, e]) => { this._streets[id] = { start: s, end: e }; this._render(); });
       })
       .catch(() => { this._streets[id] = {}; this._render(); });
   }
@@ -1750,12 +1752,19 @@ class EvTripListCard extends HTMLElement {
             // inside a zone, otherwise the reverse-geocoded street (not_home).
             const ss = this._streets[t.id];
             const resolve = (zone, key) => {
+              // Prefer the GPS-derived label (zone name or reverse-geocoded
+              // street); fall back to the logger's origin/dest only when no GPS.
+              if (this._config.locationEntity) {
+                if (ss === undefined || ss === "loading") return "…";
+                const v = ss[key];
+                if (v === "loading") return "…";
+                if (v && v.text) {
+                  return `<span class="${v.zone ? "d-zone" : "d-street"}">${_esc(v.text)}</span>`;
+                }
+              }
               const zl = _zoneLabel(zone);
               if (zl) return `<span class="d-zone">${_esc(zl)}</span>`;
-              if (!this._config.locationEntity) return "Away";
-              if (ss === undefined || ss === "loading") return "…";
-              const v = ss[key];
-              return v === "loading" ? "…" : v ? `<span class="d-street">${_esc(v)}</span>` : "Away";
+              return "Away";
             };
             return `<div class="d-route"><ha-icon icon="mdi:map-marker"></ha-icon>${resolve(t.origin, "start")}<ha-icon icon="mdi:arrow-right"></ha-icon>${resolve(t.destination, "end")}</div>`;
           })()}
@@ -2685,10 +2694,51 @@ class EvTripJourneyCard extends HTMLElement {
         .catch(() => { this._temps[id] = {}; this._render(); });
     }
   }
+  // Resolve each stage's start/end LOCATION from the device_tracker GPS history
+  // (a containing HA zone wins, else the reverse-geocoded street). Independent
+  // of the logger's origin/destination — which is often "home" even when the
+  // stage started elsewhere — so the actual start street now shows. Cached per
+  // trip id, lazy (only while the journey detail is open).
+  _fetchStageStreets(stages) {
+    const ent = this._config.locationEntity;
+    this._streets = this._streets || {};
+    if (!ent || !this._hass) return;
+    for (const t of stages) {
+      const id = t.id != null ? t.id : t.trip_id;
+      if (id == null || !t.started_at || !t.ended_at || this._streets[id] !== undefined) continue;
+      this._streets[id] = "loading";
+      let start, end;
+      try {
+        start = new Date(new Date(t.started_at).getTime() - 120000).toISOString();
+        end = new Date(new Date(t.ended_at).getTime() + 120000).toISOString();
+      } catch (_e) { this._streets[id] = {}; continue; }
+      Promise.resolve(this._hass.callApi("GET", `history/period/${start}?end_time=${end}&filter_entity_id=${ent}&significant_changes_only=0`))
+        .then((res) => {
+          const ser = Array.isArray(res) && res[0] ? res[0] : [];
+          const pts = [];
+          for (const x of ser) {
+            const a = x.attributes || {};
+            const lat = parseFloat(a.latitude), lon = parseFloat(a.longitude);
+            if (!isNaN(lat) && !isNaN(lon)) pts.push({ lat, lon });
+          }
+          if (!pts.length) { this._streets[id] = {}; this._render(); return; }
+          const first = pts[0], last = pts[pts.length - 1];
+          const label = (p) => {
+            const z = _zoneForPoint(this._hass, p.lat, p.lon);
+            if (z) return Promise.resolve(z);
+            return _reverseGeocode(p.lat, p.lon).then((s) => s || null);
+          };
+          Promise.all([label(first), label(last)])
+            .then(([s, e]) => { this._streets[id] = { start: s, end: e }; this._render(); });
+        })
+        .catch(() => { this._streets[id] = {}; this._render(); });
+    }
+  }
   // Render the expandable list of stages (one rich block per sub-trip) + totals.
   _stagesHtml(stages) {
     if (!stages || !stages.length) return "";
     this._temps = this._temps || {};
+    this._streets = this._streets || {};
     const DASH = "—";
     const f0 = (v) => (v == null || isNaN(v) ? DASH : Number(v).toFixed(0));
     const f1 = (v) => (v == null || isNaN(v) ? DASH : Number(v).toFixed(1));
@@ -2707,6 +2757,11 @@ class EvTripJourneyCard extends HTMLElement {
         const id = t.id != null ? t.id : t.trip_id;
         const tp = this._temps[id];
         const tempVal = tp === "loading" ? "…" : tp && (tp.start != null || tp.end != null) ? `${tp.start != null ? f0(tp.start) : DASH}→${tp.end != null ? f0(tp.end) : DASH}°C` : null;
+        // Prefer the GPS-derived location (zone or street) over the logger's
+        // origin/dest; fall back to start_address/origin while it resolves.
+        const sg = this._streets[id];
+        const endPt = (key, zone, addr) =>
+          sg && sg !== "loading" && sg[key] ? _esc(sg[key]) : _endpoint(addr, zone);
         const cons = t.consumption_kwh_100km != null && Number(t.consumption_kwh_100km) >= 0 ? `${f1(t.consumption_kwh_100km)} kWh/100` : null;
         const soc = t.soc_start != null && t.soc_end != null ? `${f0(t.soc_start)}→${f0(t.soc_end)}%${t.soc_used_pct != null ? ` (${f0(t.soc_used_pct)})` : ""}` : null;
         const pill = t.score != null ? `<span class="js-pill" style="background:${_scoreColor(t.score)}">${f1(t.score)}</span>` : "";
@@ -2725,7 +2780,7 @@ class EvTripJourneyCard extends HTMLElement {
           <div class="jstage-head">
             <span class="js-n">${i + 1}</span>
             <span class="js-time">${_timeRange(t.started_at, t.ended_at) || tod(t.started_at)}</span>
-            <span class="js-route">${_endpoint(t.start_address, t.origin)}<ha-icon icon="mdi:arrow-right"></ha-icon>${_endpoint(t.end_address, t.destination)}</span>
+            <span class="js-route">${endPt("start", t.origin, t.start_address)}<ha-icon icon="mdi:arrow-right"></ha-icon>${endPt("end", t.destination, t.end_address)}</span>
             ${pill}
           </div>
           <div class="jstage-metrics">${metrics}</div>
@@ -2829,7 +2884,7 @@ class EvTripJourneyCard extends HTMLElement {
     else if (chargedThis)
       chargeChip = `<span class="jchip jchg"><ha-icon icon="mdi:lightning-bolt"></ha-icon>Charged ${fmtNum(lc.state, 2)} kWh${lcLoc ? ` · ${_esc(lcLoc)}` : ""}</span>`;
 
-    if (this._open) this._fetchStageTemps(stages);
+    if (this._open) { this._fetchStageTemps(stages); this._fetchStageStreets(stages); }
     const stageStr = `${isNaN(stagesNum) ? DASH : stagesNum} ${stagesNum === 1 ? "stage" : "stages"}`;
     const tile = (tIcon, label, value, unit) => `
       <div class="jt">
@@ -3285,6 +3340,34 @@ const _zoneLabel = (zone) => {
   if (!z || z.toLowerCase() === "not_home") return null;
   if (z.toLowerCase() === "home") return "Home";
   return z;
+};
+// Great-circle distance in metres between two lat/lon points.
+const _haversine = (lat1, lon1, lat2, lon2) => {
+  const R = 6371000, toRad = (d) => (d * Math.PI) / 180;
+  const dLat = toRad(lat2 - lat1), dLon = toRad(lon2 - lon1);
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(a));
+};
+// Friendly name of the smallest HA zone that contains (lat,lon), or null when
+// the point is outside every zone. Lets us label a trip/charge endpoint by its
+// ACTUAL GPS position rather than trusting the logger's origin/destination
+// field (which is often "home" even when the trip started elsewhere).
+const _zoneForPoint = (hass, lat, lon) => {
+  if (!hass || lat == null || lon == null || isNaN(lat) || isNaN(lon)) return null;
+  let best = null, bestR = Infinity;
+  for (const id in hass.states) {
+    if (id.indexOf("zone.") !== 0) continue;
+    const a = hass.states[id].attributes || {};
+    const zlat = parseFloat(a.latitude), zlon = parseFloat(a.longitude), r = parseFloat(a.radius);
+    if (isNaN(zlat) || isNaN(zlon) || isNaN(r)) continue;
+    if (_haversine(lat, lon, zlat, zlon) <= r && r < bestR) {
+      best = a.friendly_name || id.slice(5);
+      bestR = r;
+    }
+  }
+  return best;
 };
 // Draw a GPS route over REAL OpenStreetMap tiles (Web Mercator), auto-zoomed
 // to fit the route. No API key. pts = [{lat,lon}] in order. If tiles fail to
@@ -5035,9 +5118,10 @@ function drivingView(D, V, hass, cfg) {
   //  • LEFT  = the sensor/status list, with Today's journey below it.
   //  • RIGHT = the live charts (Charging, Driving) with Last trip below them.
   const jTempEntity = (cfg && cfg.outside_temp_entity) || pickVehicleEntity(hass, V, "outside_temp", cfg);
+  const jLocationEntity = (cfg && cfg.location_entity) || pickVehicleEntity(hass, V, "location", cfg);
   const leftCards = status.concat([
     heading("Today's journey", "mdi:map-marker-path"),
-    { type: "custom:ev-trip-journey-card", device: D, tempEntity: jTempEntity },
+    { type: "custom:ev-trip-journey-card", device: D, tempEntity: jTempEntity, locationEntity: jLocationEntity },
   ]);
   const rightCards = chartCards.concat(now);
 
