@@ -2236,6 +2236,8 @@ class EvTripHistoryCard extends HTMLElement {
                     border-color:var(--success-color, #43a047);}
           .chip--dc{color:var(--warning-color, #fb8c00);
                     border-color:var(--warning-color, #fb8c00);}
+          .chip--soc{color:var(--info-color, #039be5);border-color:var(--info-color, #039be5);}
+          .chip--soc ha-icon{--mdc-icon-size:13px;}
           .stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;}
           .stat{background:var(--secondary-background-color);border:1px solid var(--divider-color);
                 border-radius:12px;padding:10px 8px;display:flex;flex-direction:column;
@@ -2490,6 +2492,12 @@ class EvTripHistoryCard extends HTMLElement {
                <button class="cp-apply" data-charge-id="${_esc(cid)}"><ha-icon icon="mdi:check"></ha-icon>Set</button>
              </div>`;
         }
+        // SoC reached by this charge (start→end %); end is always recorded,
+        // start sometimes isn't.
+        const r0 = (v) => (v == null || isNaN(v) ? null : Math.round(Number(v)));
+        const ss0 = r0(c.soc_start), se0 = r0(c.soc_end);
+        const socStr = se0 != null ? (ss0 != null ? `${ss0}→${se0}% (+${se0 - ss0})` : `→${se0}%`) : null;
+        const socChip = socStr ? `<span class="chip chip--soc"><ha-icon icon="mdi:battery-charging-high"></ha-icon>${socStr}</span>` : "";
         return `
           <div class="csession">
             <div class="session">
@@ -2498,6 +2506,7 @@ class EvTripHistoryCard extends HTMLElement {
                   <span class="stime">${timeOf(c.ended_at)}</span>
                   <span class="chip">${_endpoint(null, c.location)}</span>
                   ${typeChip}
+                  ${socChip}
                 </div>
                 <div class="smetrics"><b>${fmtNum(c.kwh)}</b> kWh · <b>${fmtNum(c.price_per_kwh)}</b> ${_esc(sym(c.currency))}/kWh${extra}</div>
                 ${locHtml}
