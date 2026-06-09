@@ -1,0 +1,122 @@
+# Rolling averages of the manufacturer's energy-snapshot sensors.
+# v0.5.38 creates two AVG sensors per "tracked sensor" configured in
+# the options flow (7-day + 30-day). This card surfaces them
+# alongside their CURRENT value so the user can see at a glance:
+#
+#   Hoy ............... 18.3 kWh/100km
+#   7-day average ..... 17.3
+#   30-day average .... 17.2
+#
+# Naming: the integration generates entity_ids like
+#   sensor.<device>_<manufacturer_prefix>_<source-tail>_avg_<N>d
+# Default for a BYD Sealion-7 install: sensor.sealion_7_byd_sealion_7_*.
+# Replace __DEVICE__ and __VEHICLE__ once and the card works.
+
+type: vertical-stack
+cards:
+  - type: custom:mushroom-title-card
+    title: Medias de consumo
+    subtitle: 7d / 30d sobre las lecturas de fabricante
+
+  # ── Today's consumption — current + rolling averages ─────────────
+  - type: grid
+    columns: 3
+    square: false
+    cards:
+      - type: custom:button-card
+        entity: sensor.__VEHICLE___today_s_energy_consumption
+        name: Hoy
+        show_state: true
+        icon: mdi:calendar-today
+        styles:
+          card: [{padding: 12px}, {border-radius: 16px}]
+          name: [{font-size: 11px}, {opacity: "0.7"}]
+          state: [{font-size: 20px}, {font-weight: bold}]
+      - type: custom:button-card
+        entity: sensor.__DEVICE____VEHICLE___today_s_energy_consumption_avg_7d
+        name: Avg 7d
+        show_state: true
+        icon: mdi:calendar-week
+        styles:
+          card: [{padding: 12px}, {border-radius: 16px}]
+          name: [{font-size: 11px}, {opacity: "0.7"}]
+          state: [{font-size: 20px}, {font-weight: bold}]
+      - type: custom:button-card
+        entity: sensor.__DEVICE____VEHICLE___today_s_energy_consumption_avg_30d
+        name: Avg 30d
+        show_state: true
+        icon: mdi:calendar-month
+        styles:
+          card: [{padding: 12px}, {border-radius: 16px}]
+          name: [{font-size: 11px}, {opacity: "0.7"}]
+          state: [{font-size: 20px}, {font-weight: bold}]
+
+  # ── 50km consumption strip ───────────────────────────────────────
+  - type: grid
+    columns: 3
+    square: false
+    cards:
+      - type: custom:button-card
+        entity: sensor.__VEHICLE___last_50km_average_ev_consumption
+        name: 50 km actual
+        show_state: true
+        icon: mdi:speedometer-medium
+        styles:
+          card: [{padding: 12px}, {border-radius: 16px}]
+          name: [{font-size: 11px}, {opacity: "0.7"}]
+          state: [{font-size: 18px}, {font-weight: bold}]
+      - type: custom:button-card
+        entity: sensor.__DEVICE____VEHICLE___last_50km_average_ev_consumption_avg_7d
+        name: 50km · 7d
+        show_state: true
+        icon: mdi:speedometer-medium
+        styles:
+          card: [{padding: 12px}, {border-radius: 16px}]
+          name: [{font-size: 11px}, {opacity: "0.7"}]
+          state: [{font-size: 18px}, {font-weight: bold}]
+      - type: custom:button-card
+        entity: sensor.__DEVICE____VEHICLE___last_50km_average_ev_consumption_avg_30d
+        name: 50km · 30d
+        show_state: true
+        icon: mdi:speedometer-medium
+        styles:
+          card: [{padding: 12px}, {border-radius: 16px}]
+          name: [{font-size: 11px}, {opacity: "0.7"}]
+          state: [{font-size: 18px}, {font-weight: bold}]
+
+  # ── Lifetime average — meaningful as a long-term reference ──────
+  - type: custom:mushroom-template-card
+    primary: >-
+      {% set v = states('sensor.__DEVICE____VEHICLE___lifetime_average_ev_consumption_avg_30d') %}
+      Lifetime promedio (30d): {{ v }} kWh/100km
+    secondary: >-
+      {% set raw = states('sensor.__VEHICLE___lifetime_average_ev_consumption') %}
+      {% set s = state_attr('sensor.__DEVICE____VEHICLE___lifetime_average_ev_consumption_avg_30d', 'samples') %}
+      Lectura cruda: {{ raw }} kWh/100km · basado en {{ s }} lecturas
+    icon: mdi:infinity
+    icon_color: indigo
+    fill_container: true
+    multiline_secondary: true
+
+  # ── How does today's consumption compare to the rolling mean? ───
+  - type: custom:mushroom-template-card
+    primary: >-
+      {% set t = states('sensor.__VEHICLE___today_s_energy_consumption') | float(0) %}
+      {% set a = states('sensor.__DEVICE____VEHICLE___today_s_energy_consumption_avg_30d') | float(0) %}
+      {% if a > 0 and t > 0 %}
+        {% set delta = ((t - a) / a) * 100 %}
+        {% if delta < 0 %}
+          {{ delta | round(1) }}% mejor que tu media 30d
+        {% else %}
+          +{{ delta | round(1) }}% peor que tu media 30d
+        {% endif %}
+      {% else %}
+        Aún sin suficientes datos para comparar
+      {% endif %}
+    secondary: Comparación con la rodada media de los últimos 30 días
+    icon: mdi:chart-line-variant
+    icon_color: >-
+      {% set t = states('sensor.__VEHICLE___today_s_energy_consumption') | float(0) %}
+      {% set a = states('sensor.__DEVICE____VEHICLE___today_s_energy_consumption_avg_30d') | float(0) %}
+      {{ 'green' if t < a else 'red' }}
+    fill_container: true
