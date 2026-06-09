@@ -2946,6 +2946,46 @@ class EvTripJourneyCard extends HTMLElement {
         .catch(() => { this._routes[id] = []; this._render(); });
     }
   }
+  // Stable cache key for the whole-journey route (first→last stage + count).
+  _jrKey(stages) {
+    if (!stages || !stages.length) return null;
+    const a = stages[0], b = stages[stages.length - 1];
+    const ida = a.id != null ? a.id : a.trip_id, idb = b.id != null ? b.id : b.trip_id;
+    return `${ida}-${idb}-${stages.length}`;
+  }
+  // Fetch the GPS breadcrumbs for the WHOLE journey in one window (first stage
+  // start → last stage end, or now if still en route) so the detail can draw a
+  // single map of the entire day's route. Lazy, cached per journey key.
+  _fetchJourneyRoute(stages) {
+    this._jroute = this._jroute || {};
+    const ent = this._config.locationEntity;
+    if (!ent || !this._hass || !stages || !stages.length) return;
+    const first = stages[0], last = stages[stages.length - 1];
+    if (!first.started_at) return;
+    const key = this._jrKey(stages);
+    if (this._jroute[key] !== undefined) return;
+    this._jroute[key] = "loading";
+    let start, end;
+    try {
+      start = new Date(first.started_at).toISOString();
+      end = (last.ended_at ? new Date(last.ended_at) : new Date()).toISOString();
+    } catch (_e) { this._jroute[key] = []; return; }
+    Promise.resolve(this._hass.callApi("GET", `history/period/${start}?end_time=${end}&filter_entity_id=${ent}&significant_changes_only=0`))
+      .then((res) => {
+        const ser = Array.isArray(res) && res[0] ? res[0] : [];
+        const pts = [];
+        for (const x of ser) {
+          const a = x.attributes || {};
+          const lat = parseFloat(a.latitude), lon = parseFloat(a.longitude);
+          if (isNaN(lat) || isNaN(lon)) continue;
+          const lp = pts[pts.length - 1];
+          if (!lp || Math.abs(lp.lat - lat) > 1e-6 || Math.abs(lp.lon - lon) > 1e-6) pts.push({ lat, lon });
+        }
+        this._jroute[key] = pts;
+        this._render();
+      })
+      .catch(() => { this._jroute[key] = []; this._render(); });
+  }
   // Render the expandable list of stages (one rich block per sub-trip) + totals.
   _stagesHtml(stages) {
     if (!stages || !stages.length) return "";
@@ -3014,7 +3054,12 @@ class EvTripJourneyCard extends HTMLElement {
         </div>`;
       })
       .join("");
-    return `<div class="jstages-list">${totals}${rows}</div>`;
+    // One map of the WHOLE day's route (all stages joined), above the stages.
+    const jr = this._jroute ? this._jroute[this._jrKey(stages)] : undefined;
+    let journeyMap = "";
+    if (jr === "loading") journeyMap = `<div class="js-map js-map--all js-map--ph">Cargando ruta del día…</div>`;
+    else if (Array.isArray(jr) && jr.length >= 2) { const svg = _routeSvg(jr); if (svg) journeyMap = `<div class="js-map js-map--all">${svg}</div>`; }
+    return `<div class="jstages-list">${totals}${journeyMap}${rows}</div>`;
   }
   _render() {
     if (!this._hass) return;
@@ -3111,7 +3156,7 @@ class EvTripJourneyCard extends HTMLElement {
     else if (chargedThis)
       chargeChip = `<span class="jchip jchg"><ha-icon icon="mdi:lightning-bolt"></ha-icon>Charged ${fmtNum(lc.state, 2)} kWh${lcLoc ? ` · ${_esc(lcLoc)}` : ""}</span>`;
 
-    if (this._open) { this._fetchStageTemps(stages); this._fetchStageStreets(stages); this._fetchStageRegen(stages); this._fetchStageRoute(stages); }
+    if (this._open) { this._fetchStageTemps(stages); this._fetchStageStreets(stages); this._fetchStageRegen(stages); this._fetchStageRoute(stages); this._fetchJourneyRoute(stages); }
     const stageStr = `${isNaN(stagesNum) ? DASH : stagesNum} ${stagesNum === 1 ? "stage" : "stages"}`;
     const tile = (tIcon, label, value, unit) => `
       <div class="jt">
@@ -3163,6 +3208,9 @@ class EvTripJourneyCard extends HTMLElement {
                   border:1px solid var(--divider-color,rgba(0,0,0,.12));}
           .js-map--ph{height:150px;display:flex;align-items:center;justify-content:center;
                       color:var(--secondary-text-color);font-size:.9em;background:var(--secondary-background-color);}
+          .js-map--all{margin-bottom:4px;}
+          .js-map--all .cal-rt-svg{height:200px;}
+          .js-map--all.js-map--ph{height:200px;}
           .cal-rt-svg{display:block;width:100%;height:150px;}
           .cal-rt-bg{fill:var(--secondary-background-color,#e8eaed);}
           .cal-rt-svg image{image-rendering:auto;}
