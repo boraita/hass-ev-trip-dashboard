@@ -4529,6 +4529,18 @@ class EvChargeStatusCard extends HTMLElement {
     this._tick();
   }
   getCardSize() { return 4; }
+  connectedCallback() {
+    if (this._clickBound) return;
+    this._clickBound = true;
+    this.addEventListener("click", (ev) => {
+      const b = ev.target && ev.target.closest && ev.target.closest(".cs-full[data-full]");
+      if (b && this.contains(b)) {
+        ev.stopPropagation();
+        const ent = b.getAttribute("data-full");
+        if (ent && this._hass) this._hass.callService("input_boolean", "toggle", { entity_id: ent });
+      }
+    });
+  }
   _tick() {
     const D = this._device || detectDevice(this._hass);
     this._device = D;
@@ -4560,6 +4572,7 @@ class EvChargeStatusCard extends HTMLElement {
   }
   _render() {
     if (!this._hass) return;
+    if (!this._clickBound && typeof this.addEventListener === "function") this.connectedCallback();
     const D = this._device;
     const st = this._st || {};
     const DASH = "—";
@@ -4574,6 +4587,11 @@ class EvChargeStatusCard extends HTMLElement {
         .cs-badge ha-icon{--mdc-icon-size:23px;}
         .cs-title{font-weight:700;}
         .cs-sub{color:var(--secondary-text-color);font-size:.82em;font-variant-numeric:tabular-nums;}
+        .cs-full{margin-left:auto;flex:0 0 auto;cursor:pointer;display:inline-flex;align-items:center;gap:4px;
+                 border:1px solid var(--divider-color);border-radius:999px;padding:5px 11px;font-size:.82em;font-weight:700;
+                 background:var(--card-background-color);color:var(--secondary-text-color);font-variant-numeric:tabular-nums;}
+        .cs-full ha-icon{--mdc-icon-size:16px;}
+        .cs-full.on{background:rgba(67,160,71,.18);color:var(--success-color,#43a047);border-color:var(--success-color,#43a047);}
         .cs-eta{display:flex;align-items:center;gap:7px;margin:0 16px 8px;padding:8px 12px;
                 border-radius:10px;background:rgba(67,160,71,.12);color:var(--success-color,#43a047);
                 font-size:.9em;font-variant-numeric:tabular-nums;}
@@ -4627,7 +4645,16 @@ class EvChargeStatusCard extends HTMLElement {
       // energy_to_full) and the gap between the current SoC and the target.
       const etf = parseFloat(((this._hass.states[`sensor.${D}_energy_to_full_charge`] || {}).state));
       const batt = parseFloat(((this._hass.states[`sensor.${D}_battery_energy`] || {}).state));
-      const target = Math.min(100, Math.max(1, Number(this._config.chargeTarget) || 100));
+      // Target = configured (default 100), overridden to 100 when the "full"
+      // toggle (input_boolean.<D>_charge_full) is on.
+      const baseTarget = Math.min(100, Math.max(1, Number(this._config.chargeTarget) || 100));
+      const fullEnt = this._config.chargeFullEntity || (D ? `input_boolean.${D}_charge_full` : null);
+      const hasFullToggle = fullEnt && has(this._hass, fullEnt);
+      const fullOn = hasFullToggle && String(this._hass.states[fullEnt].state).toLowerCase() === "on";
+      const target = fullOn ? 100 : baseTarget;
+      const fullToggle = hasFullToggle
+        ? `<button class="cs-full${fullOn ? " on" : ""}" data-full="${_esc(fullEnt)}"><ha-icon icon="${fullOn ? "mdi:battery-high" : "mdi:battery-80"}"></ha-icon>${fullOn ? "100%" : baseTarget + "%"}</button>`
+        : "";
       let etaHtml = "";
       if (charging && st.power != null && st.power > 0.1) {
         let need = etf, label = "Full";
@@ -4658,6 +4685,7 @@ class EvChargeStatusCard extends HTMLElement {
               <div class="cs-title">${charging ? "⚡ Charging" : "🔌 Plugged in — paused"}</div>
               <div class="cs-sub">${charging ? "Cable connected · drawing power" : "Cable connected · not charging"}</div>
             </div>
+            ${fullToggle}
           </div>
           ${etaHtml}
           ${curveSvg()}
