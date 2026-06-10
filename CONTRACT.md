@@ -32,6 +32,7 @@ Per-trip schema (verified live, **keep stable**):
 | `score` | float / null | 0–10 |
 | `origin` | string | **see §3** |
 | `destination` | string | **see §3** |
+| `driver` | string / null | **v0.5.43+** — who drove, captured from the car's bluetooth-connected-device sensor; `null` when unidentified |
 
 **Tweak A — configurable window size.** Today the window is small (~10). Add a
 config option (suggested `recent_trips_limit`, default **50**) so the dashboard's
@@ -118,28 +119,22 @@ field rather than overloading these.
 
 ---
 
-## 3b. Sensor metadata fixes (found during the dashboard review)
+## 3b. Sensor metadata fixes (DONE as of v0.5.x)
 
-These are small logger-side corrections that make the native charts work without
-dashboard workarounds:
-
-- **`avg_charge_price_30_days` has no `state_class`** → it cannot be graphed with
-  `statistics-graph`. The dashboard currently works around it with a
-  `history-graph`. Fix: set `state_class: measurement` so it becomes
-  long-term-statistics eligible, then a mean/day chart works.
-- **`trips_this_month` is `measurement`** → it can't be summed in LTS, so a
-  "trips per month" bar chart isn't possible. If you want that chart, expose a
-  `total_increasing` monthly-reset counter (or a dedicated `trips_per_month`
-  statistic). The dashboard currently omits the chart.
-- **Battery SoC entity name.** The dashboard expects `sensor.__DEVICE___battery_percent`
-  (verified live). Earlier docs said `battery_level`; that name belongs to the
-  separate **car** integration (`__VEHICLE__`), not the logger. Keep
-  `battery_percent` as the logger's SoC sensor.
-- **Recorder bloat.** `recent_trips`, `recent_journeys`, `recent_charges` carry a
-  large JSON attribute and have `state_class: measurement`, so the full blob is
-  written to the recorder on every change. Recommend documenting a
-  `recorder.exclude.entity_globs` for `sensor.*_recent_*`, or dropping
-  `state_class` on those (they're lists, not measurements).
+- **`avg_charge_price_30_days` `state_class`** — DONE: set to `MEASUREMENT` with
+  unit `<currency>/kWh`. The sensor is now long-term-statistics eligible.
+- **`trips_this_month` (now `total_month_count`)** — DONE: state class changed to
+  `TOTAL_INCREASING` so a "trips per month" bar chart works in LTS.
+- **Battery SoC entity name** — The entity_id is `sensor.__DEVICE___battery_state`
+  (the `SensorEntityDescription.key` is `"battery_state"` inside the
+  `BatteryPercentSensor` class in `sensor.py`). The friendly name shown in the
+  UI is derived from the translation key `"battery_state"`. Earlier versions of
+  this document incorrectly referred to this entity as `battery_percent` or
+  `battery_level`. The logger exposes exactly one SoC sensor per device, at
+  `sensor.__DEVICE___battery_state`.
+- **Recorder bloat** — `recent_trips`, `recent_journeys`, `recent_charges` carry
+  large JSON attributes. Recommend documenting a `recorder.exclude.entity_globs`
+  for `sensor.*_recent_*`, or dropping `state_class` on those entities.
 
 ## 3c. `__VEHICLE__` entities (car integration, not the logger)
 
@@ -153,15 +148,89 @@ Note: that `device_tracker` already resolves to **zone names** (e.g. "Trabajo"),
 which is exactly the source the logger can reuse to implement §3 origin/destination
 labelling.
 
-## 4. Summary of asks for the logger session
+---
+
+## 4. New sensors (v0.5.43)
+
+### 4a. Average regen per trip — `sensor.__DEVICE___avg_trip_regen_30_days`
+
+Mean energy recovered per trip (regen, regenerative braking) over the last 30
+days.
+
+- **State:** float, unit `kWh`, `state_class: MEASUREMENT`.
+- **Attributes:**
+  - `sample_count` — number of trips with regen data in the window.
+  - `window_days` — window length (30).
+
+The dashboard reads this in the Trips view KPI strip ("Regen media" tile).
+
+### 4b. Per-driver stats — `sensor.__DEVICE___driver_stats_30_days`
+
+Usage breakdown by driver over the last 30 days. Only exists when the user has
+wired a driver sensor (e.g. the car's Bluetooth-connected-device sensor) in the
+logger config.
+
+- **State:** int — number of **identified** drivers (excludes the `unknown`
+  bucket).
+- **Attributes:**
+  - `drivers` — list of objects, ordered by `distance_km` descending:
+
+    ```json
+    [
+      {
+        "driver": "Alice",
+        "trips": 18,
+        "distance_km": 312.4,
+        "hours": 4.2,
+        "energy_kwh": 48.1,
+        "avg_consumption_kwh_100km": 15.4
+      },
+      {
+        "driver": "unknown",
+        "trips": 3,
+        "distance_km": 42.0,
+        "hours": 0.6,
+        "energy_kwh": 7.2,
+        "avg_consumption_kwh_100km": 17.1
+      }
+    ]
+    ```
+
+    `driver == "unknown"` is the bucket for unidentified trips. It may be
+    absent when all trips have identified drivers.
+
+  - `window_days` — window length (30).
+
+The dashboard renders this in the `ev-driver-stats-card` (Patterns view and
+standalone `cards/driver-stats.yaml`).
+
+### 4c. Current driver — `sensor.__DEVICE___current_driver`
+
+Who is driving **right now**. Only exists when the user has wired a driver
+sensor. Handle absence gracefully (entity will be missing, not just unavailable).
+
+- **State:** string — name of the current driver, or `"unknown"` / `None` when
+  idle or unidentified.
+- **Attributes:**
+  - `trip_active` — bool, `true` while a trip is in progress.
+  - `last_trip_driver` — string / null — driver of the most recently completed
+    trip.
+
+---
+
+## 5. Summary of asks for the logger session
 
 - [ ] `recent_trips`: add `recent_trips_limit` option (default 50).
 - [ ] `recent_trips`: resolve `origin`/`destination` to labels (§3).
 - [ ] New sensor `sensor.__DEVICE___trip_records` with the all-time record
       objects in §2.
-- [ ] Keep the per-trip field names in §1 stable — the dashboard templates key
-      off them directly.
+- [x] `recent_trips` per-trip `driver` field (v0.5.43).
+- [x] `sensor.__DEVICE___avg_trip_regen_30_days` (v0.5.43).
+- [x] `sensor.__DEVICE___driver_stats_30_days` (v0.5.43).
+- [x] `sensor.__DEVICE___current_driver` (v0.5.43).
+- [x] Battery SoC entity is `sensor.__DEVICE___battery_state` (key `battery_state`).
+- [x] `state_class` fixes for avg_charge_price, total_month_count (§3b).
 
-When these land, the dashboard needs **no structural change**: the trip list
-auto-uses the bigger window and real destinations, and the records card
+When the pending items land, the dashboard needs **no structural change**: the
+trip list auto-uses the bigger window and real destinations, and the records card
 auto-switches from "best of recent" to "best all-time".

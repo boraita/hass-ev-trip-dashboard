@@ -788,6 +788,12 @@ function patternsView(D, hass) {
   // Apex by-hour + "By day" radar + mushroom weekday strip removed —
   // superseded by ev-trip-patterns-card above (the radar was stuck loading).
 
+  // ---- NEW (v0.5.43): per-driver stats card ----------------------------
+  // Only rendered when the sensor exists (needs driver sensor wired in logger).
+  if (has(hass, `sensor.${D}_driver_stats_30_days`)) {
+    cards.push({ type: "custom:ev-driver-stats-card", device: D });
+  }
+
   return {
     title: "Patterns",
     path: "patterns",
@@ -1221,6 +1227,18 @@ function trips30dKpis(D) {
         state_display:
           "[[[ const v = entity && entity.state; return (v==null||v==='unavailable'||v==='unknown') ? '—' : `${Number(v).toFixed(1)} km/h` ]]]",
       },
+      {
+        type: "custom:button-card",
+        entity: `sensor.${D}_avg_trip_regen_30_days`,
+        name: "Regen media",
+        icon: "mdi:battery-charging",
+        show_state: true,
+        show_name: true,
+        show_icon: true,
+        styles: kpiStyles,
+        state_display:
+          "[[[ const v = entity && entity.state; return (v==null||v==='unavailable'||v==='unknown') ? '—' : `${Number(v).toFixed(2)} kWh` ]]]",
+      },
     ],
   };
 }
@@ -1436,7 +1454,12 @@ const _scoreColor = (s) =>
     : s >= 5
     ? "var(--warning-color, #fbc02d)"
     : "var(--error-color, #e53935)";
-const _esc = (s) => String(s == null ? "" : s).replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+const _esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+// Cheap dirty-check: build a signature string from the last_updated+state of a
+// set of entity ids. Cards use this in set hass to skip _render() when nothing
+// they actually read has changed (HA fires set hass on EVERY state change in the
+// house, not just the card's own entities).
+const _sig = (hass, ids) => ids.map((id) => { const s = hass.states[id]; return s ? s.last_updated + ":" + s.state : "x"; }).join("|");
 // Medal for the top 3 of a ranking, plain number after.
 const _medal = (i) => ["🥇", "🥈", "🥉"][i] || `${i + 1}`;
 // Currency symbol for cards whose own data carries no per-row currency
@@ -1662,6 +1685,21 @@ class EvTripListCard extends HTMLElement {
   }
   set hass(hass) {
     this._hass = hass;
+    const D = this._device || detectDevice(hass);
+    const sig = _sig(hass, [
+      `sensor.${D}_recent_trips`,
+      `sensor.${D}_recent_charges`,
+      `sensor.${D}_charge_in_progress`,
+      `input_text.${D}_trip_search`,
+      `input_select.${D}_trip_sort`,
+      `input_select.${D}_trip_window`,
+      `input_number.${D}_trip_min_distance`,
+      `input_number.${D}_trip_min_score`,
+      `input_number.${D}_trip_max_cost`,
+      `input_number.${D}_trip_max_consumption`,
+    ]);
+    if (sig === this._listSig) return;
+    this._listSig = sig;
     this._render();
   }
   getCardSize() {
@@ -1836,7 +1874,7 @@ class EvTripListCard extends HTMLElement {
               <span class="d-score-max">/10</span>
             </div>
           </div>
-          <div class="d-sub">${_fmtDate(t.ended_at, true)}${(() => { const r = _timeRange(t.started_at, t.ended_at); return r ? ` · ${r}` : ""; })()}</div>
+          <div class="d-sub">${_fmtDate(t.ended_at, true)}${(() => { const r = _timeRange(t.started_at, t.ended_at); return r ? ` · ${r}` : ""; })()}${t.driver ? ` · <span class="d-driver"><svg class="d-driver-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 12c2.7 0 4.8-2.1 4.8-4.8S14.7 2.4 12 2.4 7.2 4.5 7.2 7.2 9.3 12 12 12zm0 2.4c-3.2 0-9.6 1.6-9.6 4.8v2.4h19.2v-2.4c0-3.2-6.4-4.8-9.6-4.8z"/></svg>${_esc(t.driver)}</span>` : ""}</div>
           ${(() => {
             // One location line: a HA zone/area name when the endpoint was
             // inside a zone, otherwise the reverse-geocoded street (not_home).
@@ -1918,9 +1956,12 @@ class EvTripListCard extends HTMLElement {
       const sym = cur[t.currency] || t.currency || "";
       const score = t.score != null ? Number(t.score).toFixed(1) : DASH;
       const isOpen = t.id != null && String(this._openTripId) === String(t.id);
+      const driverChip = t.driver
+        ? `<span class="driver-chip"><svg class="driver-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 12c2.7 0 4.8-2.1 4.8-4.8S14.7 2.4 12 2.4 7.2 4.5 7.2 7.2 9.3 12 12 12zm0 2.4c-3.2 0-9.6 1.6-9.6 4.8v2.4h19.2v-2.4c0-3.2-6.4-4.8-9.6-4.8z"/></svg>${_esc(t.driver)}</span>`
+        : "";
       return `
         <div class="trip${isOpen ? " trip--open" : ""}" data-trip-id="${_esc(t.id)}">
-          <div class="trip-date">${_fmtDate(t.ended_at, true)}</div>
+          <div class="trip-date">${_fmtDate(t.ended_at, true)}${driverChip}</div>
           <div class="cols">
             ${col("Distance", fmtNum(t.distance_km), "km")}
             ${col("Consumption", nn(t.energy_kwh), "kWh")}
@@ -2112,6 +2153,15 @@ class EvTripListCard extends HTMLElement {
                      font-size:.95em;}
           .d-cmp-label{color:var(--secondary-text-color);}
           .d-cmp-val{font-weight:800;font-variant-numeric:tabular-nums;}
+          .driver-chip{display:inline-flex;align-items:center;gap:3px;margin-left:8px;
+                       font-size:.75em;font-weight:600;padding:1px 7px;border-radius:999px;
+                       background:var(--secondary-background-color,rgba(0,0,0,.06));
+                       border:1px solid var(--divider-color);color:var(--secondary-text-color);
+                       vertical-align:middle;}
+          .driver-icon{width:11px;height:11px;fill:currentColor;flex:0 0 auto;}
+          .d-driver{display:inline-flex;align-items:center;gap:3px;
+                    color:var(--secondary-text-color);font-size:.9em;}
+          .d-driver-icon{width:12px;height:12px;fill:currentColor;flex:0 0 auto;}
           @media (max-width:360px){
             .col-label{font-size:.55em;}
             .col-val{font-size:.95em;}
@@ -2177,6 +2227,14 @@ class EvTripHistoryCard extends HTMLElement {
     // Don't blow away an in-progress price edit when an unrelated state update
     // arrives — re-render is resumed once the input loses focus / is applied.
     if (this._editing) return;
+    const D = this._device || detectDevice(hass);
+    const sig = _sig(hass, [
+      `sensor.${D}_recent_charges`,
+      `sensor.${D}_recent_trips`,
+      `sensor.${D}_charge_in_progress`,
+    ]);
+    if (sig === this._histSig) return;
+    this._histSig = sig;
     this._render();
   }
   getCardSize() {
@@ -2824,6 +2882,17 @@ class EvTripJourneyCard extends HTMLElement {
   }
   set hass(hass) {
     this._hass = hass;
+    const D = this._device || detectDevice(hass);
+    const sig = _sig(hass, [
+      `sensor.${D}_current_journey`,
+      `sensor.${D}_last_journey`,
+      `sensor.${D}_recent_trips`,
+      `sensor.${D}_recent_charges`,
+      `sensor.${D}_charge_in_progress`,
+      `sensor.${D}_last_charge_energy`,
+    ]);
+    if (sig === this._journeySig) return;
+    this._journeySig = sig;
     this._render();
   }
   getCardSize() {
@@ -3357,6 +3426,10 @@ class EvTripMonthlyCard extends HTMLElement {
   }
   set hass(hass) {
     this._hass = hass;
+    const D = this._device || detectDevice(hass);
+    const sig = _sig(hass, [`sensor.${D}_monthly_history`]);
+    if (sig === this._monthlySig) return;
+    this._monthlySig = sig;
     this._render();
   }
   getCardSize() {
@@ -3449,6 +3522,10 @@ class EvTripPatternsCard extends HTMLElement {
   }
   set hass(hass) {
     this._hass = hass;
+    const D = this._device || detectDevice(hass);
+    const sig = _sig(hass, [`sensor.${D}_trip_patterns`]);
+    if (sig === this._patternsSig) return;
+    this._patternsSig = sig;
     this._render();
   }
   getCardSize() {
@@ -4850,6 +4927,115 @@ class EvTripRecordsCard extends HTMLElement {
 customElements.define("ev-trip-records-card", EvTripRecordsCard);
 window.customCards = window.customCards || [];
 window.customCards.push({ type: "ev-trip-records-card", name: "EV Trip — records board", description: "All-time record leaders with expandable top-9 (sensor.<device>_tops)." });
+
+// ==========================================================================
+// Custom card: per-driver stats over the last 30 days.
+// Reads sensor.<device>_driver_stats_30_days — state = number of identified
+// drivers, attribute `drivers` = [{driver, trips, distance_km, hours,
+// energy_kwh, avg_consumption_kwh_100km}] ordered by km desc.
+// The 'unknown' bucket is rendered last and dimmed as "Sin identificar".
+// ==========================================================================
+class EvDriverStatsCard extends HTMLElement {
+  setConfig(config) {
+    this._config = config || {};
+    this._device = this._config.device || null;
+  }
+  set hass(hass) {
+    this._hass = hass;
+    const D = this._device || detectDevice(hass);
+    const sig = _sig(hass, [`sensor.${D}_driver_stats_30_days`]);
+    if (sig === this._driverSig) return;
+    this._driverSig = sig;
+    this._render();
+  }
+  getCardSize() {
+    return 4;
+  }
+  _render() {
+    if (!this._hass) return;
+    const D = this._device || detectDevice(this._hass);
+    this._device = D;
+    const st = this._hass.states[`sensor.${D}_driver_stats_30_days`];
+    const a = (st && st.attributes) || {};
+    const allRows = (Array.isArray(a.drivers) && a.drivers) || [];
+    const winDays = Number(a.window_days) || 30;
+
+    if (!st || !allRows.length) {
+      this.innerHTML = `
+        <ha-card>
+          <div class="ds-head">Conductores (${winDays} d\xEDs)</div>
+          <div class="ds-empty">Sin datos de conductor a\xFAn.<br><span>Requiere <code>sensor.${_esc(D)}_driver_stats_30_days</code> (logger v0.5.43).</span></div>
+          <style>
+            .ds-head{padding:14px 16px 4px;font-weight:600;font-size:1.05em;}
+            .ds-empty{padding:18px 16px 22px;text-align:center;color:var(--secondary-text-color);line-height:1.5;}
+            .ds-empty span{font-size:.85em;opacity:.8;}
+          </style>
+        </ha-card>`;
+      return;
+    }
+
+    // Split known drivers from the 'unknown' bucket so unknown is always last.
+    const known = allRows.filter((r) => r.driver !== "unknown");
+    const unknownRow = allRows.find((r) => r.driver === "unknown") || null;
+    const rows = unknownRow ? [...known, unknownRow] : known;
+
+    const maxKm = Math.max(1, ...rows.map((r) => Number(r.distance_km) || 0));
+    const DASH = "—";
+    const fmt = (v, dp) => (v == null || isNaN(Number(v)) ? DASH : Number(v).toFixed(dp));
+
+    const rowsHtml = rows.map((r) => {
+      const isUnknown = r.driver === "unknown";
+      const km = Number(r.distance_km) || 0;
+      const pct = Math.round((km / maxKm) * 100);
+      const name = isUnknown ? "Sin identificar" : _esc(r.driver);
+      const cons = r.avg_consumption_kwh_100km != null ? `${fmt(r.avg_consumption_kwh_100km, 1)} kWh/100` : DASH;
+      const hrs = r.hours != null ? `${fmt(r.hours, 1)} h` : DASH;
+      return `
+        <div class="ds-row${isUnknown ? " ds-unknown" : ""}">
+          <div class="ds-namerow">
+            <span class="ds-name">${name}</span>
+            <span class="ds-trips">${r.trips != null ? r.trips : DASH} viajes</span>
+          </div>
+          <div class="ds-track"><div class="ds-fill" style="width:${pct}%"></div></div>
+          <div class="ds-vals">
+            <b>${fmt(km, 0)}</b> km &nbsp;&middot;&nbsp;
+            ${hrs} &nbsp;&middot;&nbsp;
+            <b>${fmt(r.energy_kwh, 1)}</b> kWh &nbsp;&middot;&nbsp;
+            <span class="ds-cons">${cons}</span>
+          </div>
+        </div>`;
+    }).join("");
+
+    this.innerHTML = `
+      <ha-card>
+        <div class="ds-head">Conductores (${winDays} d\xEDs)
+          <span class="ds-tot">${known.length} identificado${known.length !== 1 ? "s" : ""}</span>
+        </div>
+        <div class="ds-list">${rowsHtml}</div>
+        <style>
+          .ds-head{display:flex;justify-content:space-between;align-items:baseline;
+                   padding:14px 16px 10px;font-weight:600;font-size:1.05em;}
+          .ds-tot{color:var(--secondary-text-color);font-weight:400;font-size:.8em;}
+          .ds-list{display:flex;flex-direction:column;gap:10px;padding:0 16px 16px;}
+          .ds-row{display:flex;flex-direction:column;gap:4px;}
+          .ds-unknown{opacity:.55;}
+          .ds-namerow{display:flex;justify-content:space-between;align-items:baseline;}
+          .ds-name{font-weight:700;font-size:.95em;color:var(--primary-text-color);}
+          .ds-trips{font-size:.78em;color:var(--secondary-text-color);}
+          .ds-track{height:9px;border-radius:5px;background:var(--divider-color);overflow:hidden;}
+          .ds-fill{height:100%;border-radius:5px;
+                   background:linear-gradient(90deg,var(--primary-color),var(--info-color,#039be5));}
+          .ds-unknown .ds-fill{background:var(--secondary-text-color);}
+          .ds-vals{font-size:.8em;color:var(--secondary-text-color);font-variant-numeric:tabular-nums;}
+          .ds-vals b{color:var(--primary-text-color);}
+          .ds-cons{color:var(--success-color,#43a047);font-weight:600;}
+        </style>
+      </ha-card>`;
+  }
+}
+customElements.define("ev-driver-stats-card", EvDriverStatsCard);
+window.customCards = window.customCards || [];
+window.customCards.push({ type: "ev-driver-stats-card", name: "EV Trip — driver stats", description: "Per-driver usage over 30 days (sensor.<device>_driver_stats_30_days)." });
 
 // ==========================================================================
 // Custom card: the full charging-power curve (kW vs time) of the most recent

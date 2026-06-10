@@ -1,0 +1,21 @@
+# Conductores — estadísticas por conductor (últimos 30 días).
+#
+# Muestra un ranking de conductores con km, horas, energía y consumo medio.
+# El bucket "Sin identificar" agrupa los viajes sin conductor detectado y
+# se muestra al final, atenuado.
+#
+# Requiere el sensor (disponible desde logger v0.5.43):
+#   - sensor.__DEVICE___driver_stats_30_days
+#       state              -> número de conductores identificados
+#       attrs.drivers      -> [{driver, trips, distance_km, hours,
+#                               energy_kwh, avg_consumption_kwh_100km}]
+#       attrs.window_days  -> ventana en días (30)
+#
+# El sensor solo existe cuando el usuario ha configurado un sensor de conductor
+# en la integración (p.ej. el dispositivo Bluetooth conectado al coche).
+# Si el sensor está ausente, la tarjeta muestra un mensaje de aviso.
+#
+# Reemplaza __DEVICE__ con el slug de tu dispositivo.
+
+type: custom:ev-driver-stats-card
+device: __DEVICE__
