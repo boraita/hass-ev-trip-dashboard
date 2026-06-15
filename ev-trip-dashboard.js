@@ -1901,8 +1901,16 @@ class EvTripListCard extends HTMLElement {
             ${tile("mdi:lightning-bolt", "Consumption", nn(t.energy_kwh), "kWh")}
             ${tile("mdi:chart-line", "Efficiency", nn(t.consumption_kwh_100km), "kWh/100km")}
           </div>
-          <div class="d-grid">
+          <div class="d-grid d-grid3">
             ${tile("mdi:speedometer", "Avg speed", speed, "km/h")}
+            ${(() => {
+              // SoC at motion start→end. This is the DRIVING window only — the
+              // pack can also drain while parked (climate) before departure and
+              // after arrival, so this "% used" can be less than peak→now.
+              const s0 = t.soc_start, s1 = t.soc_end;
+              const socV = s0 != null && s1 != null ? `${Math.round(s0)}→${Math.round(s1)}` : s1 != null ? `→${Math.round(s1)}` : null;
+              return tile("mdi:battery", "Battery", socV || DASH, socV ? "%" : "");
+            })()}
             ${(() => {
               // Regen recovered driving (downhill/braking): logger value if it
               // has one, otherwise our integrated estimate from the power sensor.
@@ -1911,7 +1919,7 @@ class EvTripListCard extends HTMLElement {
               let val, label = "Regen";
               if (lg != null) val = lg.toFixed(2);
               else if (est === "loading") val = "…";
-              else if (est && est.kwh != null) { val = est.kwh.toFixed(2); label = "Regen (est.)"; }
+              else if (est && est.kwh != null) { val = est.kwh.toFixed(2); label = "Regen ~"; }
               else val = DASH;
               return tile("mdi:sync", label, val, "kWh");
             })()}
@@ -5603,6 +5611,13 @@ function drivingView(D, V, hass, cfg) {
             `{%- set ended = state_attr('sensor.${D}_last_trip_distance', 'ended_at') %}\n` +
             `{%- if ended %}\n` +
             `_{{ as_timestamp(ended) | timestamp_custom('%d/%m %H:%M') }} — {{ state_attr('sensor.${D}_last_trip_distance', 'origin') or '?' }} → {{ state_attr('sensor.${D}_last_trip_distance', 'destination') or '?' }}_\n` +
+            `{%- endif %}\n` +
+            // SoC at the trip's motion start→end (from recent_trips[0]). Makes the
+            // "% used" transparent — note it's the DRIVING window, so parked drain
+            // before departure / after arrival isn't counted here.
+            `{%- set lt = (state_attr('sensor.${D}_recent_trips', 'trips') or [{}])[0] %}\n` +
+            `{%- if lt.soc_start is not none and lt.soc_end is not none %}\n` +
+            `\n🔋 **{{ lt.soc_start | round(0) }} → {{ lt.soc_end | round(0) }}%** _en marcha_ ({{ (lt.soc_start - lt.soc_end) | round(0) }}% usado)\n` +
             `{%- endif %}\n` +
             // Percentile vs the recent window (relocated here from the deleted Detail view).
             `{%- set trip = states('sensor.${D}_last_trip_consumption') | float(0) %}\n` +
