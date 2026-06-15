@@ -4642,7 +4642,15 @@ class EvTripBatteryHealthCard extends HTMLElement {
     const a = (this._hass.states[`sensor.${D}_recent_trips`] || {}).attributes || {};
     const cap = parseFloat(a.effective_battery_capacity_kwh);
     const charges = parseInt(a.battery_capacity_calibration_charges, 10);
-    const nominal = parseFloat(this._config.nominalKwh);
+    // Nominal (as-new) baseline for the health %: take it from the LOGGER when
+    // it exposes the declared spec, else an explicit dashboard override. No
+    // dashboard config is required — the capacity already comes from the logger.
+    const nominal = (() => {
+      const fromLogger = parseFloat(a.battery_capacity_declared_kwh);
+      if (!isNaN(fromLogger) && fromLogger > 0) return fromLogger;
+      const fromCfg = parseFloat(this._config.nominalKwh);
+      return !isNaN(fromCfg) && fromCfg > 0 ? fromCfg : NaN;
+    })();
     const DASH = "—";
     if (isNaN(cap)) {
       this.innerHTML = `<ha-card><div class="bh-head"><ha-icon icon="mdi:battery-heart-variant"></ha-icon>Battery health</div>
@@ -4664,8 +4672,6 @@ class EvTripBatteryHealthCard extends HTMLElement {
       healthHtml = `
         <div class="bh-bar"><span class="bh-fill" style="width:${pct.toFixed(0)}%;background:${col}"></span></div>
         <div class="bh-pct"><b style="color:${col}">${pct.toFixed(1)}%</b> de salud · nominal ${nominal.toFixed(1)} kWh</div>`;
-    } else {
-      healthHtml = `<div class="bh-hint">Define <code>battery_nominal_kwh</code> en la config para ver el % de salud.</div>`;
     }
     this.innerHTML = `
       <ha-card>
