@@ -809,7 +809,7 @@ function patternsView(D, hass) {
 // Hero (30-day avg consumption) + monthly consumption line + efficiency vs
 // distance scatter (3 series by score band) + temperature bar + tip.
 // ==========================================================================
-function eficienciaView(D, hass) {
+function eficienciaView(D, hass, V, cfg) {
   const cards = [];
 
   cards.push({
@@ -874,44 +874,22 @@ function eficienciaView(D, hass) {
   // logger records avg_temp_c per trip.
   cards.push({ type: "custom:ev-trip-speed-card", device: D });
 
-  // ---- Consumption by temperature bucket (BAR) -------------------------
-  // by_bucket keys are stringified ints; sort them numerically ascending so
-  // the x-axis goes cold → hot. Each label gets a "°C" suffix.
-  // Only render when there is actually bucketed data — an empty by_bucket
-  // (no temp sensor yet / synthetic trips) would otherwise show bare axes.
-  const tempSt = hass && hass.states[`sensor.${D}_consumption_by_temperature`];
-  const tempBuckets = tempSt && tempSt.attributes && tempSt.attributes.by_bucket;
-  if (tempBuckets && Object.keys(tempBuckets).length > 0) {
-    cards.push({
-    type: "custom:apexcharts-card",
-    header: { show: true, title: "Consumption by temperature (kWh/100km)", show_states: false },
-    apex_config: {
-      chart: { height: 240 },
-      plotOptions: { bar: { borderRadius: 4, columnWidth: "60%", distributed: true } },
-      dataLabels: {
-        enabled: true,
-        formatter: "EVAL:function(val){ return val ? val.toFixed(1) : ''; }",
-        style: { fontSize: "11px" },
-      },
-      legend: { show: false },
-      grid: { borderColor: "rgba(255,255,255,0.08)" },
-      xaxis: { type: "category", title: { text: "Temperature bucket (°C)" } },
-      yaxis: { title: { text: "kWh/100km" }, decimalsInFloat: 1 },
-    },
-    series: [
-      {
-        entity: `sensor.${D}_consumption_by_temperature`,
-        name: "Consumption",
-        type: "column",
-        data_generator:
-          "const buckets = entity.attributes.by_bucket || {};\nreturn Object.keys(buckets)\n  .map((k) => [parseInt(k, 10), Number(buckets[k])])\n  .filter((p) => !isNaN(p[0]) && !isNaN(p[1]))\n  .sort((a, b) => a[0] - b[0])\n  .map(([k, v]) => [`${k}°C`, v]);",
-      },
-    ],
-    });
-  }
-  // (No temperature placeholder card: by_bucket stays empty until the logger
-  // records avg_temp_c per trip, and a permanently-empty card reads as broken.
-  // The speed-band card above already shows what drives consumption.)
+  // ---- Battery health (degradation proxy: calibrated usable capacity) ---
+  cards.push({
+    type: "custom:ev-trip-battery-health-card",
+    device: D,
+    nominalKwh: cfg && cfg.battery_nominal_kwh,
+  });
+
+  // ---- Consumption by temperature / seasons (custom HTML bars) ----------
+  // Replaces the old apex CATEGORY chart (which renders blank). Reliable bars,
+  // cold→hot, current-temp band highlighted, in the active efficiency unit.
+  // Self-shows an "awaiting data" state until trips record an outside temp.
+  cards.push({
+    type: "custom:ev-trip-temp-card",
+    device: D,
+    tempEntity: (cfg && cfg.outside_temp_entity) || (hass && V ? pickVehicleEntity(hass, V, "outside_temp", cfg) : null),
+  });
 
   // ---- Footer hint — colored advice -------------------------------------
   cards.push(
@@ -4539,6 +4517,182 @@ customElements.define("ev-trip-speed-card", EvTripSpeedCard);
 window.customCards.push({ type: "ev-trip-speed-card", name: "EV Trip — consumption by speed", description: "Distance-weighted kWh/100km per speed band from recent_trips." });
 
 // ==========================================================================
+// Custom card: consumption by TEMPERATURE band (the "seasons" view). Reads the
+// logger's consumption-by-temperature sensor (state = current bucket; attribute
+// `by_bucket` = {tempBucket: kWh/100km}). Drawn as reliable HTML bars (the apex
+// category chart renders blank), cold→hot, season-coloured, with the bucket the
+// car is in right now highlighted. Honours the global efficiency unit toggle.
+// Stays empty (with a clear hint) until trips record an outside temperature.
+// ==========================================================================
+class EvTripTempCard extends HTMLElement {
+  setConfig(config) { this._config = config || {}; this._device = this._config.device || null; }
+  set hass(hass) { this._hass = hass; this._render(); }
+  getCardSize() { return 4; }
+  connectedCallback() {
+    if (this._effBound) return;
+    this._effBound = true;
+    this._onEffUnit = () => this._render();
+    window.addEventListener("ev-trip-eff-unit", this._onEffUnit);
+  }
+  disconnectedCallback() {
+    if (this._onEffUnit) window.removeEventListener("ev-trip-eff-unit", this._onEffUnit);
+    this._effBound = false;
+  }
+  // Cold → hot season styling for a bucket's lower-bound temperature.
+  _season(t) {
+    if (t < 5) return { color: "#039be5", icon: "mdi:snowflake" };
+    if (t < 15) return { color: "#26c6da", icon: "mdi:weather-partly-cloudy" };
+    if (t < 25) return { color: "#43a047", icon: "mdi:weather-sunny" };
+    return { color: "#f59e0b", icon: "mdi:weather-sunny-alert" };
+  }
+  _render() {
+    if (!this._hass) return;
+    const D = this._device || detectDevice(this._hass);
+    this._device = D;
+    const st =
+      this._hass.states[`sensor.${D}_consumption_by_temperature`] ||
+      this._hass.states[`sensor.${D}_consumption_by_temp_bucket`];
+    const a = (st && st.attributes) || {};
+    const buckets = a.by_bucket || {};
+    const size = Number(a.bucket_size_c) || 5;
+    const n = Number(a.sample_count) || 0;
+    const keys = Object.keys(buckets)
+      .map((k) => [parseInt(k, 10), Number(buckets[k])])
+      .filter((p) => !isNaN(p[0]) && !isNaN(p[1]) && p[1] >= 0)
+      .sort((x, y) => x[0] - y[0]);
+    const head = `<div class="tc-head">Consumption by temperature <span class="tc-sub">${_esc(_effUnitLabel())} · ${n} ${n === 1 ? "sample" : "samples"}</span></div>`;
+    if (!keys.length) {
+      this.innerHTML = `<ha-card>${head}
+        <div class="tc-empty"><ha-icon icon="mdi:thermometer-off"></ha-icon>
+          <div>Aún sin datos por temperatura.<br><span>Se llena a medida que los viajes registran la temperatura exterior.</span></div>
+        </div>
+        <style>
+          .tc-head{display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:4px;padding:14px 16px 8px;font-weight:600;font-size:1.05em;}
+          .tc-sub{color:var(--secondary-text-color);font-weight:400;font-size:.78em;}
+          .tc-empty{display:flex;align-items:center;gap:12px;padding:10px 18px 22px;color:var(--secondary-text-color);}
+          .tc-empty ha-icon{--mdc-icon-size:30px;flex:0 0 auto;opacity:.7;}
+          .tc-empty span{font-size:.88em;opacity:.85;}
+        </style></ha-card>`;
+      return;
+    }
+    // Which bucket is the car in right now?
+    let curBucket = null;
+    const te = this._config.tempEntity ? this._hass.states[this._config.tempEntity] : null;
+    const curTemp = te ? parseFloat(te.state) : NaN;
+    if (!isNaN(curTemp)) curBucket = Math.floor(curTemp / size) * size;
+    const maxV = Math.max(...keys.map((p) => p[1])) || 1;
+    const rows = keys
+      .map(([lo, v]) => {
+        const s = this._season(lo);
+        const e = _fmtEffVal(v);
+        const pct = Math.max(4, Math.round((v / maxV) * 100));
+        const isCur = curBucket != null && lo === curBucket;
+        return `<div class="tc-row${isCur ? " tc-row--cur" : ""}">
+          <span class="tc-ic" style="color:${s.color}"><ha-icon icon="${s.icon}"></ha-icon></span>
+          <span class="tc-lbl">${lo}–${lo + size}°C${isCur ? ' <span class="tc-now">ahora</span>' : ""}</span>
+          <span class="tc-track"><span class="tc-fill" style="width:${pct}%;background:${s.color}"></span></span>
+          <span class="tc-val">${e.value}</span>
+        </div>`;
+      })
+      .join("");
+    // Best (lowest-consumption) band for the footer.
+    const best = keys.reduce((m, p) => (p[1] < m[1] ? p : m));
+    this.innerHTML = `
+      <ha-card>
+        ${head}
+        <div class="tc-list">${rows}</div>
+        <div class="tc-foot">❄️ frío → ☀️ calor · más bajo = mejor · mejor banda: <b>${best[0]}–${best[0] + size}°C</b> (${_fmtEff(best[1])})</div>
+        <style>
+          .tc-head{display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:4px;padding:14px 16px 8px;font-weight:600;font-size:1.05em;}
+          .tc-sub{color:var(--secondary-text-color);font-weight:400;font-size:.78em;}
+          .tc-list{display:flex;flex-direction:column;gap:9px;padding:2px 16px 8px;}
+          .tc-row{display:grid;grid-template-columns:26px 92px 1fr auto;align-items:center;gap:10px;}
+          .tc-row--cur .tc-lbl{font-weight:800;color:var(--primary-text-color);}
+          .tc-ic ha-icon{--mdc-icon-size:20px;}
+          .tc-lbl{font-size:.84em;font-variant-numeric:tabular-nums;color:var(--secondary-text-color);}
+          .tc-now{font-size:.78em;background:var(--primary-color);color:var(--text-primary-color,#fff);
+                  border-radius:6px;padding:0 5px;margin-left:3px;font-weight:700;}
+          .tc-track{height:10px;border-radius:6px;background:var(--divider-color);overflow:hidden;}
+          .tc-fill{display:block;height:100%;border-radius:6px;}
+          .tc-val{font-weight:800;font-variant-numeric:tabular-nums;min-width:42px;text-align:right;}
+          .tc-foot{padding:6px 16px 16px;font-size:.82em;color:var(--secondary-text-color);}
+        </style>
+      </ha-card>`;
+  }
+}
+customElements.define("ev-trip-temp-card", EvTripTempCard);
+window.customCards.push({ type: "ev-trip-temp-card", name: "EV Trip — consumption by temperature", description: "Seasonal kWh/100km per outdoor-temperature band from the logger." });
+
+// ==========================================================================
+// Custom card: battery health (degradation proxy). The BYD/Tesla clouds don't
+// expose a real SoH, but the logger calibrates the EFFECTIVE usable capacity
+// from charge sessions (SoC delta vs kWh added) and exposes it on recent_trips
+// as `effective_battery_capacity_kwh` (+ how many charges back the estimate).
+// A drop in this figure over time is the practical degradation signal. Health %
+// is shown when a nominal (as-new) capacity is configured.
+// ==========================================================================
+class EvTripBatteryHealthCard extends HTMLElement {
+  setConfig(config) { this._config = config || {}; this._device = this._config.device || null; }
+  set hass(hass) { this._hass = hass; this._render(); }
+  getCardSize() { return 3; }
+  _render() {
+    if (!this._hass) return;
+    const D = this._device || detectDevice(this._hass);
+    this._device = D;
+    const a = (this._hass.states[`sensor.${D}_recent_trips`] || {}).attributes || {};
+    const cap = parseFloat(a.effective_battery_capacity_kwh);
+    const charges = parseInt(a.battery_capacity_calibration_charges, 10);
+    const nominal = parseFloat(this._config.nominalKwh);
+    const DASH = "—";
+    if (isNaN(cap)) {
+      this.innerHTML = `<ha-card><div class="bh-head"><ha-icon icon="mdi:battery-heart-variant"></ha-icon>Battery health</div>
+        <div class="bh-empty">Calibrando capacidad… (necesita varias cargas registradas)</div>
+        <style>.bh-head{display:flex;align-items:center;gap:7px;padding:14px 16px 4px;font-weight:600;font-size:1.05em;}
+        .bh-head ha-icon{--mdc-icon-size:20px;color:var(--success-color,#43a047);}
+        .bh-empty{padding:8px 16px 20px;color:var(--secondary-text-color);}</style></ha-card>`;
+      return;
+    }
+    // Confidence from the number of calibration charges.
+    const conf = isNaN(charges) ? { label: "—", color: "var(--secondary-text-color)" }
+      : charges >= 10 ? { label: `alta · ${charges} cargas`, color: "var(--success-color,#43a047)" }
+      : charges >= 3 ? { label: `media · ${charges} cargas`, color: "var(--warning-color,#fb8c00)" }
+      : { label: `baja · ${charges} ${charges === 1 ? "carga" : "cargas"}`, color: "var(--error-color,#e53935)" };
+    let healthHtml = "";
+    if (!isNaN(nominal) && nominal > 0) {
+      const pct = Math.max(0, Math.min(100, (cap / nominal) * 100));
+      const col = pct >= 95 ? "var(--success-color,#43a047)" : pct >= 88 ? "var(--warning-color,#fb8c00)" : "var(--error-color,#e53935)";
+      healthHtml = `
+        <div class="bh-bar"><span class="bh-fill" style="width:${pct.toFixed(0)}%;background:${col}"></span></div>
+        <div class="bh-pct"><b style="color:${col}">${pct.toFixed(1)}%</b> de salud · nominal ${nominal.toFixed(1)} kWh</div>`;
+    } else {
+      healthHtml = `<div class="bh-hint">Define <code>battery_nominal_kwh</code> en la config para ver el % de salud.</div>`;
+    }
+    this.innerHTML = `
+      <ha-card>
+        <div class="bh-head"><ha-icon icon="mdi:battery-heart-variant"></ha-icon>Battery health</div>
+        <div class="bh-cap"><span class="bh-num">${cap.toFixed(1)}</span><span class="bh-unit">kWh útiles</span></div>
+        ${healthHtml}
+        <div class="bh-foot">Capacidad calibrada por cargas · confianza <b style="color:${conf.color}">${conf.label}</b>. Una bajada sostenida = degradación.</div>
+        <style>
+          .bh-head{display:flex;align-items:center;gap:7px;padding:14px 16px 2px;font-weight:600;font-size:1.05em;}
+          .bh-head ha-icon{--mdc-icon-size:20px;color:var(--success-color,#43a047);}
+          .bh-cap{display:flex;align-items:baseline;gap:6px;padding:2px 16px 6px;}
+          .bh-num{font-size:2.1em;font-weight:800;color:var(--primary-text-color);font-variant-numeric:tabular-nums;}
+          .bh-unit{font-size:.85em;color:var(--secondary-text-color);}
+          .bh-bar{height:12px;border-radius:7px;background:var(--divider-color);overflow:hidden;margin:2px 16px 0;}
+          .bh-fill{display:block;height:100%;border-radius:7px;}
+          .bh-pct{padding:5px 16px 2px;font-size:.92em;}
+          .bh-hint{padding:4px 16px 2px;font-size:.82em;color:var(--secondary-text-color);}
+          .bh-hint code{background:var(--secondary-background-color);padding:1px 4px;border-radius:4px;}
+          .bh-foot{padding:6px 16px 16px;font-size:.8em;color:var(--secondary-text-color);}
+        </style>
+      </ha-card>`;
+  }
+}
+customElements.define("ev-trip-battery-health-card", EvTripBatteryHealthCard);
+window.customCards.push({ type: "ev-trip-battery-health-card", name: "EV Trip — battery health", description: "Calibrated usable capacity (degradation proxy) from recent_trips." });
+
+// ==========================================================================
 // Custom card: per-month efficiency (kWh/100km) — a "this month vs last" delta
 // plus one chip per month, computed from monthly_history. Rendered as a real
 // custom element (not markdown) so the scoped <style> always applies.
@@ -5923,7 +6077,7 @@ class EvTripDashboardStrategy {
       calendarioView(D, hass, V, config),
       tendenciasView(D, hass, config),
       patternsView(D, hass),
-      eficienciaView(D, hass),
+      eficienciaView(D, hass, V, config),
       // (Records/Tops view removed — per-trip "biggest/best" rankings weren't useful.)
       cargasView(D, hass, V, config),
     ];
