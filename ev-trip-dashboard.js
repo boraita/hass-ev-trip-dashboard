@@ -3883,6 +3883,23 @@ const _fmtEffVal = (v100) => {
 };
 // One-shot "12.3 kWh/100km" style string in the active unit.
 const _fmtEff = (v100) => { const e = _fmtEffVal(v100); return e.value === "—" ? "—" : `${e.value} ${e.unit}`; };
+// Resolve a logger sensor for device D by a SIGNATURE attribute, tolerating
+// collided entity_ids — HA assigns `sensor.<D>_2`, `_3`… fallback object_ids
+// when a translation_key isn't ready at first registration (happened to the
+// v0.5.54 season/time/SoH sensors). Prefers the canonical id, else scans this
+// device's sensors for the one carrying `attr`. Returns the state object|null.
+const _findSensorByAttr = (hass, D, canonicalKey, attr) => {
+  if (!hass) return null;
+  const canon = hass.states[`sensor.${D}_${canonicalKey}`];
+  if (canon && canon.attributes && attr in canon.attributes) return canon;
+  const prefix = `sensor.${D}`;
+  for (const id in hass.states) {
+    if (id.indexOf(prefix) !== 0) continue;
+    const a = hass.states[id].attributes;
+    if (a && Object.prototype.hasOwnProperty.call(a, attr)) return hass.states[id];
+  }
+  return canon || null;
+};
 // A logger-provided address string that is actually usable (a real street),
 // or null for the placeholders the logger emits when it couldn't resolve one.
 const _cleanAddr = (a) => {
@@ -4579,9 +4596,7 @@ class EvTripTempCard extends HTMLElement {
     if (!this._hass) return;
     const D = this._device || detectDevice(this._hass);
     this._device = D;
-    const st =
-      this._hass.states[`sensor.${D}_consumption_by_temperature`] ||
-      this._hass.states[`sensor.${D}_consumption_by_temp_bucket`];
+    const st = _findSensorByAttr(this._hass, D, "consumption_by_temperature", "by_bucket");
     const a = (st && st.attributes) || {};
     const buckets = a.by_bucket || {};
     const size = Number(a.bucket_size_c) || 5;
@@ -4672,7 +4687,7 @@ class EvTripBatteryHealthCard extends HTMLElement {
     // Prefer the dedicated SoH sensor (v0.5.54): state = calibrated/declared %.
     // attrs: declared_capacity_kwh, calibrated_capacity_kwh, calibration_charges,
     // degradation_kwh_per_year, history[{observed_at,calibrated_kwh,...}].
-    const soh = this._hass.states[`sensor.${D}_battery_soh`];
+    const soh = _findSensorByAttr(this._hass, D, "battery_soh", "calibrated_capacity_kwh");
     const rt = (this._hass.states[`sensor.${D}_recent_trips`] || {}).attributes || {};
     let declared, calibrated, charges, sohPct, ratePerYear, history;
     if (soh) {
@@ -4681,6 +4696,7 @@ class EvTripBatteryHealthCard extends HTMLElement {
       calibrated = parseFloat(sa.calibrated_capacity_kwh);
       charges = parseInt(sa.calibration_charges, 10);
       sohPct = parseFloat(soh.state);
+      if (isNaN(sohPct) && !isNaN(calibrated) && !isNaN(declared) && declared > 0) sohPct = (calibrated / declared) * 100;
       ratePerYear = parseFloat(sa.degradation_kwh_per_year);
       history = Array.isArray(sa.history) ? sa.history : [];
     } else {
@@ -4695,13 +4711,16 @@ class EvTripBatteryHealthCard extends HTMLElement {
     const headStyle = `
       .bh-head{display:flex;align-items:center;gap:7px;padding:14px 16px 2px;font-weight:600;font-size:1.05em;}
       .bh-head ha-icon{--mdc-icon-size:20px;color:var(--success-color,#43a047);}`;
-    const cap = !isNaN(calibrated) ? calibrated : NaN;
-    if (isNaN(cap)) {
+    // Capacity to show: the calibrated value when committed, else the declared
+    // spec (the logger uses declared until it has enough confidence to calibrate).
+    const cap = !isNaN(calibrated) ? calibrated : declared;
+    if (isNaN(cap) && isNaN(sohPct)) {
       this.innerHTML = `<ha-card><div class="bh-head"><ha-icon icon="mdi:battery-heart-variant"></ha-icon>Battery health</div>
         <div class="bh-empty">Calibrando capacidad… (necesita varias cargas registradas)</div>
         <style>${headStyle}.bh-empty{padding:8px 16px 20px;color:var(--secondary-text-color);}</style></ha-card>`;
       return;
     }
+    const calibrating = isNaN(calibrated); // showing the declared spec for now
     const conf = isNaN(charges) ? { label: "—", color: "var(--secondary-text-color)" }
       : charges >= 10 ? { label: `alta · ${charges} cargas`, color: "var(--success-color,#43a047)" }
       : charges >= 3 ? { label: `media · ${charges} cargas`, color: "var(--warning-color,#fb8c00)" }
@@ -4711,12 +4730,15 @@ class EvTripBatteryHealthCard extends HTMLElement {
     if (!isNaN(sohPct)) {
       const pct = Math.max(0, Math.min(100, sohPct));
       const col = pct >= 95 ? "var(--success-color,#43a047)" : pct >= 88 ? "var(--warning-color,#fb8c00)" : "var(--error-color,#e53935)";
+      const sub = calibrating
+        ? `${cap.toFixed(1)} kWh nominales · calibrando con cargas reales`
+        : `${cap.toFixed(1)} kWh útiles${!isNaN(declared) ? ` de ${declared.toFixed(1)} nominal` : ""}`;
       healthHtml = `
         <div class="bh-soh"><span class="bh-num" style="color:${col}">${pct.toFixed(1)}%</span><span class="bh-unit">salud (SoH)</span></div>
         <div class="bh-bar"><span class="bh-fill" style="width:${pct.toFixed(0)}%;background:${col}"></span></div>
-        <div class="bh-sub">${cap.toFixed(1)} kWh útiles${!isNaN(declared) ? ` de ${declared.toFixed(1)} nominal` : ""}</div>`;
+        <div class="bh-sub">${sub}</div>`;
     } else {
-      healthHtml = `<div class="bh-soh"><span class="bh-num">${cap.toFixed(1)}</span><span class="bh-unit">kWh útiles</span></div>`;
+      healthHtml = `<div class="bh-soh"><span class="bh-num">${cap.toFixed(1)}</span><span class="bh-unit">kWh ${calibrating ? "nominales" : "útiles"}</span></div>`;
     }
     // Degradation rate + tiny capacity trend sparkline.
     let rateHtml = "";
@@ -4783,7 +4805,7 @@ class _EvTripBucketCard extends HTMLElement {
     if (!this._hass) return;
     const D = this._device || detectDevice(this._hass);
     this._device = D;
-    const st = this._hass.states[`sensor.${D}_${this._sensorKey}`];
+    const st = _findSensorByAttr(this._hass, D, this._sensorKey, this._byAttr);
     const a = (st && st.attributes) || {};
     const by = a[this._byAttr] || {};
     const cur = a[this._curAttr];
