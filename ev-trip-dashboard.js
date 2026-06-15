@@ -1706,10 +1706,22 @@ class EvTripListCard extends HTMLElement {
     return 8;
   }
   connectedCallback() {
+    // Re-render when the global efficiency unit changes (toggled elsewhere).
+    if (!this._effBound) {
+      this._effBound = true;
+      this._onEffUnit = () => this._render();
+      window.addEventListener("ev-trip-eff-unit", this._onEffUnit);
+    }
     // Event delegation: one click listener toggles the tapped trip's detail.
     if (this._clickBound) return;
     this._clickBound = true;
     this.addEventListener("click", (ev) => {
+      // Efficiency-unit toggle chip in the header.
+      if (ev.target && ev.target.closest && ev.target.closest(".eff-toggle")) {
+        ev.stopPropagation();
+        _cycleEffUnit();
+        return;
+      }
       const trip = ev.target && ev.target.closest && ev.target.closest(".trip");
       if (!trip || !this.contains(trip)) return;
       const id = trip.getAttribute("data-trip-id");
@@ -1717,6 +1729,10 @@ class EvTripListCard extends HTMLElement {
       this._openTripId = String(this._openTripId) === String(id) ? null : id;
       this._render();
     });
+  }
+  disconnectedCallback() {
+    if (this._onEffUnit) window.removeEventListener("ev-trip-eff-unit", this._onEffUnit);
+    this._effBound = false;
   }
   _s(id) {
     const e = this._hass.states[id];
@@ -1899,7 +1915,7 @@ class EvTripListCard extends HTMLElement {
             ${tile("mdi:map-marker-distance", "Distance", fmtNum(t.distance_km), "km")}
             ${tile("mdi:timer-outline", "Duration", fmtNum(t.duration_min == null ? null : Math.round(t.duration_min)), "min")}
             ${tile("mdi:lightning-bolt", "Consumption", nn(t.energy_kwh), "kWh")}
-            ${tile("mdi:chart-line", "Efficiency", nn(t.consumption_kwh_100km), "kWh/100km")}
+            ${(() => { const e = _fmtEffVal(t.consumption_kwh_100km); return tile("mdi:chart-line", "Efficiency", e.value, e.unit); })()}
           </div>
           <div class="d-grid d-grid3">
             ${tile("mdi:speedometer", "Avg speed", speed, "km/h")}
@@ -1973,7 +1989,7 @@ class EvTripListCard extends HTMLElement {
           <div class="cols">
             ${col("Distance", fmtNum(t.distance_km), "km")}
             ${col("Consumption", nn(t.energy_kwh), "kWh")}
-            ${col("Efficiency", nn(t.consumption_kwh_100km), "kWh/100km")}
+            ${(() => { const e = _fmtEffVal(t.consumption_kwh_100km); return col("Efficiency", e.value === "—" ? DASH : e.value, e.unit); })()}
             ${col("Cost", fmtNum(t.cost), sym || DASH)}
             ${col("Score", score, "", { big: true, color: _scoreColor(t.score) })}
           </div>
@@ -2170,6 +2186,14 @@ class EvTripListCard extends HTMLElement {
           .d-driver{display:inline-flex;align-items:center;gap:3px;
                     color:var(--secondary-text-color);font-size:.9em;}
           .d-driver-icon{width:12px;height:12px;fill:currentColor;flex:0 0 auto;}
+          .head-right{display:inline-flex;align-items:center;gap:8px;}
+          .eff-toggle{display:inline-flex;align-items:center;gap:3px;cursor:pointer;
+                      font-size:.62em;font-weight:700;letter-spacing:.02em;
+                      padding:3px 8px;border-radius:999px;color:var(--primary-color);
+                      background:var(--secondary-background-color,rgba(0,0,0,.06));
+                      border:1px solid var(--divider-color);}
+          .eff-toggle:hover{border-color:var(--primary-color);}
+          .eff-toggle ha-icon{--mdc-icon-size:13px;}
           @media (max-width:360px){
             .col-label{font-size:.55em;}
             .col-val{font-size:.95em;}
@@ -2177,7 +2201,10 @@ class EvTripListCard extends HTMLElement {
           }
         </style>
         <div class="head"><span>${_esc(this._config.title || "Trips")}</span>
-          <span class="count">Showing ${rows.length} of ${total} trips</span></div>
+          <span class="head-right">
+            <button class="eff-toggle" title="Cambiar unidad de consumo"><ha-icon icon="mdi:swap-horizontal"></ha-icon>${_esc(_effUnitLabel())}</button>
+            <span class="count">${rows.length} of ${total}</span>
+          </span></div>
         <div class="list">${rowsHtml}</div>
       </ha-card>`;
 
@@ -2249,6 +2276,11 @@ class EvTripHistoryCard extends HTMLElement {
     return 4;
   }
   connectedCallback() {
+    if (!this._effBound) {
+      this._effBound = true;
+      this._onEffUnit = () => this._render();
+      window.addEventListener("ev-trip-eff-unit", this._onEffUnit);
+    }
     // Event delegation: one click listener toggles the tapped journey's detail.
     if (this._clickBound) return;
     this._clickBound = true;
@@ -2283,6 +2315,10 @@ class EvTripHistoryCard extends HTMLElement {
     // Pause re-render while the user is typing in a price input.
     this.addEventListener("focusin", (ev) => { if (ev.target && ev.target.closest && ev.target.closest(".cp-input")) this._editing = true; });
     this.addEventListener("focusout", (ev) => { if (ev.target && ev.target.closest && ev.target.closest(".cp-input")) this._editing = false; });
+  }
+  disconnectedCallback() {
+    if (this._onEffUnit) window.removeEventListener("ev-trip-eff-unit", this._onEffUnit);
+    this._effBound = false;
   }
   _applyPrice(chargeId) {
     const id = parseInt(chargeId, 10);
@@ -2559,7 +2595,7 @@ class EvTripHistoryCard extends HTMLElement {
               <div class="sbody">
                 <div class="swhen">${_fmtDate(t.started_at)}</div>
                 <div class="sroute">${origin}<span class="arrow"><ha-icon icon="mdi:arrow-right" style="--mdc-icon-size:16px"></ha-icon></span>${dest}</div>
-                <div class="smetrics"><b>${fmtNum(t.distance_km)}</b> km · <b>${fmtNum(t.consumption_kwh_100km)}</b> kWh/100</div>
+                <div class="smetrics"><b>${fmtNum(t.distance_km)}</b> km · <b>${_fmtEff(t.consumption_kwh_100km)}</b></div>
               </div>
               <div class="score-pill" style="background:${_scoreColor(t.score)}">${score}</div>
             </div>`;
@@ -2567,11 +2603,11 @@ class EvTripHistoryCard extends HTMLElement {
         .join("");
     }
 
-    // Averages / summary.
-    const avgCons =
+    // Averages / summary (efficiency in the active display unit).
+    const avgConsE =
       j.energy_kwh != null && j.distance_km != null && j.distance_km !== 0
-        ? fmtNum((j.energy_kwh / j.distance_km) * 100, 1)
-        : DASH;
+        ? _fmtEffVal((j.energy_kwh / j.distance_km) * 100)
+        : { value: DASH, unit: _effUnitLabel() };
 
     let totDist = 0;
     let totDur = 0;
@@ -2598,7 +2634,7 @@ class EvTripHistoryCard extends HTMLElement {
           ${stat("Distance", fmtNum(j.distance_km), "km")}
           ${stat("Energy", fmtNum(j.energy_kwh), "kWh")}
           ${stat("Cost", j.cost != null ? fmtNum(j.cost, 2) : DASH, j.cost != null ? sym(j.currency) : "")}
-          ${stat("Avg consumption", avgCons, "kWh/100")}
+          ${stat("Avg consumption", avgConsE.value, avgConsE.unit)}
           ${stat("Avg speed", avgSpeed, "km/h")}
         </div>
       </div>`;
@@ -2907,12 +2943,21 @@ class EvTripJourneyCard extends HTMLElement {
     return 3;
   }
   connectedCallback() {
+    if (!this._effBound) {
+      this._effBound = true;
+      this._onEffUnit = () => this._render();
+      window.addEventListener("ev-trip-eff-unit", this._onEffUnit);
+    }
     if (this._clickBound) return;
     this._clickBound = true;
     this.addEventListener("click", (ev) => {
       const h = ev.target && ev.target.closest && ev.target.closest(".jhead.jclickable");
       if (h && this.contains(h)) { this._open = !this._open; this._render(); }
     });
+  }
+  disconnectedCallback() {
+    if (this._onEffUnit) window.removeEventListener("ev-trip-eff-unit", this._onEffUnit);
+    this._effBound = false;
   }
   // Recompute the in-progress journey from recent_trips so it reflects only the
   // current run away from home — the logger leaves a journey open across an
@@ -3171,7 +3216,7 @@ class EvTripJourneyCard extends HTMLElement {
         const sg = this._streets[id];
         const endPt = (key, zone, addr) =>
           sg && sg !== "loading" && sg[key] ? _esc(sg[key]) : _endpoint(addr, zone);
-        const cons = t.consumption_kwh_100km != null && Number(t.consumption_kwh_100km) >= 0 ? `${f1(t.consumption_kwh_100km)} kWh/100` : null;
+        const cons = t.consumption_kwh_100km != null && Number(t.consumption_kwh_100km) >= 0 ? _fmtEff(t.consumption_kwh_100km) : null;
         const soc = t.soc_start != null && t.soc_end != null ? `${f0(t.soc_start)}→${f0(t.soc_end)}%${t.soc_used_pct != null ? ` (${f0(t.soc_used_pct)})` : ""}` : null;
         const pill = t.score != null ? `<span class="js-pill" style="background:${_scoreColor(t.score)}">${f1(t.score)}</span>` : "";
         // Regen: logger value, else the integrated power estimate ("~").
@@ -3432,6 +3477,16 @@ class EvTripMonthlyCard extends HTMLElement {
     this._config = config || {};
     this._device = this._config.device || null;
   }
+  connectedCallback() {
+    if (this._effBound) return;
+    this._effBound = true;
+    this._onEffUnit = () => this._render();
+    window.addEventListener("ev-trip-eff-unit", this._onEffUnit);
+  }
+  disconnectedCallback() {
+    if (this._onEffUnit) window.removeEventListener("ev-trip-eff-unit", this._onEffUnit);
+    this._effBound = false;
+  }
   set hass(hass) {
     this._hass = hass;
     const D = this._device || detectDevice(hass);
@@ -3477,12 +3532,12 @@ class EvTripMonthlyCard extends HTMLElement {
         const kwh = Number(m.energy_kwh) || 0;
         const cost = Number(m.cost) || 0;
         const pct = Math.round((km / maxKm) * 100);
-        const eff = km > 0 ? ((kwh / km) * 100).toFixed(1) : "—";
+        const effE = km > 0 ? _fmtEffVal((kwh / km) * 100) : { value: "—", unit: _effUnitLabel() };
         return `
           <div class="mh-row">
             <div class="mh-month">${_esc(_fmtMonth(m.month))}</div>
             <div class="mh-track"><div class="mh-fill" style="width:${pct}%"></div></div>
-            <div class="mh-vals"><b>${km.toFixed(0)}</b> km · ${kwh.toFixed(1)} kWh · ${cost.toFixed(2)} ${_esc(sym)} · <span class="mh-eff">${eff}</span> kWh/100</div>
+            <div class="mh-vals"><b>${km.toFixed(0)}</b> km · ${kwh.toFixed(1)} kWh · ${cost.toFixed(2)} ${_esc(sym)} · <span class="mh-eff">${effE.value}</span> ${_esc(effE.unit)}</div>
           </div>`;
       })
       .join("");
@@ -3794,6 +3849,32 @@ const _zoneLabel = (zone) => {
   if (lz === "home") return "Home";
   return z;
 };
+// ---- Efficiency unit (user-toggleable, persisted in localStorage) ----------
+// The logger stores efficiency as kWh/100km; the user can cycle the DISPLAY
+// unit with a chip. The choice is global (one localStorage key) and a window
+// event re-renders every custom card so they stay in sync. Markdown/chart
+// cards can't react to this, so they keep the canonical kWh/100km.
+const EFF_UNITS = ["kwh100", "wh_km", "km_kwh"];
+let _effUnit = (() => {
+  try { const u = localStorage.getItem("evTripEffUnit"); return EFF_UNITS.includes(u) ? u : "kwh100"; }
+  catch (_e) { return "kwh100"; }
+})();
+const _effUnitLabel = (u) => ({ kwh100: "kWh/100km", wh_km: "Wh/km", km_kwh: "km/kWh" }[u || _effUnit] || "kWh/100km");
+const _cycleEffUnit = () => {
+  _effUnit = EFF_UNITS[(EFF_UNITS.indexOf(_effUnit) + 1) % EFF_UNITS.length];
+  try { localStorage.setItem("evTripEffUnit", _effUnit); } catch (_e) {}
+  try { window.dispatchEvent(new CustomEvent("ev-trip-eff-unit")); } catch (_e) {}
+};
+// Convert a kWh/100km value to the active unit → { value, unit }.
+const _fmtEffVal = (v100) => {
+  const n = Number(v100);
+  if (v100 == null || isNaN(n)) return { value: "—", unit: _effUnitLabel() };
+  if (_effUnit === "wh_km") return { value: (n * 10).toFixed(0), unit: "Wh/km" };
+  if (_effUnit === "km_kwh") return { value: n > 0 ? (100 / n).toFixed(1) : "—", unit: "km/kWh" };
+  return { value: n.toFixed(1), unit: "kWh/100km" };
+};
+// One-shot "12.3 kWh/100km" style string in the active unit.
+const _fmtEff = (v100) => { const e = _fmtEffVal(v100); return e.value === "—" ? "—" : `${e.value} ${e.unit}`; };
 // A logger-provided address string that is actually usable (a real street),
 // or null for the placeholders the logger emits when it couldn't resolve one.
 const _cleanAddr = (a) => {
@@ -3921,6 +4002,11 @@ class EvTripCalendarCard extends HTMLElement {
     return { groups, standalone };
   }
   connectedCallback() {
+    if (!this._effBound) {
+      this._effBound = true;
+      this._onEffUnit = () => this._render();
+      window.addEventListener("ev-trip-eff-unit", this._onEffUnit);
+    }
     if (this._clickBound) return;
     this._clickBound = true;
     this.addEventListener("click", (ev) => {
@@ -3942,6 +4028,10 @@ class EvTripCalendarCard extends HTMLElement {
         this._render();
       }
     });
+  }
+  disconnectedCallback() {
+    if (this._onEffUnit) window.removeEventListener("ev-trip-eff-unit", this._onEffUnit);
+    this._effBound = false;
   }
   _index() {
     const D = this._device;
@@ -4027,7 +4117,7 @@ class EvTripCalendarCard extends HTMLElement {
         <div class="cal-stage">
           <span class="cal-stime">${_timeRange(t.started_at, t.ended_at) || _timeOfDay(t.started_at)}</span>
           <span class="cal-sroute">${_endpoint(t.start_address, t.origin)}<ha-icon class="cal-arr" icon="mdi:arrow-right"></ha-icon>${_endpoint(t.end_address, t.destination)}</span>
-          <span class="cal-smeta">${f0(t.distance_km)} km · ${t.consumption_kwh_100km != null && Number(t.consumption_kwh_100km) >= 0 ? f1(t.consumption_kwh_100km) + " kWh/100" : "—"}</span>
+          <span class="cal-smeta">${f0(t.distance_km)} km · ${t.consumption_kwh_100km != null && Number(t.consumption_kwh_100km) >= 0 ? _fmtEff(t.consumption_kwh_100km) : "—"}</span>
           ${t.score != null ? `<span class="cal-pill" style="background:${_scoreColor(t.score)}">${f1(t.score)}</span>` : ""}
         </div>`;
       const mapSlot = (start, end) => {
@@ -4045,7 +4135,7 @@ class EvTripCalendarCard extends HTMLElement {
             <span class="cal-jtitle">${_endpoint(g.origin)} → ${_endpoint(g.destination)}</span>
             <span class="cal-jtime">${_timeOfDay(g.started_at)}–${_timeOfDay(g.ended_at)}</span>
           </div>
-          <div class="cal-jsum"><b>${f0(g.km)}</b> km · <b>${f1(g.kwh)}</b> kWh${g.cons != null ? ` · <b>${f1(g.cons)}</b> kWh/100` : ""}${g.cost ? ` · <b>${g.cost.toFixed(2)} ${_esc(sym(g.currency))}</b>` : ""} · ${g.stages.length} ${g.stages.length === 1 ? "stage" : "stages"}</div>
+          <div class="cal-jsum"><b>${f0(g.km)}</b> km · <b>${f1(g.kwh)}</b> kWh${g.cons != null ? ` · <b>${_fmtEff(g.cons)}</b>` : ""}${g.cost ? ` · <b>${g.cost.toFixed(2)} ${_esc(sym(g.currency))}</b>` : ""} · ${g.stages.length} ${g.stages.length === 1 ? "stage" : "stages"}</div>
           <div class="cal-stages">${g.stages.map(stage).join("")}</div>
           ${mapSlot(g.started_at, g.ended_at)}
         </div>`
