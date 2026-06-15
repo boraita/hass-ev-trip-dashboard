@@ -4708,6 +4708,19 @@ class EvTripBatteryHealthCard extends HTMLElement {
       sohPct = !isNaN(calibrated) && !isNaN(declared) && declared > 0 ? (calibrated / declared) * 100 : NaN;
       history = [];
     }
+    // v0.5.57 — expected SoH (model from km/age/chemistry/climate) + a
+    // health-vs-expected verdict. The expected value is available even before
+    // any charge calibration, so it answers "what SoH should this car have?".
+    const exp = _findSensorByAttr(this._hass, D, "expected_battery_soh", "factors");
+    const expectedPct = exp ? parseFloat(exp.state) : NaN;
+    const expInputs = (exp && exp.attributes && exp.attributes.inputs) || {};
+    const vsExp = _findSensorByAttr(this._hass, D, "battery_health_vs_expected", "expected_soh_pct");
+    const status = vsExp ? String(vsExp.state) : null; // calibrating|ahead|on_track|behind
+    const STATUS = {
+      ahead: { label: "Mejor de lo esperado", color: "var(--success-color,#43a047)", icon: "mdi:thumb-up" },
+      on_track: { label: "En lo esperado", color: "var(--info-color,#039be5)", icon: "mdi:check-circle" },
+      behind: { label: "Peor de lo esperado", color: "var(--error-color,#e53935)", icon: "mdi:alert" },
+    };
     const headStyle = `
       .bh-head{display:flex;align-items:center;gap:7px;padding:14px 16px 2px;font-weight:600;font-size:1.05em;}
       .bh-head ha-icon{--mdc-icon-size:20px;color:var(--success-color,#43a047);}`;
@@ -4729,19 +4742,37 @@ class EvTripBatteryHealthCard extends HTMLElement {
     // capacity. Until then `state` is a 100% placeholder (declared/declared) —
     // NOT a real measurement — so showing a green 100% would be misleading
     // (a car with real km has degraded a few %). Present "not measured yet".
+    // Context line: expected SoH from the model (km / age / chemistry).
+    const expLine = !isNaN(expectedPct)
+      ? `<div class="bh-exp">Esperado <b>${expectedPct.toFixed(1)}%</b>${expInputs.km != null ? ` · ${Math.round(expInputs.km).toLocaleString("es-ES")} km` : ""}${expInputs.age_years != null ? ` · ${Number(expInputs.age_years).toFixed(1)} años` : ""}${expInputs.chemistry ? ` · ${String(expInputs.chemistry).toUpperCase()}` : ""}</div>`
+      : "";
+    // Status chip (ahead / on_track / behind) once both observed & expected exist.
+    const statusChip = status && STATUS[status]
+      ? `<span class="bh-chip" style="color:${STATUS[status].color};border-color:${STATUS[status].color}"><ha-icon icon="${STATUS[status].icon}"></ha-icon>${STATUS[status].label}</span>`
+      : "";
     let healthHtml = "";
     if (!calibrating && !isNaN(sohPct)) {
+      // Real MEASURED SoH from a committed calibration.
       const pct = Math.max(0, Math.min(100, sohPct));
       const col = pct >= 95 ? "var(--success-color,#43a047)" : pct >= 88 ? "var(--warning-color,#fb8c00)" : "var(--error-color,#e53935)";
       healthHtml = `
-        <div class="bh-soh"><span class="bh-num" style="color:${col}">${pct.toFixed(1)}%</span><span class="bh-unit">salud (SoH)</span></div>
+        <div class="bh-soh"><span class="bh-num" style="color:${col}">${pct.toFixed(1)}%</span><span class="bh-unit">salud medida (SoH)</span>${statusChip}</div>
         <div class="bh-bar"><span class="bh-fill" style="width:${pct.toFixed(0)}%;background:${col}"></span></div>
-        <div class="bh-sub">${cap.toFixed(1)} kWh útiles${!isNaN(declared) ? ` de ${declared.toFixed(1)} nominal` : ""}</div>`;
+        <div class="bh-sub">${cap.toFixed(1)} kWh útiles${!isNaN(declared) ? ` de ${declared.toFixed(1)} nominal` : ""}</div>
+        ${expLine}`;
+    } else if (!isNaN(expectedPct)) {
+      // Not measured yet, but the model gives a realistic expectation by km/age.
+      const col = expectedPct >= 95 ? "var(--success-color,#43a047)" : expectedPct >= 88 ? "var(--warning-color,#fb8c00)" : "var(--error-color,#e53935)";
+      healthHtml = `
+        <div class="bh-soh"><span class="bh-num" style="color:${col}">${expectedPct.toFixed(1)}%</span><span class="bh-unit">SoH estimada</span></div>
+        <div class="bh-bar"><span class="bh-fill" style="width:${expectedPct.toFixed(0)}%;background:${col}"></span></div>
+        <div class="bh-sub">${!isNaN(cap) ? `${cap.toFixed(1)} kWh nominales · ` : ""}${expInputs.km != null ? `${Math.round(expInputs.km).toLocaleString("es-ES")} km` : ""}${expInputs.chemistry ? ` · ${String(expInputs.chemistry).toUpperCase()}` : ""}</div>
+        <div class="bh-pending"><ha-icon icon="mdi:progress-clock"></ha-icon><span>Estimada por km/edad. La <b>medida real</b> aparece cuando el logger calibre con más cargas (${isNaN(charges) ? 0 : charges} hasta ahora).</span></div>`;
     } else {
       const nC = isNaN(charges) ? 0 : charges;
       healthHtml = `
         <div class="bh-soh"><span class="bh-num bh-num--muted">${cap.toFixed(1)}</span><span class="bh-unit">kWh nominales</span></div>
-        <div class="bh-pending"><ha-icon icon="mdi:progress-clock"></ha-icon><span><b>SoH aún sin medir.</b> El logger necesita más cargas completas para calibrar la capacidad real (${nC} hasta ahora) — hasta entonces no se puede afirmar la degradación.</span></div>`;
+        <div class="bh-pending"><ha-icon icon="mdi:progress-clock"></ha-icon><span><b>SoH aún sin medir.</b> El logger necesita más cargas completas para calibrar la capacidad real (${nC} hasta ahora).</span></div>`;
     }
     // Degradation rate + tiny capacity trend sparkline.
     let rateHtml = "";
@@ -4777,6 +4808,10 @@ class EvTripBatteryHealthCard extends HTMLElement {
           .bh-bar{height:12px;border-radius:7px;background:var(--divider-color);overflow:hidden;margin:2px 16px 0;}
           .bh-fill{display:block;height:100%;border-radius:7px;}
           .bh-sub{padding:5px 16px 2px;font-size:.9em;color:var(--secondary-text-color);font-variant-numeric:tabular-nums;}
+          .bh-exp{padding:2px 16px 2px;font-size:.84em;color:var(--secondary-text-color);font-variant-numeric:tabular-nums;}
+          .bh-chip{display:inline-flex;align-items:center;gap:3px;margin-left:auto;font-size:.6em;font-weight:700;
+                   padding:3px 8px;border-radius:999px;border:1px solid currentColor;white-space:nowrap;align-self:center;}
+          .bh-chip ha-icon{--mdc-icon-size:13px;}
           .bh-spark{display:block;width:calc(100% - 32px);height:30px;margin:6px 16px 0;}
           .bh-foot{padding:6px 16px 16px;font-size:.8em;color:var(--secondary-text-color);}
         </style>
