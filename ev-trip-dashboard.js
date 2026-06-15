@@ -4725,20 +4725,23 @@ class EvTripBatteryHealthCard extends HTMLElement {
       : charges >= 10 ? { label: `alta · ${charges} cargas`, color: "var(--success-color,#43a047)" }
       : charges >= 3 ? { label: `media · ${charges} cargas`, color: "var(--warning-color,#fb8c00)" }
       : { label: `baja · ${charges} ${charges === 1 ? "carga" : "cargas"}`, color: "var(--error-color,#e53935)" };
-    // SoH headline + bar when we can compute a %.
+    // Show a measured SoH % ONLY when the logger has committed a calibrated
+    // capacity. Until then `state` is a 100% placeholder (declared/declared) —
+    // NOT a real measurement — so showing a green 100% would be misleading
+    // (a car with real km has degraded a few %). Present "not measured yet".
     let healthHtml = "";
-    if (!isNaN(sohPct)) {
+    if (!calibrating && !isNaN(sohPct)) {
       const pct = Math.max(0, Math.min(100, sohPct));
       const col = pct >= 95 ? "var(--success-color,#43a047)" : pct >= 88 ? "var(--warning-color,#fb8c00)" : "var(--error-color,#e53935)";
-      const sub = calibrating
-        ? `${cap.toFixed(1)} kWh nominales · calibrando con cargas reales`
-        : `${cap.toFixed(1)} kWh útiles${!isNaN(declared) ? ` de ${declared.toFixed(1)} nominal` : ""}`;
       healthHtml = `
         <div class="bh-soh"><span class="bh-num" style="color:${col}">${pct.toFixed(1)}%</span><span class="bh-unit">salud (SoH)</span></div>
         <div class="bh-bar"><span class="bh-fill" style="width:${pct.toFixed(0)}%;background:${col}"></span></div>
-        <div class="bh-sub">${sub}</div>`;
+        <div class="bh-sub">${cap.toFixed(1)} kWh útiles${!isNaN(declared) ? ` de ${declared.toFixed(1)} nominal` : ""}</div>`;
     } else {
-      healthHtml = `<div class="bh-soh"><span class="bh-num">${cap.toFixed(1)}</span><span class="bh-unit">kWh ${calibrating ? "nominales" : "útiles"}</span></div>`;
+      const nC = isNaN(charges) ? 0 : charges;
+      healthHtml = `
+        <div class="bh-soh"><span class="bh-num bh-num--muted">${cap.toFixed(1)}</span><span class="bh-unit">kWh nominales</span></div>
+        <div class="bh-pending"><ha-icon icon="mdi:progress-clock"></ha-icon><span><b>SoH aún sin medir.</b> El logger necesita más cargas completas para calibrar la capacidad real (${nC} hasta ahora) — hasta entonces no se puede afirmar la degradación.</span></div>`;
     }
     // Degradation rate + tiny capacity trend sparkline.
     let rateHtml = "";
@@ -4759,7 +4762,7 @@ class EvTripBatteryHealthCard extends HTMLElement {
         <div class="bh-head"><ha-icon icon="mdi:battery-heart-variant"></ha-icon>Battery health${rateHtml}</div>
         ${healthHtml}
         ${spark}
-        <div class="bh-foot">Capacidad calibrada por cargas · confianza <b style="color:${conf.color}">${conf.label}</b>. Una bajada sostenida = degradación real.</div>
+        <div class="bh-foot">Capacidad calibrada con cargas reales · confianza <b style="color:${conf.color}">${conf.label}</b>. ${calibrating ? "El SoH (% de salud) aparece cuando haya suficientes cargas." : "Una bajada sostenida = degradación real."}</div>
         <style>
           ${headStyle}
           .bh-head{justify-content:space-between;}
@@ -4767,6 +4770,9 @@ class EvTripBatteryHealthCard extends HTMLElement {
           .bh-rate ha-icon{--mdc-icon-size:16px;}
           .bh-soh{display:flex;align-items:baseline;gap:6px;padding:2px 16px 4px;}
           .bh-num{font-size:2.1em;font-weight:800;color:var(--primary-text-color);font-variant-numeric:tabular-nums;}
+          .bh-num--muted{color:var(--secondary-text-color);}
+          .bh-pending{display:flex;align-items:flex-start;gap:7px;padding:2px 16px 2px;font-size:.84em;color:var(--secondary-text-color);}
+          .bh-pending ha-icon{--mdc-icon-size:17px;flex:0 0 auto;color:var(--warning-color,#fb8c00);margin-top:1px;}
           .bh-unit{font-size:.85em;color:var(--secondary-text-color);}
           .bh-bar{height:12px;border-radius:7px;background:var(--divider-color);overflow:hidden;margin:2px 16px 0;}
           .bh-fill{display:block;height:100%;border-radius:7px;}
