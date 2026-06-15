@@ -881,10 +881,16 @@ function eficienciaView(D, hass, V, cfg) {
     nominalKwh: cfg && cfg.battery_nominal_kwh,
   });
 
-  // ---- Consumption by temperature / seasons (custom HTML bars) ----------
-  // Replaces the old apex CATEGORY chart (which renders blank). Reliable bars,
-  // cold→hot, current-temp band highlighted, in the active efficiency unit.
-  // Self-shows an "awaiting data" state until trips record an outside temp.
+  // ---- Consumption by season (winter/spring/summer/autumn) --------------
+  cards.push({ type: "custom:ev-trip-season-card", device: D });
+
+  // ---- Consumption by time of day (morning/afternoon/evening/night) -----
+  cards.push({ type: "custom:ev-trip-time-of-day-card", device: D });
+
+  // ---- Consumption by temperature band (custom HTML bars) ---------------
+  // Reliable bars cold→hot, current-temp band highlighted, in the active unit.
+  // Self-shows an "awaiting data" state until trips record an outside temp
+  // (logger v0.5.54 weather_entity).
   cards.push({
     type: "custom:ev-trip-temp-card",
     device: D,
@@ -1889,6 +1895,25 @@ class EvTripListCard extends HTMLElement {
             };
             return `<div class="d-route"><ha-icon icon="mdi:map-marker"></ha-icon>${resolve(t.origin, t.start_address, "start")}<ha-icon icon="mdi:arrow-right"></ha-icon>${resolve(t.destination, t.end_address, "end")}</div>`;
           })()}
+          ${(() => {
+            // Weather snapshot the logger stored on the trip (v0.5.54 weather_entity).
+            // Shown only when present (null until a weather entity is configured).
+            const condIcon = {
+              sunny: "mdi:weather-sunny", clear: "mdi:weather-sunny", "clear-night": "mdi:weather-night",
+              partlycloudy: "mdi:weather-partly-cloudy", cloudy: "mdi:weather-cloudy", fog: "mdi:weather-fog",
+              rainy: "mdi:weather-rainy", pouring: "mdi:weather-pouring", snowy: "mdi:weather-snowy",
+              "snowy-rainy": "mdi:weather-snowy-rainy", lightning: "mdi:weather-lightning",
+              "lightning-rainy": "mdi:weather-lightning-rainy", windy: "mdi:weather-windy", hail: "mdi:weather-hail",
+            };
+            const at = t.ambient_temp_c, cond = t.weather_condition, hum = t.humidity_pct, wind = t.wind_kmh, precip = t.precipitation_mm;
+            const chips = [];
+            if (cond) chips.push(`<span class="d-wx"><ha-icon icon="${condIcon[String(cond).toLowerCase()] || "mdi:weather-partly-cloudy"}"></ha-icon>${_esc(cond)}</span>`);
+            if (at != null && !isNaN(Number(at))) chips.push(`<span class="d-wx"><ha-icon icon="mdi:thermometer"></ha-icon>${Number(at).toFixed(0)}°C</span>`);
+            if (hum != null && !isNaN(Number(hum))) chips.push(`<span class="d-wx"><ha-icon icon="mdi:water-percent"></ha-icon>${Number(hum).toFixed(0)}%</span>`);
+            if (wind != null && !isNaN(Number(wind))) chips.push(`<span class="d-wx"><ha-icon icon="mdi:weather-windy"></ha-icon>${Number(wind).toFixed(0)} km/h</span>`);
+            if (precip != null && !isNaN(Number(precip)) && Number(precip) > 0) chips.push(`<span class="d-wx"><ha-icon icon="mdi:weather-rainy"></ha-icon>${Number(precip).toFixed(1)} mm</span>`);
+            return chips.length ? `<div class="d-wxrow">${chips.join("")}</div>` : "";
+          })()}
           <div class="d-grid">
             ${tile("mdi:map-marker-distance", "Distance", fmtNum(t.distance_km), "km")}
             ${tile("mdi:timer-outline", "Duration", fmtNum(t.duration_min == null ? null : Math.round(t.duration_min)), "min")}
@@ -2137,6 +2162,11 @@ class EvTripListCard extends HTMLElement {
           .d-route ha-icon[icon="mdi:map-marker"]{color:var(--info-color,#039be5);}
           .d-zone{color:var(--primary-text-color);}
           .d-street{color:var(--info-color,#039be5);font-weight:600;}
+          .d-wxrow{display:flex;flex-wrap:wrap;gap:6px;margin-top:-4px;}
+          .d-wx{display:inline-flex;align-items:center;gap:3px;font-size:.8em;font-weight:600;
+                padding:2px 8px;border-radius:999px;color:var(--secondary-text-color);
+                background:var(--secondary-background-color,rgba(0,0,0,.06));border:1px solid var(--divider-color);}
+          .d-wx ha-icon{--mdc-icon-size:14px;}
           .d-map{border-radius:12px;overflow:hidden;margin-top:2px;
                  border:1px solid var(--divider-color,rgba(0,0,0,.12));}
           .d-map--ph{height:170px;display:flex;align-items:center;justify-content:center;
@@ -4639,64 +4669,219 @@ class EvTripBatteryHealthCard extends HTMLElement {
     if (!this._hass) return;
     const D = this._device || detectDevice(this._hass);
     this._device = D;
-    const a = (this._hass.states[`sensor.${D}_recent_trips`] || {}).attributes || {};
-    const cap = parseFloat(a.effective_battery_capacity_kwh);
-    const charges = parseInt(a.battery_capacity_calibration_charges, 10);
-    // Nominal (as-new) baseline for the health %: take it from the LOGGER when
-    // it exposes the declared spec, else an explicit dashboard override. No
-    // dashboard config is required — the capacity already comes from the logger.
-    const nominal = (() => {
-      const fromLogger = parseFloat(a.battery_capacity_declared_kwh);
-      if (!isNaN(fromLogger) && fromLogger > 0) return fromLogger;
-      const fromCfg = parseFloat(this._config.nominalKwh);
-      return !isNaN(fromCfg) && fromCfg > 0 ? fromCfg : NaN;
-    })();
-    const DASH = "—";
+    // Prefer the dedicated SoH sensor (v0.5.54): state = calibrated/declared %.
+    // attrs: declared_capacity_kwh, calibrated_capacity_kwh, calibration_charges,
+    // degradation_kwh_per_year, history[{observed_at,calibrated_kwh,...}].
+    const soh = this._hass.states[`sensor.${D}_battery_soh`];
+    const rt = (this._hass.states[`sensor.${D}_recent_trips`] || {}).attributes || {};
+    let declared, calibrated, charges, sohPct, ratePerYear, history;
+    if (soh) {
+      const sa = soh.attributes || {};
+      declared = parseFloat(sa.declared_capacity_kwh);
+      calibrated = parseFloat(sa.calibrated_capacity_kwh);
+      charges = parseInt(sa.calibration_charges, 10);
+      sohPct = parseFloat(soh.state);
+      ratePerYear = parseFloat(sa.degradation_kwh_per_year);
+      history = Array.isArray(sa.history) ? sa.history : [];
+    } else {
+      // Fallback (pre-restart): the capacity calibration on recent_trips.
+      calibrated = parseFloat(rt.effective_battery_capacity_kwh);
+      declared = parseFloat(rt.battery_capacity_declared_kwh);
+      if (isNaN(declared)) { const c = parseFloat(this._config.nominalKwh); if (!isNaN(c)) declared = c; }
+      charges = parseInt(rt.battery_capacity_calibration_charges, 10);
+      sohPct = !isNaN(calibrated) && !isNaN(declared) && declared > 0 ? (calibrated / declared) * 100 : NaN;
+      history = [];
+    }
+    const headStyle = `
+      .bh-head{display:flex;align-items:center;gap:7px;padding:14px 16px 2px;font-weight:600;font-size:1.05em;}
+      .bh-head ha-icon{--mdc-icon-size:20px;color:var(--success-color,#43a047);}`;
+    const cap = !isNaN(calibrated) ? calibrated : NaN;
     if (isNaN(cap)) {
       this.innerHTML = `<ha-card><div class="bh-head"><ha-icon icon="mdi:battery-heart-variant"></ha-icon>Battery health</div>
         <div class="bh-empty">Calibrando capacidad… (necesita varias cargas registradas)</div>
-        <style>.bh-head{display:flex;align-items:center;gap:7px;padding:14px 16px 4px;font-weight:600;font-size:1.05em;}
-        .bh-head ha-icon{--mdc-icon-size:20px;color:var(--success-color,#43a047);}
-        .bh-empty{padding:8px 16px 20px;color:var(--secondary-text-color);}</style></ha-card>`;
+        <style>${headStyle}.bh-empty{padding:8px 16px 20px;color:var(--secondary-text-color);}</style></ha-card>`;
       return;
     }
-    // Confidence from the number of calibration charges.
     const conf = isNaN(charges) ? { label: "—", color: "var(--secondary-text-color)" }
       : charges >= 10 ? { label: `alta · ${charges} cargas`, color: "var(--success-color,#43a047)" }
       : charges >= 3 ? { label: `media · ${charges} cargas`, color: "var(--warning-color,#fb8c00)" }
       : { label: `baja · ${charges} ${charges === 1 ? "carga" : "cargas"}`, color: "var(--error-color,#e53935)" };
+    // SoH headline + bar when we can compute a %.
     let healthHtml = "";
-    if (!isNaN(nominal) && nominal > 0) {
-      const pct = Math.max(0, Math.min(100, (cap / nominal) * 100));
+    if (!isNaN(sohPct)) {
+      const pct = Math.max(0, Math.min(100, sohPct));
       const col = pct >= 95 ? "var(--success-color,#43a047)" : pct >= 88 ? "var(--warning-color,#fb8c00)" : "var(--error-color,#e53935)";
       healthHtml = `
+        <div class="bh-soh"><span class="bh-num" style="color:${col}">${pct.toFixed(1)}%</span><span class="bh-unit">salud (SoH)</span></div>
         <div class="bh-bar"><span class="bh-fill" style="width:${pct.toFixed(0)}%;background:${col}"></span></div>
-        <div class="bh-pct"><b style="color:${col}">${pct.toFixed(1)}%</b> de salud · nominal ${nominal.toFixed(1)} kWh</div>`;
+        <div class="bh-sub">${cap.toFixed(1)} kWh útiles${!isNaN(declared) ? ` de ${declared.toFixed(1)} nominal` : ""}</div>`;
+    } else {
+      healthHtml = `<div class="bh-soh"><span class="bh-num">${cap.toFixed(1)}</span><span class="bh-unit">kWh útiles</span></div>`;
+    }
+    // Degradation rate + tiny capacity trend sparkline.
+    let rateHtml = "";
+    if (!isNaN(ratePerYear) && Math.abs(ratePerYear) >= 0.01) {
+      const losing = ratePerYear < 0;
+      rateHtml = `<div class="bh-rate"><ha-icon icon="${losing ? "mdi:trending-down" : "mdi:trending-up"}" style="color:${losing ? "var(--error-color,#e53935)" : "var(--success-color,#43a047)"}"></ha-icon>${ratePerYear > 0 ? "+" : ""}${ratePerYear.toFixed(2)} kWh/año</div>`;
+    }
+    const caps = history.map((h) => parseFloat(h.calibrated_kwh)).filter((v) => !isNaN(v));
+    let spark = "";
+    if (caps.length >= 2) {
+      const lo = Math.min(...caps), hi = Math.max(...caps), span = hi - lo || 1;
+      const W = 220, H = 30;
+      const pts = caps.map((v, i) => `${((i / (caps.length - 1)) * W).toFixed(1)},${(H - ((v - lo) / span) * (H - 4) - 2).toFixed(1)}`).join(" ");
+      spark = `<svg class="bh-spark" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none"><polyline points="${pts}" fill="none" stroke="var(--primary-color)" stroke-width="2"/></svg>`;
     }
     this.innerHTML = `
       <ha-card>
-        <div class="bh-head"><ha-icon icon="mdi:battery-heart-variant"></ha-icon>Battery health</div>
-        <div class="bh-cap"><span class="bh-num">${cap.toFixed(1)}</span><span class="bh-unit">kWh útiles</span></div>
+        <div class="bh-head"><ha-icon icon="mdi:battery-heart-variant"></ha-icon>Battery health${rateHtml}</div>
         ${healthHtml}
-        <div class="bh-foot">Capacidad calibrada por cargas · confianza <b style="color:${conf.color}">${conf.label}</b>. Una bajada sostenida = degradación.</div>
+        ${spark}
+        <div class="bh-foot">Capacidad calibrada por cargas · confianza <b style="color:${conf.color}">${conf.label}</b>. Una bajada sostenida = degradación real.</div>
         <style>
-          .bh-head{display:flex;align-items:center;gap:7px;padding:14px 16px 2px;font-weight:600;font-size:1.05em;}
-          .bh-head ha-icon{--mdc-icon-size:20px;color:var(--success-color,#43a047);}
-          .bh-cap{display:flex;align-items:baseline;gap:6px;padding:2px 16px 6px;}
+          ${headStyle}
+          .bh-head{justify-content:space-between;}
+          .bh-rate{display:inline-flex;align-items:center;gap:3px;font-size:.78em;font-weight:600;color:var(--secondary-text-color);}
+          .bh-rate ha-icon{--mdc-icon-size:16px;}
+          .bh-soh{display:flex;align-items:baseline;gap:6px;padding:2px 16px 4px;}
           .bh-num{font-size:2.1em;font-weight:800;color:var(--primary-text-color);font-variant-numeric:tabular-nums;}
           .bh-unit{font-size:.85em;color:var(--secondary-text-color);}
           .bh-bar{height:12px;border-radius:7px;background:var(--divider-color);overflow:hidden;margin:2px 16px 0;}
           .bh-fill{display:block;height:100%;border-radius:7px;}
-          .bh-pct{padding:5px 16px 2px;font-size:.92em;}
-          .bh-hint{padding:4px 16px 2px;font-size:.82em;color:var(--secondary-text-color);}
-          .bh-hint code{background:var(--secondary-background-color);padding:1px 4px;border-radius:4px;}
+          .bh-sub{padding:5px 16px 2px;font-size:.9em;color:var(--secondary-text-color);font-variant-numeric:tabular-nums;}
+          .bh-spark{display:block;width:calc(100% - 32px);height:30px;margin:6px 16px 0;}
           .bh-foot{padding:6px 16px 16px;font-size:.8em;color:var(--secondary-text-color);}
         </style>
       </ha-card>`;
   }
 }
 customElements.define("ev-trip-battery-health-card", EvTripBatteryHealthCard);
-window.customCards.push({ type: "ev-trip-battery-health-card", name: "EV Trip — battery health", description: "Calibrated usable capacity (degradation proxy) from recent_trips." });
+window.customCards.push({ type: "ev-trip-battery-health-card", name: "EV Trip — battery health", description: "State of Health / calibrated capacity (degradation) from the logger." });
+
+// ==========================================================================
+// Shared renderer for the "consumption by <bucket>" cards (season / time of
+// day). Reads {current, by} from a logger sensor whose buckets each carry
+// {trips, distance_km, energy_kwh, avg_consumption_kwh_100km, avg_ambient_temp_c}
+// and draws HTML bars in the active efficiency unit, current bucket highlighted.
+// ==========================================================================
+class _EvTripBucketCard extends HTMLElement {
+  setConfig(config) { this._config = config || {}; this._device = this._config.device || null; }
+  set hass(hass) { this._hass = hass; this._render(); }
+  getCardSize() { return 4; }
+  connectedCallback() {
+    if (this._effBound) return;
+    this._effBound = true;
+    this._onEffUnit = () => this._render();
+    window.addEventListener("ev-trip-eff-unit", this._onEffUnit);
+  }
+  disconnectedCallback() {
+    if (this._onEffUnit) window.removeEventListener("ev-trip-eff-unit", this._onEffUnit);
+    this._effBound = false;
+  }
+  // Subclasses set: _sensorKey, _title, _curAttr, _byAttr, _order [{key,label,icon,color}].
+  _render() {
+    if (!this._hass) return;
+    const D = this._device || detectDevice(this._hass);
+    this._device = D;
+    const st = this._hass.states[`sensor.${D}_${this._sensorKey}`];
+    const a = (st && st.attributes) || {};
+    const by = a[this._byAttr] || {};
+    const cur = a[this._curAttr];
+    const rowsData = this._order
+      .map((o) => ({ ...o, d: by[o.key] }))
+      .filter((o) => o.d && o.d.avg_consumption_kwh_100km != null && !isNaN(Number(o.d.avg_consumption_kwh_100km)));
+    const head = `<div class="bk-head"><ha-icon icon="${this._headIcon}"></ha-icon>${this._title}<span class="bk-sub">${_esc(_effUnitLabel())} · más bajo = mejor</span></div>`;
+    const css = `
+      .bk-head{display:flex;align-items:center;gap:7px;flex-wrap:wrap;padding:14px 16px 8px;font-weight:600;font-size:1.05em;}
+      .bk-head ha-icon{--mdc-icon-size:20px;color:var(--primary-color);}
+      .bk-sub{margin-left:auto;color:var(--secondary-text-color);font-weight:400;font-size:.72em;}
+      .bk-empty{display:flex;align-items:center;gap:12px;padding:8px 18px 22px;color:var(--secondary-text-color);}
+      .bk-empty ha-icon{--mdc-icon-size:28px;opacity:.7;}
+      .bk-list{display:flex;flex-direction:column;gap:9px;padding:2px 16px 12px;}
+      .bk-row{display:grid;grid-template-columns:24px 84px 1fr auto;align-items:center;gap:10px;}
+      .bk-row--cur .bk-lbl{font-weight:800;color:var(--primary-text-color);}
+      .bk-ic ha-icon{--mdc-icon-size:19px;}
+      .bk-lbl{font-size:.85em;color:var(--secondary-text-color);}
+      .bk-now{font-size:.74em;background:var(--primary-color);color:var(--text-primary-color,#fff);border-radius:6px;padding:0 5px;margin-left:3px;font-weight:700;}
+      .bk-track{height:10px;border-radius:6px;background:var(--divider-color);overflow:hidden;}
+      .bk-fill{display:block;height:100%;border-radius:6px;}
+      .bk-val{font-weight:800;font-variant-numeric:tabular-nums;min-width:42px;text-align:right;}
+      .bk-meta{grid-column:2 / -1;font-size:.72em;color:var(--secondary-text-color);margin-top:-4px;}`;
+    if (!rowsData.length) {
+      this.innerHTML = `<ha-card>${head}
+        <div class="bk-empty"><ha-icon icon="mdi:database-clock-outline"></ha-icon>
+          <div>${this._emptyMsg}</div></div>
+        <style>${css}</style></ha-card>`;
+      return;
+    }
+    const maxV = Math.max(...rowsData.map((o) => Number(o.d.avg_consumption_kwh_100km))) || 1;
+    const rows = rowsData
+      .map((o) => {
+        const v = Number(o.d.avg_consumption_kwh_100km);
+        const e = _fmtEffVal(v);
+        const pct = Math.max(4, Math.round((v / maxV) * 100));
+        const isCur = cur != null && String(cur) === String(o.key);
+        const trips = o.d.trips != null ? `${o.d.trips} ${o.d.trips === 1 ? "viaje" : "viajes"}` : "";
+        const temp = o.d.avg_ambient_temp_c != null ? ` · ${Number(o.d.avg_ambient_temp_c).toFixed(0)}°C` : "";
+        const km = o.d.distance_km != null ? ` · ${Number(o.d.distance_km).toFixed(0)} km` : "";
+        return `<div class="bk-row${isCur ? " bk-row--cur" : ""}">
+            <span class="bk-ic" style="color:${o.color}"><ha-icon icon="${o.icon}"></ha-icon></span>
+            <span class="bk-lbl">${_esc(o.label)}${isCur ? ' <span class="bk-now">ahora</span>' : ""}</span>
+            <span class="bk-track"><span class="bk-fill" style="width:${pct}%;background:${o.color}"></span></span>
+            <span class="bk-val">${e.value}</span>
+            <span class="bk-meta">${trips}${km}${temp}</span>
+          </div>`;
+      })
+      .join("");
+    const best = rowsData.reduce((m, o) => (Number(o.d.avg_consumption_kwh_100km) < Number(m.d.avg_consumption_kwh_100km) ? o : m));
+    this.innerHTML = `<ha-card>${head}<div class="bk-list">${rows}</div>
+      <div class="bk-foot">Más eficiente: <b>${_esc(best.label)}</b> (${_fmtEff(Number(best.d.avg_consumption_kwh_100km))})</div>
+      <style>${css}.bk-foot{padding:0 16px 16px;font-size:.82em;color:var(--secondary-text-color);}</style></ha-card>`;
+  }
+}
+
+// Consumption by SEASON (winter/spring/summer/autumn) — sensor.<D>_consumption_by_season.
+class EvTripSeasonCard extends _EvTripBucketCard {
+  constructor() {
+    super();
+    this._sensorKey = "consumption_by_season";
+    this._byAttr = "by_season";
+    this._curAttr = "current_season";
+    this._title = "Consumo por estación";
+    this._headIcon = "mdi:sun-snowflake-variant";
+    this._emptyMsg = "Aún sin datos por estación — se llena con los viajes registrados.";
+    this._order = [
+      { key: "winter", label: "Invierno", icon: "mdi:snowflake", color: "#039be5" },
+      { key: "spring", label: "Primavera", icon: "mdi:flower", color: "#43a047" },
+      { key: "summer", label: "Verano", icon: "mdi:weather-sunny", color: "#f59e0b" },
+      { key: "autumn", label: "Otoño", icon: "mdi:leaf-maple", color: "#a1632e" },
+    ];
+  }
+}
+customElements.define("ev-trip-season-card", EvTripSeasonCard);
+window.customCards.push({ type: "ev-trip-season-card", name: "EV Trip — consumption by season", description: "Seasonal kWh/100km from the logger's consumption_by_season sensor." });
+
+// Consumption by TIME OF DAY — sensor.<D>_consumption_by_time_of_day.
+class EvTripTimeOfDayCard extends _EvTripBucketCard {
+  constructor() {
+    super();
+    this._sensorKey = "consumption_by_time_of_day";
+    this._byAttr = "by_time";
+    this._curAttr = "current_bucket";
+    this._title = "Consumo por franja horaria";
+    this._headIcon = "mdi:clock-time-four-outline";
+    this._emptyMsg = "Aún sin datos por franja horaria.";
+    this._order = [
+      { key: "morning", label: "Mañana", icon: "mdi:weather-sunset-up", color: "#fbc02d" },
+      { key: "midday", label: "Mediodía", icon: "mdi:weather-sunny", color: "#f59e0b" },
+      { key: "afternoon", label: "Tarde", icon: "mdi:weather-partly-cloudy", color: "#039be5" },
+      { key: "evening", label: "Atardecer", icon: "mdi:weather-sunset-down", color: "#8b5cf6" },
+      { key: "night", label: "Noche", icon: "mdi:weather-night", color: "#5c6bc0" },
+    ];
+  }
+}
+customElements.define("ev-trip-time-of-day-card", EvTripTimeOfDayCard);
+window.customCards.push({ type: "ev-trip-time-of-day-card", name: "EV Trip — consumption by time of day", description: "kWh/100km per part of day from the logger's consumption_by_time_of_day sensor." });
 
 // ==========================================================================
 // Custom card: per-month efficiency (kWh/100km) — a "this month vs last" delta
