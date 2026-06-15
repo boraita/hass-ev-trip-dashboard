@@ -4760,19 +4760,23 @@ class EvTripBatteryHealthCard extends HTMLElement {
         <div class="bh-bar"><span class="bh-fill" style="width:${pct.toFixed(0)}%;background:${col}"></span></div>
         <div class="bh-sub">${cap.toFixed(1)} kWh útiles${!isNaN(declared) ? ` de ${declared.toFixed(1)} nominal` : ""}</div>
         ${expLine}`;
-    } else if (!isNaN(expectedPct)) {
-      // Not measured yet, but the model gives a realistic expectation by km/age.
+    } else if (!isNaN(expectedPct) && (Number(expInputs.age_years) >= 0.3 || Number(expInputs.km) >= 3000)) {
+      // Not measured yet, but the model has enough basis (real km/age) to give
+      // a realistic expectation. Guard against the "0 km / 0 años → 100%" case.
       const col = expectedPct >= 95 ? "var(--success-color,#43a047)" : expectedPct >= 88 ? "var(--warning-color,#fb8c00)" : "var(--error-color,#e53935)";
       healthHtml = `
         <div class="bh-soh"><span class="bh-num" style="color:${col}">${expectedPct.toFixed(1)}%</span><span class="bh-unit">SoH estimada</span></div>
         <div class="bh-bar"><span class="bh-fill" style="width:${expectedPct.toFixed(0)}%;background:${col}"></span></div>
-        <div class="bh-sub">${!isNaN(cap) ? `${cap.toFixed(1)} kWh nominales · ` : ""}${expInputs.km != null ? `${Math.round(expInputs.km).toLocaleString("es-ES")} km` : ""}${expInputs.chemistry ? ` · ${String(expInputs.chemistry).toUpperCase()}` : ""}</div>
+        <div class="bh-sub">${!isNaN(cap) ? `${cap.toFixed(1)} kWh nominales · ` : ""}${expInputs.km != null ? `${Math.round(expInputs.km).toLocaleString("es-ES")} km` : ""}${expInputs.age_years != null ? ` · ${Number(expInputs.age_years).toFixed(1)} años` : ""}${expInputs.chemistry ? ` · ${String(expInputs.chemistry).toUpperCase()}` : ""}</div>
         <div class="bh-pending"><ha-icon icon="mdi:progress-clock"></ha-icon><span>Estimada por km/edad. La <b>medida real</b> aparece cuando el logger calibre con más cargas (${isNaN(charges) ? 0 : charges} hasta ahora).</span></div>`;
     } else {
+      // Either no model output, or the model lacks a basis (it only counts km
+      // since the logger started + age from vehicle_first_registered, both ~0
+      // here → a meaningless ~100%). Show nominal capacity + how to fix it.
       const nC = isNaN(charges) ? 0 : charges;
       healthHtml = `
-        <div class="bh-soh"><span class="bh-num bh-num--muted">${cap.toFixed(1)}</span><span class="bh-unit">kWh nominales</span></div>
-        <div class="bh-pending"><ha-icon icon="mdi:progress-clock"></ha-icon><span><b>SoH aún sin medir.</b> El logger necesita más cargas completas para calibrar la capacidad real (${nC} hasta ahora).</span></div>`;
+        <div class="bh-soh"><span class="bh-num bh-num--muted">${isNaN(cap) ? "—" : cap.toFixed(1)}</span><span class="bh-unit">kWh nominales</span></div>
+        <div class="bh-pending"><ha-icon icon="mdi:progress-clock"></ha-icon><span><b>SoH aún sin estimar de forma fiable.</b> La capacidad real se calibra con cargas (${nC} hasta ahora) y la estimación por edad necesita la <b>fecha de matriculación</b> del coche (el modelo solo cuenta km desde que se instaló el logger).</span></div>`;
     }
     // Degradation rate + tiny capacity trend sparkline.
     let rateHtml = "";
