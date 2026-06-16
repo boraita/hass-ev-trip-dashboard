@@ -1,6 +1,6 @@
 # EV Trip Dashboard
 
-A polished multi-view Home Assistant dashboard powered by **[hass-ev-trip-logger](https://github.com/boraita/hass-ev-trip-logger)** (**v0.5.60+** required for battery health / SoH / weather / seasonal cards). Inspired by the BYD mobile app, but the trip / charge / journey data comes from the logger sensors, so it works with **any car**: BYD, Tesla, OVMS, dongle setups, even fully manual entry.
+A polished multi-view Home Assistant dashboard powered by **[hass-ev-trip-logger](https://github.com/boraita/hass-ev-trip-logger)** (**v0.5.66+** required for the latest battery-health curves and the `logger_km` / `odometer_km` split; v0.5.60+ for the rest of the cards). Inspired by the BYD mobile app, but the trip / charge / journey data comes from the logger sensors, so it works with **any car**: BYD, Tesla, OVMS, dongle setups, even fully manual entry.
 
 Optional car-integration tiles (range, temperatures, tires, doors, energy snapshot, fetch-data button) plug in via placeholders so you only configure the prefix once.
 
@@ -125,7 +125,7 @@ All cards live in `cards/` and can be `!include`-ed from any view. Below: the ca
 
 | Sensor / attribute | Used for |
 |---|---|
-| `sensor.__DEVICE___battery_soh` | Observed % of declared capacity actually delivered. Stays at 100 until the calibration kicks in (5+ charges with ΔSoC ≥ 30 %). Attributes carry `calibrated_capacity_kwh`, `declared_capacity_kwh`, `degradation_kwh_per_year`, full `history[]`. |
+| `sensor.__DEVICE___battery_soh` | Observed % of declared capacity actually delivered. Stays at 100 until the calibration kicks in (5+ charges with ΔSoC ≥ 30 %). Attributes carry `calibrated_capacity_kwh`, `declared_capacity_kwh`, `degradation_kwh_per_year`, **`logger_km`** (SUM of distance_km across logged trips — what the SoH model uses), **`odometer_km`** (car's lifetime mileage — informational), **`age_years`**, **`battery_chemistry`**, full `history[]` (every snapshot now carries both `logger_km` AND `odometer_km`). |
 | `sensor.__DEVICE___expected_battery_soh` | Modelled SoH for this car's km/age/chemistry/climate/habits. Attributes break the loss into `year1_knee`, `calendar`, `cycle`, `climate_hot`, `dcfc`, `soc_habit`. `confidence` is low/medium/high based on what optional config you've filled. |
 | `sensor.__DEVICE___battery_health_vs_expected` | Enum tile: `calibrating` / `ahead` (>+2 pp) / `on_track` (±2 pp) / `behind` (<−2 pp). Attributes: `observed_soh_pct`, `expected_soh_pct`, `delta_pp`. |
 
@@ -173,7 +173,34 @@ cards:
       Year1 {{ f.year1_knee }} · Calendar {{ f.calendar }} · Cycle {{ f.cycle }}
       · Hot {{ f.climate_hot }} · DCFC {{ f.dcfc }} · SoC {{ f.soc_habit }}
     icon: mdi:scale-balance
+
+  # v0.5.66 — SoH vs km scatter. Each capacity_history snapshot brings
+  # `calibrated_kwh` and `logger_km` (kilometres witnessed by the
+  # logger, NOT the car's lifetime odometer — see logger README).
+  - type: custom:apexcharts-card
+    header:
+      title: SoH vs km (logger)
+      show: true
+    graph_span: 2y
+    series:
+      - entity: sensor.__DEVICE___battery_soh
+        attribute: history
+        data_generator: |
+          return entity.attributes.history
+            .filter(s => s.logger_km != null)
+            .map(s => [s.logger_km,
+                       (s.calibrated_kwh / s.declared_kwh) * 100]);
+        type: scatter
+    xaxis:
+      type: numeric
+      title: { text: 'km (logger)' }
+    yaxis:
+      - min: 70
+        max: 100
+        title: { text: 'SoH %' }
 ```
+
+> **`logger_km` vs `odometer_km`**: the SoH model only knows the period the logger has been watching. `logger_km` is `SUM(distance_km)` across all logged trips and is what the model uses; `odometer_km` is the car's lifetime mileage (the value of the configured `odometer_sensor`), shown for context. For cars bought used the two diverge — the logger never saw the previous owner's miles, so charging the model against `odometer_km` would over-penalise. Dashboards can render whichever makes sense; the YAML snippet above uses `logger_km` because that's what the modelled curve is anchored to.
 
 ### Weather & seasonal analytics (logger v0.5.54+)
 
@@ -269,6 +296,39 @@ When the logger is configured with ABRP credentials, the dashboard automatically
 - `sensor.<device>_abrp_next_charge_soc` — target SoC of the next stop while a route is active.
 
 Replicate the legacy "ABRP only while driving" pattern with the snippet in the [logger README](https://github.com/boraita/hass-ev-trip-logger#abrp-setup-optional).
+
+---
+
+## Sensor reliability notes (v0.5.61 – v0.5.66)
+
+The logger ships with several "idle defaults" so dashboards see a number instead of `unknown` when the car is parked / no trip active:
+
+| Card or sensor | Idle behaviour |
+|---|---|
+| `current_trip_distance / duration / energy / soc_used / max_power / avg_speed / consumption` | **0** when no trip is open (was `unknown` before v0.5.62) — your distance / consumption tiles render cleanly. |
+| `current_trip_avg_temperature` | Stays None (no defensible default for "no measurement"). |
+| `current_trip_score` | Stays None (score without driving is undefined). |
+| `current_charge_kwh / cost / power_kw / duration_min` | **0** when no charge is active. |
+| `current_charge_price_per_kwh` | The configured home tariff in idle ("if I plugged in now, this is what it would cost"). |
+| `last_trip_max_power / max_speed / regen_kwh` | **0** when the last trip was `reconstructed` (cloud-poll lag → live-only fields missing). |
+| `last_trip_avg_temperature` | Falls back to `ambient_temp_c` from the weather snapshot (v0.5.62) — no need to wire an `exterior_temp_sensor` if a `weather_entity` is configured. |
+| `consumption_by_temp_bucket` | Uses `COALESCE(avg_temp_c, ambient_temp_c)` so the chart populates even without a car temp probe. |
+| `avg_trip_regen_30_days` | **0** when the 30-day window has no regen captures (typical on cloud-polled cars whose trips fall through the synthetic path). |
+| `abrp_next_charge_soc` | `unknown` until an ABRP route is active — by design of the ABRP API. |
+| `current_driver` | Mirrors the configured driver sensor (e.g. `sensor.<v>_driver` from a BT entity). `unknown` when the external sensor itself is `none`. |
+
+### Charge sensor — enum vocabularies (logger v0.5.61+)
+
+The `charge_sensor` config option no longer requires a `binary_sensor`. It accepts any `sensor.*` with a textual state. Recognised "charging" values, case-insensitive:
+
+- Classic: `on`, `true`, `1`
+- Tesla: `Charging`, `Starting`, `Engaged`
+- OVMS: `charging`
+- Mode-explicit: `ac_charging`, `dc_charging`, `slow_charging`, `fast_charging`
+
+Anything else (`off`, `Disconnected`, `Complete`, `Stopped`, `NoPower`, `idle`, `done`, `false`, `0`) counts as not charging.
+
+This means a Tesla integration that exposes `sensor.<vehicle>_charging_state` (enum) Just Works™ — configure it as the charge sensor in *EV Trip Logger → Configure*.
 
 ---
 
