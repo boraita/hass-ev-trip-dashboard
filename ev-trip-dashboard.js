@@ -1214,7 +1214,7 @@ function trips30dKpis(D) {
       {
         type: "custom:button-card",
         entity: `sensor.${D}_avg_trip_regen_30_days`,
-        name: "Regen media",
+        name: L("Avg regen", "Regen media"),
         icon: "mdi:battery-charging",
         show_state: true,
         show_name: true,
@@ -1787,6 +1787,7 @@ class EvTripListCard extends HTMLElement {
   }
   _render() {
     if (!this._hass) return;
+    _setUiLang(this._hass);
     // Lazy-bind the click delegation in case connectedCallback hasn't run.
     if (!this._clickBound && typeof this.addEventListener === "function") {
       this.connectedCallback();
@@ -1956,7 +1957,7 @@ class EvTripListCard extends HTMLElement {
           ${(() => {
             // Real driven route from the GPS breadcrumbs logged during the trip.
             const rt = this._routes[t.id];
-            if (rt === "loading") return `<div class="d-map d-map--ph">Cargando ruta…</div>`;
+            if (rt === "loading") return `<div class="d-map d-map--ph">${L("Loading route…", "Cargando ruta…")}</div>`;
             if (Array.isArray(rt) && rt.length >= 2) {
               const svg = _routeSvg(rt);
               if (svg) return `<div class="d-map">${svg}</div>`;
@@ -2379,6 +2380,7 @@ class EvTripHistoryCard extends HTMLElement {
   }
   _render() {
     if (!this._hass) return;
+    _setUiLang(this._hass);
     // Lazy-bind the click delegation in case connectedCallback hasn't run.
     if (!this._clickBound && typeof this.addEventListener === "function") {
       this.connectedCallback();
@@ -2721,8 +2723,8 @@ class EvTripHistoryCard extends HTMLElement {
             <div class="body">
               <div class="title-line">
                 <span class="title">${_esc(dayLabel(key))}</span>
-                <span class="chip"><ha-icon icon="mdi:counter"></ha-icon>${n} ${n === 1 ? "charge" : "charges"}</span>
-                ${hasLive ? `<span class="chip chip--live"><ha-icon icon="mdi:flash"></ha-icon>cargando</span>` : ""}
+                <span class="chip"><ha-icon icon="mdi:counter"></ha-icon>${n} ${L(n === 1 ? "charge" : "charges", n === 1 ? "carga" : "cargas")}</span>
+                ${hasLive ? `<span class="chip chip--live"><ha-icon icon="mdi:flash"></ha-icon>${L("charging", "cargando")}</span>` : ""}
               </div>
               <div class="sub"><b>${kwhStr}</b> · <b>${costStr}</b></div>
             </div>
@@ -2753,12 +2755,12 @@ class EvTripHistoryCard extends HTMLElement {
               <div class="session session--live">
                 <div class="sbody">
                   <div class="sroute">
-                    <span class="chip chip--live"><ha-icon icon="mdi:flash"></ha-icon>Cargando ahora</span>
+                    <span class="chip chip--live"><ha-icon icon="mdi:flash"></ha-icon>${L("Charging now", "Cargando ahora")}</span>
                     <span class="chip">${_endpoint(null, c.location)}</span>
                     ${typeChip}
                     ${socChip}
                   </div>
-                  <div class="smetrics"><b>${fmtNum(c.kwh)}</b> kWh${pwr ? ` · <b>${pwr}</b>` : ""}${c.price_per_kwh != null ? ` · <b>${fmtNum(c.price_per_kwh)}</b> ${_esc(sym(c.currency))}/kWh` : ""}${c.started_at ? ` · desde ${timeOf(c.started_at)}` : ""}</div>
+                  <div class="smetrics"><b>${fmtNum(c.kwh)}</b> kWh${pwr ? ` · <b>${pwr}</b>` : ""}${c.price_per_kwh != null ? ` · <b>${fmtNum(c.price_per_kwh)}</b> ${_esc(sym(c.currency))}/kWh` : ""}${c.started_at ? ` · ${L("since", "desde")} ${timeOf(c.started_at)}` : ""}</div>
                 </div>
                 <div class="score-pill score-pill--live">${total}</div>
               </div>
@@ -3248,7 +3250,7 @@ class EvTripJourneyCard extends HTMLElement {
         // Real driven route for this stage, from the GPS breadcrumbs.
         const rt = this._routes[id];
         let mapHtml = "";
-        if (rt === "loading") mapHtml = `<div class="js-map js-map--ph">Cargando ruta…</div>`;
+        if (rt === "loading") mapHtml = `<div class="js-map js-map--ph">${L("Loading route…", "Cargando ruta…")}</div>`;
         else if (Array.isArray(rt) && rt.length >= 2) { const svg = _routeSvg(rt); if (svg) mapHtml = `<div class="js-map">${svg}</div>`; }
         return `<div class="jstage">
           <div class="jstage-head">
@@ -3265,12 +3267,13 @@ class EvTripJourneyCard extends HTMLElement {
     // One map of the WHOLE day's route (all stages joined), above the stages.
     const jr = this._jroute ? this._jroute[this._jrKey(stages)] : undefined;
     let journeyMap = "";
-    if (jr === "loading") journeyMap = `<div class="js-map js-map--all js-map--ph">Cargando ruta del día…</div>`;
+    if (jr === "loading") journeyMap = `<div class="js-map js-map--all js-map--ph">${L("Loading the day's route…", "Cargando ruta del día…")}</div>`;
     else if (Array.isArray(jr) && jr.length >= 2) { const svg = _routeSvg(jr); if (svg) journeyMap = `<div class="js-map js-map--all">${svg}</div>`; }
     return `<div class="jstages-list">${totals}${journeyMap}${rows}</div>`;
   }
   _render() {
     if (!this._hass) return;
+    _setUiLang(this._hass);
     if (!this._clickBound && typeof this.addEventListener === "function") this.connectedCallback();
     const D = this._device || detectDevice(this._hass);
     this._device = D;
@@ -3883,6 +3886,15 @@ const _fmtEffVal = (v100) => {
 };
 // One-shot "12.3 kWh/100km" style string in the active unit.
 const _fmtEff = (v100) => { const e = _fmtEffVal(v100); return e.value === "—" ? "—" : `${e.value} ${e.unit}`; };
+// ---- UI language (follows the installed HA language; English by default) ----
+// Most of the dashboard is English; these helpers let the newer custom cards
+// render in the HA language when it's Spanish, and English otherwise.
+let _uiLang = "en";
+const _setUiLang = (hass) => {
+  try { _uiLang = String((hass && hass.language) || "en").slice(0, 2).toLowerCase(); }
+  catch (_e) { _uiLang = "en"; }
+};
+const L = (en, es) => (_uiLang === "es" && es != null ? es : en);
 // Resolve a logger sensor for device D by a SIGNATURE attribute, tolerating
 // collided entity_ids — HA assigns `sensor.<D>_2`, `_3`… fallback object_ids
 // when a translation_key isn't ready at first registration (happened to the
@@ -4084,6 +4096,7 @@ class EvTripCalendarCard extends HTMLElement {
   }
   _render() {
     if (!this._hass) return;
+    _setUiLang(this._hass);
     if (!this._clickBound && typeof this.addEventListener === "function") this.connectedCallback();
     const D = this._device || detectDevice(this._hass);
     this._device = D;
@@ -4594,6 +4607,7 @@ class EvTripTempCard extends HTMLElement {
   }
   _render() {
     if (!this._hass) return;
+    _setUiLang(this._hass);
     const D = this._device || detectDevice(this._hass);
     this._device = D;
     const st = _findSensorByAttr(this._hass, D, "consumption_by_temperature", "by_bucket");
@@ -4605,11 +4619,11 @@ class EvTripTempCard extends HTMLElement {
       .map((k) => [parseInt(k, 10), Number(buckets[k])])
       .filter((p) => !isNaN(p[0]) && !isNaN(p[1]) && p[1] >= 0)
       .sort((x, y) => x[0] - y[0]);
-    const head = `<div class="tc-head">Consumption by temperature <span class="tc-sub">${_esc(_effUnitLabel())} · ${n} ${n === 1 ? "sample" : "samples"}</span></div>`;
+    const head = `<div class="tc-head">${L("Consumption by temperature", "Consumo por temperatura")} <span class="tc-sub">${_esc(_effUnitLabel())} · ${n} ${L(n === 1 ? "sample" : "samples", n === 1 ? "muestra" : "muestras")}</span></div>`;
     if (!keys.length) {
       this.innerHTML = `<ha-card>${head}
         <div class="tc-empty"><ha-icon icon="mdi:thermometer-off"></ha-icon>
-          <div>Aún sin datos por temperatura.<br><span>Se llena a medida que los viajes registran la temperatura exterior.</span></div>
+          <div>${L("No temperature data yet.", "Aún sin datos por temperatura.")}<br><span>${L("Fills as trips record the outside temperature.", "Se llena a medida que los viajes registran la temperatura exterior.")}</span></div>
         </div>
         <style>
           .tc-head{display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:4px;padding:14px 16px 8px;font-weight:600;font-size:1.05em;}
@@ -4634,7 +4648,7 @@ class EvTripTempCard extends HTMLElement {
         const isCur = curBucket != null && lo === curBucket;
         return `<div class="tc-row${isCur ? " tc-row--cur" : ""}">
           <span class="tc-ic" style="color:${s.color}"><ha-icon icon="${s.icon}"></ha-icon></span>
-          <span class="tc-lbl">${lo}–${lo + size}°C${isCur ? ' <span class="tc-now">ahora</span>' : ""}</span>
+          <span class="tc-lbl">${lo}–${lo + size}°C${isCur ? ` <span class="tc-now">${L("now", "ahora")}</span>` : ""}</span>
           <span class="tc-track"><span class="tc-fill" style="width:${pct}%;background:${s.color}"></span></span>
           <span class="tc-val">${e.value}</span>
         </div>`;
@@ -4646,7 +4660,7 @@ class EvTripTempCard extends HTMLElement {
       <ha-card>
         ${head}
         <div class="tc-list">${rows}</div>
-        <div class="tc-foot">❄️ frío → ☀️ calor · más bajo = mejor · mejor banda: <b>${best[0]}–${best[0] + size}°C</b> (${_fmtEff(best[1])})</div>
+        <div class="tc-foot">❄️ ${L("cold", "frío")} → ☀️ ${L("hot", "calor")} · ${L("lower is better", "más bajo = mejor")} · ${L("best band", "mejor banda")}: <b>${best[0]}–${best[0] + size}°C</b> (${_fmtEff(best[1])})</div>
         <style>
           .tc-head{display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:4px;padding:14px 16px 8px;font-weight:600;font-size:1.05em;}
           .tc-sub{color:var(--secondary-text-color);font-weight:400;font-size:.78em;}
@@ -4682,6 +4696,7 @@ class EvTripBatteryHealthCard extends HTMLElement {
   getCardSize() { return 3; }
   _render() {
     if (!this._hass) return;
+    _setUiLang(this._hass);
     const D = this._device || detectDevice(this._hass);
     this._device = D;
     // Prefer the dedicated SoH sensor (v0.5.54): state = calibrated/declared %.
@@ -4717,9 +4732,9 @@ class EvTripBatteryHealthCard extends HTMLElement {
     const vsExp = _findSensorByAttr(this._hass, D, "battery_health_vs_expected", "expected_soh_pct");
     const status = vsExp ? String(vsExp.state) : null; // calibrating|ahead|on_track|behind
     const STATUS = {
-      ahead: { label: "Mejor de lo esperado", color: "var(--success-color,#43a047)", icon: "mdi:thumb-up" },
-      on_track: { label: "En lo esperado", color: "var(--info-color,#039be5)", icon: "mdi:check-circle" },
-      behind: { label: "Peor de lo esperado", color: "var(--error-color,#e53935)", icon: "mdi:alert" },
+      ahead: { label: L("Better than expected", "Mejor de lo esperado"), color: "var(--success-color,#43a047)", icon: "mdi:thumb-up" },
+      on_track: { label: L("On track", "En lo esperado"), color: "var(--info-color,#039be5)", icon: "mdi:check-circle" },
+      behind: { label: L("Worse than expected", "Peor de lo esperado"), color: "var(--error-color,#e53935)", icon: "mdi:alert" },
     };
     const headStyle = `
       .bh-head{display:flex;align-items:center;gap:7px;padding:14px 16px 2px;font-weight:600;font-size:1.05em;}
@@ -4728,23 +4743,25 @@ class EvTripBatteryHealthCard extends HTMLElement {
     // spec (the logger uses declared until it has enough confidence to calibrate).
     const cap = !isNaN(calibrated) ? calibrated : declared;
     if (isNaN(cap) && isNaN(sohPct)) {
-      this.innerHTML = `<ha-card><div class="bh-head"><ha-icon icon="mdi:battery-heart-variant"></ha-icon>Battery health</div>
-        <div class="bh-empty">Calibrando capacidad… (necesita varias cargas registradas)</div>
+      this.innerHTML = `<ha-card><div class="bh-head"><ha-icon icon="mdi:battery-heart-variant"></ha-icon>${L("Battery health", "Salud de batería")}</div>
+        <div class="bh-empty">${L("Calibrating capacity… (needs several recorded charges)", "Calibrando capacidad… (necesita varias cargas registradas)")}</div>
         <style>${headStyle}.bh-empty{padding:8px 16px 20px;color:var(--secondary-text-color);}</style></ha-card>`;
       return;
     }
     const calibrating = isNaN(calibrated); // showing the declared spec for now
+    const chg = (n) => L(`${n} ${n === 1 ? "charge" : "charges"}`, `${n} ${n === 1 ? "carga" : "cargas"}`);
     const conf = isNaN(charges) ? { label: "—", color: "var(--secondary-text-color)" }
-      : charges >= 10 ? { label: `alta · ${charges} cargas`, color: "var(--success-color,#43a047)" }
-      : charges >= 3 ? { label: `media · ${charges} cargas`, color: "var(--warning-color,#fb8c00)" }
-      : { label: `baja · ${charges} ${charges === 1 ? "carga" : "cargas"}`, color: "var(--error-color,#e53935)" };
+      : charges >= 10 ? { label: `${L("high", "alta")} · ${chg(charges)}`, color: "var(--success-color,#43a047)" }
+      : charges >= 3 ? { label: `${L("medium", "media")} · ${chg(charges)}`, color: "var(--warning-color,#fb8c00)" }
+      : { label: `${L("low", "baja")} · ${chg(charges)}`, color: "var(--error-color,#e53935)" };
     // Show a measured SoH % ONLY when the logger has committed a calibrated
     // capacity. Until then `state` is a 100% placeholder (declared/declared) —
     // NOT a real measurement — so showing a green 100% would be misleading
     // (a car with real km has degraded a few %). Present "not measured yet".
     // Context line: expected SoH from the model (km / age / chemistry).
+    const yrs = (v) => L(`${Number(v).toFixed(1)} yr`, `${Number(v).toFixed(1)} años`);
     const expLine = !isNaN(expectedPct)
-      ? `<div class="bh-exp">Esperado <b>${expectedPct.toFixed(1)}%</b>${expInputs.km != null ? ` · ${Math.round(expInputs.km).toLocaleString("es-ES")} km` : ""}${expInputs.age_years != null ? ` · ${Number(expInputs.age_years).toFixed(1)} años` : ""}${expInputs.chemistry ? ` · ${String(expInputs.chemistry).toUpperCase()}` : ""}</div>`
+      ? `<div class="bh-exp">${L("Expected", "Esperado")} <b>${expectedPct.toFixed(1)}%</b>${expInputs.km != null ? ` · ${Math.round(expInputs.km).toLocaleString()} km` : ""}${expInputs.age_years != null ? ` · ${yrs(expInputs.age_years)}` : ""}${expInputs.chemistry ? ` · ${String(expInputs.chemistry).toUpperCase()}` : ""}</div>`
       : "";
     // Status chip (ahead / on_track / behind) once both observed & expected exist.
     const statusChip = status && STATUS[status]
@@ -4756,33 +4773,33 @@ class EvTripBatteryHealthCard extends HTMLElement {
       const pct = Math.max(0, Math.min(100, sohPct));
       const col = pct >= 95 ? "var(--success-color,#43a047)" : pct >= 88 ? "var(--warning-color,#fb8c00)" : "var(--error-color,#e53935)";
       healthHtml = `
-        <div class="bh-soh"><span class="bh-num" style="color:${col}">${pct.toFixed(1)}%</span><span class="bh-unit">salud medida (SoH)</span>${statusChip}</div>
+        <div class="bh-soh"><span class="bh-num" style="color:${col}">${pct.toFixed(1)}%</span><span class="bh-unit">${L("measured health (SoH)", "salud medida (SoH)")}</span>${statusChip}</div>
         <div class="bh-bar"><span class="bh-fill" style="width:${pct.toFixed(0)}%;background:${col}"></span></div>
-        <div class="bh-sub">${cap.toFixed(1)} kWh útiles${!isNaN(declared) ? ` de ${declared.toFixed(1)} nominal` : ""}</div>
+        <div class="bh-sub">${cap.toFixed(1)} ${L("kWh usable", "kWh útiles")}${!isNaN(declared) ? ` ${L("of", "de")} ${declared.toFixed(1)} ${L("nominal", "nominal")}` : ""}</div>
         ${expLine}`;
     } else if (!isNaN(expectedPct) && (Number(expInputs.age_years) >= 0.3 || Number(expInputs.km) >= 3000)) {
       // Not measured yet, but the model has enough basis (real km/age) to give
-      // a realistic expectation. Guard against the "0 km / 0 años → 100%" case.
+      // a realistic expectation. Guard against the "0 km / 0 yr → 100%" case.
       const col = expectedPct >= 95 ? "var(--success-color,#43a047)" : expectedPct >= 88 ? "var(--warning-color,#fb8c00)" : "var(--error-color,#e53935)";
       healthHtml = `
-        <div class="bh-soh"><span class="bh-num" style="color:${col}">${expectedPct.toFixed(1)}%</span><span class="bh-unit">SoH estimada</span></div>
+        <div class="bh-soh"><span class="bh-num" style="color:${col}">${expectedPct.toFixed(1)}%</span><span class="bh-unit">${L("estimated SoH", "SoH estimada")}</span></div>
         <div class="bh-bar"><span class="bh-fill" style="width:${expectedPct.toFixed(0)}%;background:${col}"></span></div>
-        <div class="bh-sub">${!isNaN(cap) ? `${cap.toFixed(1)} kWh nominales · ` : ""}${expInputs.km != null ? `${Math.round(expInputs.km).toLocaleString("es-ES")} km` : ""}${expInputs.age_years != null ? ` · ${Number(expInputs.age_years).toFixed(1)} años` : ""}${expInputs.chemistry ? ` · ${String(expInputs.chemistry).toUpperCase()}` : ""}</div>
-        <div class="bh-pending"><ha-icon icon="mdi:progress-clock"></ha-icon><span>Estimada por km/edad. La <b>medida real</b> aparece cuando el logger calibre con más cargas (${isNaN(charges) ? 0 : charges} hasta ahora).</span></div>`;
+        <div class="bh-sub">${!isNaN(cap) ? `${cap.toFixed(1)} ${L("kWh nominal", "kWh nominales")} · ` : ""}${expInputs.km != null ? `${Math.round(expInputs.km).toLocaleString()} km` : ""}${expInputs.age_years != null ? ` · ${yrs(expInputs.age_years)}` : ""}${expInputs.chemistry ? ` · ${String(expInputs.chemistry).toUpperCase()}` : ""}</div>
+        <div class="bh-pending"><ha-icon icon="mdi:progress-clock"></ha-icon><span>${L("Estimated from km/age. The <b>measured</b> value appears once the logger calibrates with more charges", "Estimada por km/edad. La <b>medida real</b> aparece cuando el logger calibre con más cargas")} (${isNaN(charges) ? 0 : charges}).</span></div>`;
     } else {
       // Either no model output, or the model lacks a basis (it only counts km
       // since the logger started + age from vehicle_first_registered, both ~0
       // here → a meaningless ~100%). Show nominal capacity + how to fix it.
       const nC = isNaN(charges) ? 0 : charges;
       healthHtml = `
-        <div class="bh-soh"><span class="bh-num bh-num--muted">${isNaN(cap) ? "—" : cap.toFixed(1)}</span><span class="bh-unit">kWh nominales</span></div>
-        <div class="bh-pending"><ha-icon icon="mdi:progress-clock"></ha-icon><span><b>SoH aún sin estimar de forma fiable.</b> La capacidad real se calibra con cargas (${nC} hasta ahora) y la estimación por edad necesita la <b>fecha de matriculación</b> del coche (el modelo solo cuenta km desde que se instaló el logger).</span></div>`;
+        <div class="bh-soh"><span class="bh-num bh-num--muted">${isNaN(cap) ? "—" : cap.toFixed(1)}</span><span class="bh-unit">${L("kWh nominal", "kWh nominales")}</span></div>
+        <div class="bh-pending"><ha-icon icon="mdi:progress-clock"></ha-icon><span>${L(`<b>SoH not reliably estimated yet.</b> Real capacity is calibrated from charges (${nC} so far) and the age estimate needs the vehicle's <b>first-registration date</b> (the model only counts km since the logger was installed).`, `<b>SoH aún sin estimar de forma fiable.</b> La capacidad real se calibra con cargas (${nC} hasta ahora) y la estimación por edad necesita la <b>fecha de matriculación</b> del coche (el modelo solo cuenta km desde que se instaló el logger).`)}</span></div>`;
     }
     // Degradation rate + tiny capacity trend sparkline.
     let rateHtml = "";
     if (!isNaN(ratePerYear) && Math.abs(ratePerYear) >= 0.01) {
       const losing = ratePerYear < 0;
-      rateHtml = `<div class="bh-rate"><ha-icon icon="${losing ? "mdi:trending-down" : "mdi:trending-up"}" style="color:${losing ? "var(--error-color,#e53935)" : "var(--success-color,#43a047)"}"></ha-icon>${ratePerYear > 0 ? "+" : ""}${ratePerYear.toFixed(2)} kWh/año</div>`;
+      rateHtml = `<div class="bh-rate"><ha-icon icon="${losing ? "mdi:trending-down" : "mdi:trending-up"}" style="color:${losing ? "var(--error-color,#e53935)" : "var(--success-color,#43a047)"}"></ha-icon>${ratePerYear > 0 ? "+" : ""}${ratePerYear.toFixed(2)} ${L("kWh/yr", "kWh/año")}</div>`;
     }
     const caps = history.map((h) => parseFloat(h.calibrated_kwh)).filter((v) => !isNaN(v));
     let spark = "";
@@ -4794,10 +4811,10 @@ class EvTripBatteryHealthCard extends HTMLElement {
     }
     this.innerHTML = `
       <ha-card>
-        <div class="bh-head"><ha-icon icon="mdi:battery-heart-variant"></ha-icon>Battery health${rateHtml}</div>
+        <div class="bh-head"><ha-icon icon="mdi:battery-heart-variant"></ha-icon>${L("Battery health", "Salud de batería")}${rateHtml}</div>
         ${healthHtml}
         ${spark}
-        <div class="bh-foot">Capacidad calibrada con cargas reales · confianza <b style="color:${conf.color}">${conf.label}</b>. ${calibrating ? "El SoH (% de salud) aparece cuando haya suficientes cargas." : "Una bajada sostenida = degradación real."}</div>
+        <div class="bh-foot">${L("Capacity calibrated from real charges", "Capacidad calibrada con cargas reales")} · ${L("confidence", "confianza")} <b style="color:${conf.color}">${conf.label}</b>. ${calibrating ? L("The SoH % appears once there are enough charges.", "El SoH (% de salud) aparece cuando haya suficientes cargas.") : L("A sustained drop = real degradation.", "Una bajada sostenida = degradación real.")}</div>
         <style>
           ${headStyle}
           .bh-head{justify-content:space-between;}
@@ -4845,9 +4862,11 @@ class _EvTripBucketCard extends HTMLElement {
     if (this._onEffUnit) window.removeEventListener("ev-trip-eff-unit", this._onEffUnit);
     this._effBound = false;
   }
-  // Subclasses set: _sensorKey, _title, _curAttr, _byAttr, _order [{key,label,icon,color}].
+  // Subclasses set: _sensorKey, _curAttr, _byAttr, _headIcon, _titleEn/_titleEs,
+  // _emptyEn/_emptyEs, _order [{key,labelEn,labelEs,icon,color}].
   _render() {
     if (!this._hass) return;
+    _setUiLang(this._hass);
     const D = this._device || detectDevice(this._hass);
     this._device = D;
     const st = _findSensorByAttr(this._hass, D, this._sensorKey, this._byAttr);
@@ -4855,9 +4874,9 @@ class _EvTripBucketCard extends HTMLElement {
     const by = a[this._byAttr] || {};
     const cur = a[this._curAttr];
     const rowsData = this._order
-      .map((o) => ({ ...o, d: by[o.key] }))
+      .map((o) => ({ ...o, label: L(o.labelEn, o.labelEs), d: by[o.key] }))
       .filter((o) => o.d && o.d.avg_consumption_kwh_100km != null && !isNaN(Number(o.d.avg_consumption_kwh_100km)));
-    const head = `<div class="bk-head"><ha-icon icon="${this._headIcon}"></ha-icon>${this._title}<span class="bk-sub">${_esc(_effUnitLabel())} · más bajo = mejor</span></div>`;
+    const head = `<div class="bk-head"><ha-icon icon="${this._headIcon}"></ha-icon>${L(this._titleEn, this._titleEs)}<span class="bk-sub">${_esc(_effUnitLabel())} · ${L("lower is better", "más bajo = mejor")}</span></div>`;
     const css = `
       .bk-head{display:flex;align-items:center;gap:7px;flex-wrap:wrap;padding:14px 16px 8px;font-weight:600;font-size:1.05em;}
       .bk-head ha-icon{--mdc-icon-size:20px;color:var(--primary-color);}
@@ -4877,7 +4896,7 @@ class _EvTripBucketCard extends HTMLElement {
     if (!rowsData.length) {
       this.innerHTML = `<ha-card>${head}
         <div class="bk-empty"><ha-icon icon="mdi:database-clock-outline"></ha-icon>
-          <div>${this._emptyMsg}</div></div>
+          <div>${L(this._emptyEn, this._emptyEs)}</div></div>
         <style>${css}</style></ha-card>`;
       return;
     }
@@ -4888,12 +4907,12 @@ class _EvTripBucketCard extends HTMLElement {
         const e = _fmtEffVal(v);
         const pct = Math.max(4, Math.round((v / maxV) * 100));
         const isCur = cur != null && String(cur) === String(o.key);
-        const trips = o.d.trips != null ? `${o.d.trips} ${o.d.trips === 1 ? "viaje" : "viajes"}` : "";
+        const trips = o.d.trips != null ? L(`${o.d.trips} ${o.d.trips === 1 ? "trip" : "trips"}`, `${o.d.trips} ${o.d.trips === 1 ? "viaje" : "viajes"}`) : "";
         const temp = o.d.avg_ambient_temp_c != null ? ` · ${Number(o.d.avg_ambient_temp_c).toFixed(0)}°C` : "";
         const km = o.d.distance_km != null ? ` · ${Number(o.d.distance_km).toFixed(0)} km` : "";
         return `<div class="bk-row${isCur ? " bk-row--cur" : ""}">
             <span class="bk-ic" style="color:${o.color}"><ha-icon icon="${o.icon}"></ha-icon></span>
-            <span class="bk-lbl">${_esc(o.label)}${isCur ? ' <span class="bk-now">ahora</span>' : ""}</span>
+            <span class="bk-lbl">${_esc(o.label)}${isCur ? ` <span class="bk-now">${L("now", "ahora")}</span>` : ""}</span>
             <span class="bk-track"><span class="bk-fill" style="width:${pct}%;background:${o.color}"></span></span>
             <span class="bk-val">${e.value}</span>
             <span class="bk-meta">${trips}${km}${temp}</span>
@@ -4902,7 +4921,7 @@ class _EvTripBucketCard extends HTMLElement {
       .join("");
     const best = rowsData.reduce((m, o) => (Number(o.d.avg_consumption_kwh_100km) < Number(m.d.avg_consumption_kwh_100km) ? o : m));
     this.innerHTML = `<ha-card>${head}<div class="bk-list">${rows}</div>
-      <div class="bk-foot">Más eficiente: <b>${_esc(best.label)}</b> (${_fmtEff(Number(best.d.avg_consumption_kwh_100km))})</div>
+      <div class="bk-foot">${L("Most efficient", "Más eficiente")}: <b>${_esc(best.label)}</b> (${_fmtEff(Number(best.d.avg_consumption_kwh_100km))})</div>
       <style>${css}.bk-foot{padding:0 16px 16px;font-size:.82em;color:var(--secondary-text-color);}</style></ha-card>`;
   }
 }
@@ -4914,14 +4933,15 @@ class EvTripSeasonCard extends _EvTripBucketCard {
     this._sensorKey = "consumption_by_season";
     this._byAttr = "by_season";
     this._curAttr = "current_season";
-    this._title = "Consumo por estación";
+    this._titleEn = "Consumption by season"; this._titleEs = "Consumo por estación";
     this._headIcon = "mdi:sun-snowflake-variant";
-    this._emptyMsg = "Aún sin datos por estación — se llena con los viajes registrados.";
+    this._emptyEn = "No seasonal data yet — it fills from recorded trips.";
+    this._emptyEs = "Aún sin datos por estación — se llena con los viajes registrados.";
     this._order = [
-      { key: "winter", label: "Invierno", icon: "mdi:snowflake", color: "#039be5" },
-      { key: "spring", label: "Primavera", icon: "mdi:flower", color: "#43a047" },
-      { key: "summer", label: "Verano", icon: "mdi:weather-sunny", color: "#f59e0b" },
-      { key: "autumn", label: "Otoño", icon: "mdi:leaf-maple", color: "#a1632e" },
+      { key: "winter", labelEn: "Winter", labelEs: "Invierno", icon: "mdi:snowflake", color: "#039be5" },
+      { key: "spring", labelEn: "Spring", labelEs: "Primavera", icon: "mdi:flower", color: "#43a047" },
+      { key: "summer", labelEn: "Summer", labelEs: "Verano", icon: "mdi:weather-sunny", color: "#f59e0b" },
+      { key: "autumn", labelEn: "Autumn", labelEs: "Otoño", icon: "mdi:leaf-maple", color: "#a1632e" },
     ];
   }
 }
@@ -4935,15 +4955,15 @@ class EvTripTimeOfDayCard extends _EvTripBucketCard {
     this._sensorKey = "consumption_by_time_of_day";
     this._byAttr = "by_time";
     this._curAttr = "current_bucket";
-    this._title = "Consumo por franja horaria";
+    this._titleEn = "Consumption by time of day"; this._titleEs = "Consumo por franja horaria";
     this._headIcon = "mdi:clock-time-four-outline";
-    this._emptyMsg = "Aún sin datos por franja horaria.";
+    this._emptyEn = "No time-of-day data yet."; this._emptyEs = "Aún sin datos por franja horaria.";
     this._order = [
-      { key: "morning", label: "Mañana", icon: "mdi:weather-sunset-up", color: "#fbc02d" },
-      { key: "midday", label: "Mediodía", icon: "mdi:weather-sunny", color: "#f59e0b" },
-      { key: "afternoon", label: "Tarde", icon: "mdi:weather-partly-cloudy", color: "#039be5" },
-      { key: "evening", label: "Atardecer", icon: "mdi:weather-sunset-down", color: "#8b5cf6" },
-      { key: "night", label: "Noche", icon: "mdi:weather-night", color: "#5c6bc0" },
+      { key: "morning", labelEn: "Morning", labelEs: "Mañana", icon: "mdi:weather-sunset-up", color: "#fbc02d" },
+      { key: "midday", labelEn: "Midday", labelEs: "Mediodía", icon: "mdi:weather-sunny", color: "#f59e0b" },
+      { key: "afternoon", labelEn: "Afternoon", labelEs: "Tarde", icon: "mdi:weather-partly-cloudy", color: "#039be5" },
+      { key: "evening", labelEn: "Evening", labelEs: "Atardecer", icon: "mdi:weather-sunset-down", color: "#8b5cf6" },
+      { key: "night", labelEn: "Night", labelEs: "Noche", icon: "mdi:weather-night", color: "#5c6bc0" },
     ];
   }
 }
@@ -5334,6 +5354,7 @@ class EvTripRecordsCard extends HTMLElement {
   }
   _render() {
     if (!this._hass) return;
+    _setUiLang(this._hass);
     if (!this._clickBound && typeof this.addEventListener === "function") this.connectedCallback();
     const D = this._device || detectDevice(this._hass);
     this._device = D;
@@ -6310,6 +6331,7 @@ class EvTripDashboardStrategy {
     // runs — without this wait hasCard() sees them as missing and the Driving
     // view falls back to the native gauge/tiles instead of mini-graph/mushroom.
     await awaitFancyCards();
+    _setUiLang(hass); // follow the installed HA language (English by default)
     const D = config.device || detectDevice(hass);
     const V = config.vehicle || D;
     if (!D) {
