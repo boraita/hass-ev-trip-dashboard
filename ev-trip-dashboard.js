@@ -1506,6 +1506,7 @@ class EvTripListCard extends HTMLElement {
   setConfig(config) {
     this._config = config || {};
     this._device = this._config.device || null;
+    this._latestOnly = !!this._config.latestOnly; // show only the newest trip, expanded
     this._temps = this._temps || {}; // trip id -> {start,end} | 'loading'
     this._streets = this._streets || {}; // trip id -> {start,end} | 'loading'
     this._regen = this._regen || {}; // trip id -> {kwh,est} | 'loading'
@@ -1792,7 +1793,14 @@ class EvTripListCard extends HTMLElement {
     if (!this._clickBound && typeof this.addEventListener === "function") {
       this.connectedCallback();
     }
-    const { rows, total, sort } = this._filteredTrips();
+    const ft = this._filteredTrips();
+    let rows = ft.rows; const total = ft.total, sort = ft.sort;
+    // "Last trip" mode: just the newest trip, always expanded — reuses the full
+    // list-detail style (location, battery, regen, route map) on the main panel.
+    if (this._latestOnly) {
+      rows = rows.slice(0, 1);
+      if (rows[0] != null) this._openTripId = String(rows[0].id);
+    }
     const cur = { EUR: "€", USD: "$", GBP: "£" };
     const DASH = "—";
     const fmtNum = (v, dp) => (v == null || isNaN(v) ? DASH : dp == null ? String(v) : Number(v).toFixed(dp));
@@ -2050,7 +2058,7 @@ class EvTripListCard extends HTMLElement {
     // "Charging" (drawing power) or "Paused" (plugged, not charging).
     let liveRow = "";
     const cs = evChargeState(this._hass, D2, this._config.plugEntity, this._config.chargingEntity, this._config.powerEntity);
-    if (cs.state === "charging" || cs.state === "paused") {
+    if (!this._latestOnly && (cs.state === "charging" || cs.state === "paused")) {
       const charging = cs.state === "charging";
       const soc = cs.soc != null ? `${cs.soc.toFixed(0)}%` : "";
       const dm = cs.durationMin != null ? cs.durationMin : cs.lastDurMin;
@@ -2209,11 +2217,11 @@ class EvTripListCard extends HTMLElement {
             .col-val--big{font-size:1.3em;}
           }
         </style>
-        <div class="head"><span>${_esc(this._config.title || "Trips")}</span>
-          <span class="head-right">
-            <button class="eff-toggle" title="Cambiar unidad de consumo"><ha-icon icon="mdi:swap-horizontal"></ha-icon>${_esc(_effUnitLabel())}</button>
+        <div class="head"><span>${_esc(this._config.title || (this._latestOnly ? L("Last trip", "Último viaje") : "Trips"))}</span>
+          ${this._latestOnly ? "" : `<span class="head-right">
+            <button class="eff-toggle" title="${L("Change consumption unit", "Cambiar unidad de consumo")}"><ha-icon icon="mdi:swap-horizontal"></ha-icon>${_esc(_effUnitLabel())}</button>
             <span class="count">${rows.length} of ${total}</span>
-          </span></div>
+          </span>`}</div>
         <div class="list">${rowsHtml}</div>
       </ha-card>`;
 
@@ -4704,6 +4712,9 @@ class EvTripBatteryHealthCard extends HTMLElement {
     // degradation_kwh_per_year, history[{observed_at,calibrated_kwh,...}].
     const soh = _findSensorByAttr(this._hass, D, "battery_soh", "calibrated_capacity_kwh");
     const rt = (this._hass.states[`sensor.${D}_recent_trips`] || {}).attributes || {};
+    // Real lifetime odometer (v0.5.65 exposes it on battery_soh) — show THIS,
+    // not the logger-witnessed km the SoH model currently uses.
+    const odoKm = soh ? parseFloat((soh.attributes || {}).odometer_km) : NaN;
     let declared, calibrated, charges, sohPct, ratePerYear, history;
     if (soh) {
       const sa = soh.attributes || {};
@@ -4760,8 +4771,9 @@ class EvTripBatteryHealthCard extends HTMLElement {
     // (a car with real km has degraded a few %). Present "not measured yet".
     // Context line: expected SoH from the model (km / age / chemistry).
     const yrs = (v) => L(`${Number(v).toFixed(1)} yr`, `${Number(v).toFixed(1)} años`);
+    const kmShown = !isNaN(odoKm) ? odoKm : (expInputs.km != null ? Number(expInputs.km) : null);
     const expLine = !isNaN(expectedPct)
-      ? `<div class="bh-exp">${L("Expected", "Esperado")} <b>${expectedPct.toFixed(1)}%</b>${expInputs.km != null ? ` · ${Math.round(expInputs.km).toLocaleString()} km` : ""}${expInputs.age_years != null ? ` · ${yrs(expInputs.age_years)}` : ""}${expInputs.chemistry ? ` · ${String(expInputs.chemistry).toUpperCase()}` : ""}</div>`
+      ? `<div class="bh-exp">${L("Expected", "Esperado")} <b>${expectedPct.toFixed(1)}%</b>${kmShown != null ? ` · ${Math.round(kmShown).toLocaleString()} km` : ""}${expInputs.age_years != null ? ` · ${yrs(expInputs.age_years)}` : ""}${expInputs.chemistry ? ` · ${String(expInputs.chemistry).toUpperCase()}` : ""}</div>`
       : "";
     // Status chip (ahead / on_track / behind) once both observed & expected exist.
     const statusChip = status && STATUS[status]
@@ -4784,7 +4796,7 @@ class EvTripBatteryHealthCard extends HTMLElement {
       healthHtml = `
         <div class="bh-soh"><span class="bh-num" style="color:${col}">${expectedPct.toFixed(1)}%</span><span class="bh-unit">${L("estimated SoH", "SoH estimada")}</span></div>
         <div class="bh-bar"><span class="bh-fill" style="width:${expectedPct.toFixed(0)}%;background:${col}"></span></div>
-        <div class="bh-sub">${!isNaN(cap) ? `${cap.toFixed(1)} ${L("kWh nominal", "kWh nominales")} · ` : ""}${expInputs.km != null ? `${Math.round(expInputs.km).toLocaleString()} km` : ""}${expInputs.age_years != null ? ` · ${yrs(expInputs.age_years)}` : ""}${expInputs.chemistry ? ` · ${String(expInputs.chemistry).toUpperCase()}` : ""}</div>
+        <div class="bh-sub">${!isNaN(cap) ? `${cap.toFixed(1)} ${L("kWh nominal", "kWh nominales")} · ` : ""}${kmShown != null ? `${Math.round(kmShown).toLocaleString()} km` : ""}${expInputs.age_years != null ? ` · ${yrs(expInputs.age_years)}` : ""}${expInputs.chemistry ? ` · ${String(expInputs.chemistry).toUpperCase()}` : ""}</div>
         <div class="bh-pending"><ha-icon icon="mdi:progress-clock"></ha-icon><span>${L("Estimated from km/age. The <b>measured</b> value appears once the logger calibrates with more charges", "Estimada por km/edad. La <b>medida real</b> aparece cuando el logger calibre con más cargas")} (${isNaN(charges) ? 0 : charges}).</span></div>`;
     } else {
       // Either no model output, or the model lacks a basis (it only counts km
@@ -6102,57 +6114,23 @@ function drivingView(D, V, hass, cfg) {
 
   // (The live in-progress trip is rendered by the ev-trip-active-card placed
   // right after the battery above — it self-hides when no trip is open.)
-  const lastEnts = [
-    { entity: `sensor.${D}_last_trip_distance`, name: "km" },
-    { entity: `sensor.${D}_last_trip_duration`, name: "min" },
-    { entity: `sensor.${D}_last_trip_energy`, name: "kWh" },
-    { entity: `sensor.${D}_last_trip_consumption`, name: "kWh/100" },
-    { entity: `sensor.${D}_last_trip_cost`, name: "cost" },
-    { entity: `sensor.${D}_last_trip_score`, name: "score" },
-  ];
-  for (const [s, n] of [
-    ["last_trip_average_speed", "km/h"],
-    ["last_trip_max_speed", "km/h max"],
-    ["last_trip_max_power", "kW max"],
-    ["last_trip_regen_energy", "regen"],
-    ["last_trip_battery_used", "% used"],
-    ["last_trip_avg_temperature", "°C"],
-  ]) {
-    if (hasVal(hass, `sensor.${D}_${s}`)) lastEnts.push({ entity: `sensor.${D}_${s}`, name: n });
-  }
 
+  // Shared vehicle entities (also used by the journey card below).
+  const jTempEntity = (cfg && cfg.outside_temp_entity) || pickVehicleEntity(hass, V, "outside_temp", cfg);
+  const jLocationEntity = (cfg && cfg.location_entity) || pickVehicleEntity(hass, V, "location", cfg);
+  const jTripPowerEntity = (cfg && cfg.trip_power_entity) || (has(hass, `sensor.${V}_power`) ? `sensor.${V}_power` : null);
+  // Last trip — rendered by the trip-list card in "latestOnly" mode so it looks
+  // exactly like an expanded row in the Trips list (location, battery, regen,
+  // route map), using the reliable recent_trips[0] instead of last_trip_* sensors.
   const now = [
-    heading("Last trip", "mdi:history"),
     {
-      type: "conditional",
-      conditions: [{ condition: "numeric_state", entity: `sensor.${D}_current_trip_distance`, below: 0.001 }],
-      card: {
-        type: "vertical-stack",
-        cards: [
-          md(
-            `### Last trip\n` +
-            `{%- set ended = state_attr('sensor.${D}_last_trip_distance', 'ended_at') %}\n` +
-            `{%- if ended %}\n` +
-            `_{{ as_timestamp(ended) | timestamp_custom('%d/%m %H:%M') }} — {{ state_attr('sensor.${D}_last_trip_distance', 'origin') or '?' }} → {{ state_attr('sensor.${D}_last_trip_distance', 'destination') or '?' }}_\n` +
-            `{%- endif %}\n` +
-            // SoC at the trip's motion start→end (from recent_trips[0]). Makes the
-            // "% used" transparent — note it's the DRIVING window, so parked drain
-            // before departure / after arrival isn't counted here.
-            `{%- set lt = (state_attr('sensor.${D}_recent_trips', 'trips') or [{}])[0] %}\n` +
-            `{%- if lt.soc_start is not none and lt.soc_end is not none %}\n` +
-            `\n🔋 **{{ lt.soc_start | round(0) }} → {{ lt.soc_end | round(0) }}%** _en marcha_ ({{ (lt.soc_start - lt.soc_end) | round(0) }}% usado)\n` +
-            `{%- endif %}\n` +
-            // Percentile vs the recent window (relocated here from the deleted Detail view).
-            `{%- set trip = states('sensor.${D}_last_trip_consumption') | float(0) %}\n` +
-            `{%- set trips = state_attr('sensor.${D}_recent_trips', 'trips') or [] %}\n` +
-            `{%- set valid = trips | selectattr('consumption_kwh_100km','defined') | rejectattr('consumption_kwh_100km','none') | list %}\n` +
-            `{%- set total = valid | count %}\n` +
-            `{%- if total > 0 and trip > 0 %}{%- set worse = valid | selectattr('consumption_kwh_100km','>',trip) | list | count %}\n` +
-            `\n**Percentile:** Top {{ ((worse/total)*100)|round(0) }}% — better than {{ worse }} of {{ total }} recent trips{%- endif %}`
-          ),
-          { type: "glance", columns: 3, entities: lastEnts },
-        ],
-      },
+      type: "custom:ev-trip-list-card",
+      device: D,
+      latestOnly: true,
+      title: L("Last trip", "Último viaje"),
+      locationEntity: jLocationEntity,
+      tempEntity: jTempEntity,
+      tripPowerEntity: jTripPowerEntity,
     },
   ];
 
@@ -6217,9 +6195,6 @@ function drivingView(D, V, hass, cfg) {
   // Two fixed columns (exactly two sections, so each takes one column):
   //  • LEFT  = the sensor/status list, with Today's journey below it.
   //  • RIGHT = the live charts (Charging, Driving) with Last trip below them.
-  const jTempEntity = (cfg && cfg.outside_temp_entity) || pickVehicleEntity(hass, V, "outside_temp", cfg);
-  const jLocationEntity = (cfg && cfg.location_entity) || pickVehicleEntity(hass, V, "location", cfg);
-  const jTripPowerEntity = (cfg && cfg.trip_power_entity) || (has(hass, `sensor.${V}_power`) ? `sensor.${V}_power` : null);
   const leftCards = status.concat([
     heading("Today's journey", "mdi:map-marker-path"),
     { type: "custom:ev-trip-journey-card", device: D, tempEntity: jTempEntity, locationEntity: jLocationEntity, tripPowerEntity: jTripPowerEntity },
