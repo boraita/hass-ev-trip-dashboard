@@ -1,6 +1,6 @@
 # EV Trip Dashboard
 
-A polished multi-view Home Assistant dashboard powered by **[hass-ev-trip-logger](https://github.com/boraita/hass-ev-trip-logger)** (**v0.5.76+** required for the FIFO `cost_basis_per_kwh` attribute and the regen/power-integration fixes; v0.5.66+ for battery-health curves and the `logger_km` / `odometer_km` split; v0.5.60+ for the rest of the cards). Inspired by the BYD mobile app, but the trip / charge / journey data comes from the logger sensors, so it works with **any car**: BYD, Tesla, OVMS, dongle setups, even fully manual entry.
+A polished multi-view Home Assistant dashboard powered by **[hass-ev-trip-logger](https://github.com/boraita/hass-ev-trip-logger)** (**v0.5.77+** recommended for the vehicle-native `last_trip_energy` ground-truth heal; v0.5.76+ for the FIFO `cost_basis_per_kwh` attribute and the regen/power-integration fixes; v0.5.66+ for battery-health curves and the `logger_km` / `odometer_km` split; v0.5.60+ for the rest of the cards). Inspired by the BYD mobile app, but the trip / charge / journey data comes from the logger sensors, so it works with **any car**: BYD, Tesla, OVMS, dongle setups, even fully manual entry.
 
 Optional car-integration tiles (range, temperatures, tires, doors, energy snapshot, fetch-data button) plug in via placeholders so you only configure the prefix once.
 
