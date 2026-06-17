@@ -1924,10 +1924,11 @@ class EvTripListCard extends HTMLElement {
             return chips.length ? `<div class="d-wxrow">${chips.join("")}</div>` : "";
           })()}
           <div class="d-grid">
-            ${tile("mdi:map-marker-distance", "Distance", fmtNum(t.distance_km), "km")}
-            ${tile("mdi:timer-outline", "Duration", fmtNum(t.duration_min == null ? null : Math.round(t.duration_min)), "min")}
-            ${tile("mdi:lightning-bolt", "Consumption", nn(t.energy_kwh), "kWh")}
-            ${(() => { const e = _fmtEffVal(t.consumption_kwh_100km); return tile("mdi:chart-line", "Efficiency", e.value, e.unit); })()}
+            ${tile("mdi:map-marker-distance", L("Distance", "Distancia"), fmtNum(t.distance_km), "km")}
+            ${tile("mdi:speedometer", L("Top speed", "Vel. máxima"), fmtNum(t.max_speed_kmh == null ? null : Math.round(t.max_speed_kmh)), "km/h")}
+            ${tile("mdi:timer-outline", L("Duration", "Duración"), fmtNum(t.duration_min == null ? null : Math.round(t.duration_min)), "min")}
+            ${tile("mdi:lightning-bolt", L("Consumption", "Consumo"), nn(t.energy_kwh), "kWh")}
+            ${(() => { const e = _fmtEffVal(t.consumption_kwh_100km); return tile("mdi:chart-line", L("Efficiency", "Eficiencia"), e.value, e.unit); })()}
           </div>
           <div class="d-grid d-grid3">
             ${tile("mdi:speedometer", "Avg speed", speed, "km/h")}
@@ -4738,8 +4739,23 @@ class EvTripBatteryHealthCard extends HTMLElement {
     // health-vs-expected verdict. The expected value is available even before
     // any charge calibration, so it answers "what SoH should this car have?".
     const exp = _findSensorByAttr(this._hass, D, "expected_battery_soh", "factors");
-    const expectedPct = exp ? parseFloat(exp.state) : NaN;
     const expInputs = (exp && exp.attributes && exp.attributes.inputs) || {};
+    let expectedPct = exp ? parseFloat(exp.state) : NaN;
+    // The logger's SoH model currently counts only logger-WITNESSED km for the
+    // cycle term, which undercounts wear on a car with mileage before the logger
+    // was installed. Re-base the cycle term on the REAL odometer when it's higher.
+    // Idempotent: becomes a no-op once the logger itself uses the odometer.
+    const _CYCLE_PP_PER_1000KM = { lfp: 0.040, nmc: 0.100, nca: 0.110 };
+    if (exp && !isNaN(expectedPct) && !isNaN(odoKm)) {
+      const chem = String(expInputs.chemistry || (soh && soh.attributes && soh.attributes.battery_chemistry) || "lfp").toLowerCase();
+      const rate = _CYCLE_PP_PER_1000KM[chem];
+      const loggerKm = Number(expInputs.km);
+      if (rate != null && !isNaN(loggerKm) && odoKm > loggerKm) {
+        const cycLogger = parseFloat((exp.attributes.factors || {}).cycle);
+        const cycFromLogger = !isNaN(cycLogger) ? cycLogger : rate * (loggerKm / 1000);
+        expectedPct = Math.max(70, expectedPct + cycFromLogger - rate * (odoKm / 1000));
+      }
+    }
     const vsExp = _findSensorByAttr(this._hass, D, "battery_health_vs_expected", "expected_soh_pct");
     const status = vsExp ? String(vsExp.state) : null; // calibrating|ahead|on_track|behind
     const STATUS = {
