@@ -142,12 +142,21 @@ cards:
 
   # ---------------------------------------------------------------------------
   # COST — full-width emphasis row.
+  # v0.5.76 — also shows cost_basis_per_kwh (weighted €/kWh from the FIFO
+  # inventory the kWh of this trip actually drew from).
   # ---------------------------------------------------------------------------
   - type: custom:button-card
     entity: sensor.__DEVICE___last_trip_cost
     name: Coste del viaje
     icon: mdi:cash-multiple
     show_state: true
+    label: >-
+      {% set t = state_attr('sensor.__DEVICE___recent_trips', 'trips')[0] %}
+      {% set basis = t.cost_basis_per_kwh if t else None %}
+      {% if basis is not none %}
+        FIFO · {{ '%.3f' | format(basis) }} €/kWh
+      {% endif %}
+    show_label: true
     styles:
       card:
         - padding: 14px
@@ -160,6 +169,10 @@ cards:
         - font-weight: bold
       icon:
         - color: var(--success-color)
+      label:
+        - font-size: 12px
+        - color: var(--secondary-text-color)
+        - margin-top: 4px
 
   # ---------------------------------------------------------------------------
   # SCORE — colored badge. <50 red · <75 amber · ≥75 green.

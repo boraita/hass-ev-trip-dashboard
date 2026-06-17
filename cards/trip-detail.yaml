@@ -256,12 +256,23 @@ cards:
       multiline_secondary: true
 
   # ── Estimated cost for this trip ──────────────────────────────────
+  # v0.5.76 — logger now FIFO-accounts trip cost: each kWh inherits the
+  # actual price of the charge that put it into the battery. The
+  # `cost_basis_per_kwh` attribute is the weighted average price the
+  # trip's kWh actually saw (free + home + DCFC mix → mid-range value).
   - type: custom:button-card
     entity: sensor.__DEVICE___last_trip_cost
-    name: Coste estimado
+    name: Coste FIFO
     show_state: true
     show_icon: true
     icon: mdi:cash-multiple
+    label: >-
+      {% set t = state_attr('sensor.__DEVICE___recent_trips', 'trips')[0] %}
+      {% set basis = t.cost_basis_per_kwh if t else None %}
+      {% if basis is not none %}
+        {{ '%.3f' | format(basis) }} €/kWh efectivos
+      {% endif %}
+    show_label: true
     styles:
       card:
         - padding: 14px
@@ -272,6 +283,10 @@ cards:
       state:
         - font-size: 26px
         - font-weight: bold
+      label:
+        - font-size: 12px
+        - opacity: "0.6"
+        - margin-top: 4px
 
   # ── Origin / destination addresses + embedded OSM map ─────────────
   # Logger v0.5.12 reverse-geocodes each trip's start/end coordinates via
