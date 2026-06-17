@@ -1923,10 +1923,12 @@ class EvTripListCard extends HTMLElement {
             if (precip != null && !isNaN(Number(precip)) && Number(precip) > 0) chips.push(`<span class="d-wx"><ha-icon icon="mdi:weather-rainy"></ha-icon>${Number(precip).toFixed(1)} mm</span>`);
             return chips.length ? `<div class="d-wxrow">${chips.join("")}</div>` : "";
           })()}
-          <div class="d-grid">
+          <div class="d-grid d-grid3">
             ${tile("mdi:map-marker-distance", L("Distance", "Distancia"), fmtNum(t.distance_km), "km")}
             ${tile("mdi:speedometer", L("Top speed", "Vel. máxima"), fmtNum(t.max_speed_kmh == null ? null : Math.round(t.max_speed_kmh)), "km/h")}
             ${tile("mdi:timer-outline", L("Duration", "Duración"), fmtNum(t.duration_min == null ? null : Math.round(t.duration_min)), "min")}
+          </div>
+          <div class="d-grid">
             ${tile("mdi:lightning-bolt", L("Consumption", "Consumo"), nn(t.energy_kwh), "kWh")}
             ${(() => { const e = _fmtEffVal(t.consumption_kwh_100km); return tile("mdi:chart-line", L("Efficiency", "Eficiencia"), e.value, e.unit); })()}
           </div>
