@@ -302,13 +302,22 @@ async function awaitFancyCards(timeoutMs = 2500) {
 
 // A mushroom-template-card "tile" with a colored icon (Driving KPIs); falls
 // back to a native tile card when mushroom isn't installed.
-function kpiTile(entity, name, icon, color) {
+function kpiTile(entity, name, icon, color, decimals) {
   if (hasCard("mushroom-template-card")) {
+    // Round the numeric state to `decimals` (default 1) so raw vehicle sensors
+    // without suggested_display_precision (e.g. Tesla odometer 45732.1741…,
+    // range 212.578…) don't show a long decimal tail. Non-numeric → shown raw.
+    const dp = decimals == null ? 1 : decimals;
+    const round = dp === 0 ? "(f | round(0) | int)" : `(f | round(${dp}))`;
+    const secondary =
+      `{% set v = states(entity) %}{% set f = v | float(none) %}` +
+      `{{ ${round} if f is not none else v }}` +
+      `{{ ' ' ~ state_attr(entity,'unit_of_measurement') if state_attr(entity,'unit_of_measurement') else '' }}`;
     return {
       type: "custom:mushroom-template-card",
       entity,
       primary: name,
-      secondary: "{{ states(entity) }}{{ ' ' ~ state_attr(entity,'unit_of_measurement') if state_attr(entity,'unit_of_measurement') else '' }}",
+      secondary,
       icon: icon || "{{ state_attr(entity,'icon') or 'mdi:information-outline' }}",
       icon_color: color || "primary",
       multiline_secondary: false,
@@ -6121,9 +6130,9 @@ function drivingView(D, V, hass, cfg) {
   const vRange = pickVehicleEntity(hass, V, "range", cfg);
   if (vRange) kpis.push({ entity: vRange, name: "Range", icon: "mdi:map-marker-radius", color: "teal" });
   const vOdo = pickVehicleEntity(hass, V, "odometer", cfg);
-  if (hasVal(hass, vOdo)) kpis.push({ entity: vOdo, name: "Odometer", icon: "mdi:counter", color: "grey" });
+  if (hasVal(hass, vOdo)) kpis.push({ entity: vOdo, name: "Odometer", icon: "mdi:counter", color: "grey", decimals: 0 });
   // Mushroom template tiles (one per KPI) when available, else native tiles.
-  for (const k of kpis) status.push(kpiTile(k.entity, k.name, k.icon, k.color));
+  for (const k of kpis) status.push(kpiTile(k.entity, k.name, k.icon, k.color, k.decimals));
 
   const vOut = pickVehicleEntity(hass, V, "outside_temp", cfg);
   if (vOut) status.push(kpiTile(vOut, "Outside", "mdi:thermometer", "orange"));
