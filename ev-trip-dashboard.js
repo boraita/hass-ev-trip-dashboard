@@ -1438,10 +1438,8 @@ function cargasView(D, hass, V, cfg) {
         row("sensor.byd_battery_kwh_weekly", L("This week", "Semanal"), "mdi:calendar-week"),
         row("sensor.byd_battery_kwh_monthly", L("This month", "Mensual"), "mdi:calendar-month"),
         row("sensor.byd_battery_kwh_yearly", L("This year", "Anual"), "mdi:calendar-star"),
-        { type: "section", label: L("📈 Efficiency (%)", "📈 Eficiencia (%)") },
-        row("sensor.byd_charge_efficiency_weekly", L("This week", "Semanal"), "mdi:speedometer-slow"),
-        row("sensor.byd_charge_efficiency_monthly", L("This month", "Mensual"), "mdi:speedometer-medium"),
-        row("sensor.byd_charge_efficiency_yearly", L("This year", "Anual"), "mdi:speedometer"),
+        // Efficiency intentionally NOT shown per period — it's per charge only
+        // (the live-session tile above + each charge in the history). Per owner.
         // What the CAR actually consumed driving (logger sensor) — only monthly exists.
         ...(has(hass, `sensor.${D}_energy_this_month`) ? [
           { type: "section", label: L("🚗 Consumed driving (kWh)", "🚗 Consumido conduciendo (kWh)") },
@@ -1449,23 +1447,6 @@ function cargasView(D, hass, V, cfg) {
         ] : []),
       ],
     });
-    if (hasCard("apexcharts-card")) {
-      analytics.push({
-        type: "custom:apexcharts-card",
-        header: { show: true, title: L("Charge efficiency (30d)", "Eficiencia de carga (30d)"), show_states: true },
-        graph_span: "30d",
-        apex_config: { chart: { height: 200 }, yaxis: { min: 0, max: 100, decimalsInFloat: 0 }, stroke: { width: 2 } },
-        series: [
-          { entity: "sensor.byd_charge_efficiency_weekly", name: L("Weekly", "Semanal"), type: "area", curve: "smooth", opacity: 0.25, color: "#43a047" },
-          { entity: "sensor.byd_charge_efficiency_monthly", name: L("Monthly", "Mensual"), type: "line", curve: "smooth", color: "#039be5" },
-        ],
-      });
-    } else {
-      analytics.push({
-        type: "history-graph", title: L("Charge efficiency — last 30 days", "Eficiencia de carga — últimos 30 días"), hours_to_show: 720,
-        entities: ["sensor.byd_charge_efficiency_weekly", "sensor.byd_charge_efficiency_monthly"],
-      });
-    }
     analytics.push({
       type: "statistics-graph", title: L("Charger vs battery kWh (monthly)", "kWh cargador vs batería (mensual)"),
       period: "month", stat_types: ["change"],
