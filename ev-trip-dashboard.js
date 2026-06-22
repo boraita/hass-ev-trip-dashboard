@@ -861,6 +861,9 @@ function eficienciaView(D, hass, V, cfg) {
       "[[[ const n = entity && Number(entity.state); return (n==null||isNaN(n)) ? '—' : `${n.toFixed(1)} kWh/100km`; ]]]",
   });
 
+  // ---- Energy consumed (kWh) per day / month / year, with a period toggle --
+  cards.push({ type: "custom:ev-trip-consumption-card", device: D });
+
   // ---- Real range now (range at recent efficiency + per-band estimate) ---
   cards.push({ type: "custom:ev-trip-range-card", device: D });
 
@@ -3916,6 +3919,140 @@ class EvTripDailyCard extends HTMLElement {
 customElements.define("ev-trip-daily-card", EvTripDailyCard);
 window.customCards = window.customCards || [];
 window.customCards.push({ type: "ev-trip-daily-card", name: "EV Trip — daily km (60d)", description: "Daily km sparkline for the last 60 days (logger v0.5.0)." });
+
+// ==========================================================================
+// Custom card: ENERGY CONSUMED (kWh) per day / month / year — one card with a
+// Day·Month·Year toggle, drawn as reliable HTML bars (apex can't plot derived
+// attribute arrays). Day = recent_trips summed by local date (last 21 days);
+// Month/Year = monthly_history.months[] (Year rolled up by calendar year).
+// Pure kWh consumption + km/cost subline — no efficiency here (it lives per
+// charge in the Charges view). The current bucket is highlighted; a dashed line
+// marks the average. Period choice persists in localStorage.
+// ==========================================================================
+class EvTripConsumptionCard extends HTMLElement {
+  setConfig(config) {
+    this._config = config || {};
+    this._device = this._config.device || null;
+    try { const m = localStorage.getItem("evTripConsPeriod"); this._period = ["day", "month", "year"].includes(m) ? m : "month"; }
+    catch (_e) { this._period = "month"; }
+  }
+  set hass(hass) { this._hass = hass; this._render(); }
+  getCardSize() { return 4; }
+  connectedCallback() {
+    if (this._bound) return;
+    this._bound = true;
+    this.addEventListener("click", (ev) => {
+      const b = ev.target && ev.target.closest && ev.target.closest(".cc-btn[data-m]");
+      if (b && this.contains(b)) {
+        this._period = b.getAttribute("data-m");
+        try { localStorage.setItem("evTripConsPeriod", this._period); } catch (_e) {}
+        this._render();
+      }
+    });
+  }
+  // Build the bar series for the active period from the logger sensors.
+  _series(D) {
+    if (this._period === "month" || this._period === "year") {
+      const months = ((this._hass.states[`sensor.${D}_monthly_history`] || {}).attributes || {}).months;
+      if (!Array.isArray(months) || !months.length) return null;
+      if (this._period === "month") {
+        return months.map((m) => ({ label: _fmtMonth(m.month), kwh: Number(m.energy_kwh) || 0, km: Number(m.distance_km) || 0, cost: Number(m.cost) || 0 }));
+      }
+      const byY = {};
+      for (const m of months) {
+        const y = String(m.month || "").slice(0, 4); if (!y) continue;
+        const e = byY[y] || (byY[y] = { kwh: 0, km: 0, cost: 0 });
+        e.kwh += Number(m.energy_kwh) || 0; e.km += Number(m.distance_km) || 0; e.cost += Number(m.cost) || 0;
+      }
+      return Object.keys(byY).sort().map((y) => ({ label: y, ...byY[y] }));
+    }
+    // Day: sum recent_trips by local date, zero-filled over the last 21 days.
+    const trips = ((this._hass.states[`sensor.${D}_recent_trips`] || {}).attributes || {}).trips || [];
+    const byD = {};
+    for (const t of trips) {
+      const k = _localDateKey(t.started_at || t.ended_at); if (!k) continue;
+      const e = byD[k] || (byD[k] = { kwh: 0, km: 0, cost: 0 });
+      e.kwh += Number(t.energy_kwh) || 0; e.km += Number(t.distance_km) || 0; e.cost += Number(t.cost) || 0;
+    }
+    const out = [];
+    const now = new Date();
+    for (let i = 20; i >= 0; i--) {
+      const d = new Date(now); d.setDate(d.getDate() - i);
+      const k = _localDateKey(d.toISOString());
+      const e = byD[k] || { kwh: 0, km: 0, cost: 0 };
+      out.push({ label: String(d.getDate()), kwh: e.kwh, km: e.km, cost: e.cost });
+    }
+    return out;
+  }
+  _render() {
+    if (!this._hass) return;
+    _setUiLang(this._hass);
+    if (!this._bound && typeof this.addEventListener === "function") this.connectedCallback();
+    const D = this._device || detectDevice(this._hass);
+    this._device = D;
+    const sym = _deviceCurrency(this._hass, D);
+    const f0 = (v) => (v == null || isNaN(v) ? "—" : Number(v).toFixed(0));
+    const f1 = (v) => (v == null || isNaN(v) ? "—" : Number(v).toFixed(1));
+    const seg = [["day", L("Day", "Día")], ["month", L("Month", "Mes")], ["year", L("Year", "Año")]]
+      .map(([m, lbl]) => `<button class="cc-btn${m === this._period ? " on" : ""}" data-m="${m}">${lbl}</button>`).join("");
+    const head = `<div class="cc-head"><span>${L("Consumption", "Consumo")}</span><div class="cc-seg">${seg}</div></div>`;
+    const css = `
+      .cc-head{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px;padding:14px 16px 6px;font-weight:600;font-size:1.05em;}
+      .cc-seg{display:inline-flex;gap:2px;background:var(--secondary-background-color,rgba(0,0,0,.06));border:1px solid var(--divider-color);border-radius:999px;padding:2px;}
+      .cc-btn{cursor:pointer;border:0;background:transparent;color:var(--secondary-text-color);font-weight:700;font-size:.72em;padding:4px 10px;border-radius:999px;}
+      .cc-btn.on{background:var(--primary-color);color:var(--text-primary-color,#fff);}
+      .cc-hero{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;padding:2px 16px 2px;}
+      .cc-num{font-size:2em;font-weight:800;color:var(--primary-text-color);font-variant-numeric:tabular-nums;}
+      .cc-unit{font-size:.9em;color:var(--secondary-text-color);}
+      .cc-sub{padding:2px 16px 8px;font-size:.85em;color:var(--secondary-text-color);font-variant-numeric:tabular-nums;}
+      .cc-chart{display:flex;align-items:flex-end;gap:2px;height:104px;padding:0 14px 22px;position:relative;}
+      .cc-bar{flex:1 1 0;height:100%;display:flex;flex-direction:column;justify-content:flex-end;align-items:center;position:relative;}
+      .cc-fill{width:78%;min-height:1px;border-radius:3px 3px 0 0;background:linear-gradient(180deg,var(--info-color,#039be5),var(--primary-color));opacity:.85;}
+      .cc-bar.cc-cur .cc-fill{opacity:1;background:linear-gradient(180deg,var(--success-color,#43a047),var(--primary-color));}
+      .cc-lbl{position:absolute;bottom:-18px;font-size:.6em;white-space:nowrap;color:var(--secondary-text-color);}
+      .cc-avg{position:absolute;left:14px;right:14px;border-top:1px dashed var(--secondary-text-color);opacity:.6;}
+      .cc-avglbl{position:absolute;right:16px;font-size:.62em;color:var(--secondary-text-color);transform:translateY(-50%);}
+      .cc-empty{padding:10px 16px 22px;color:var(--secondary-text-color);}`;
+    const bars = this._series(D);
+    if (!bars || !bars.length) {
+      this.innerHTML = `<ha-card>${head}<div class="cc-empty">${L("No consumption data yet for this period.", "Aún sin datos de consumo para este periodo.")}</div><style>${css}</style></ha-card>`;
+      return;
+    }
+    const maxV = Math.max(...bars.map((b) => b.kwh), 0.001);
+    const nonzero = bars.filter((b) => b.kwh > 0);
+    const avg = nonzero.length ? nonzero.reduce((a, b) => a + b.kwh, 0) / nonzero.length : 0;
+    const lblIdx = new Set([0, Math.floor(bars.length / 2), bars.length - 1]);
+    const barsHtml = bars.map((b, i) => {
+      const pct = Math.round((b.kwh / maxV) * 100);
+      const cur = i === bars.length - 1;
+      const lbl = lblIdx.has(i) ? `<div class="cc-lbl">${_esc(b.label)}</div>` : "";
+      const tip = `${_esc(b.label)} — ${f1(b.kwh)} kWh${b.km ? ` · ${f0(b.km)} km` : ""}`;
+      return `<div class="cc-bar${cur ? " cc-cur" : ""}" title="${tip}"><div class="cc-fill" style="height:${pct}%"></div>${lbl}</div>`;
+    }).join("");
+    const avgPct = Math.round((avg / maxV) * 100);
+    const avgLine = avg > 0 ? `<div class="cc-avg" style="bottom:${22 + (avgPct / 100) * (104 - 22)}px"></div><div class="cc-avglbl" style="bottom:${22 + (avgPct / 100) * (104 - 22)}px">${L("avg", "media")} ${f1(avg)}</div>` : "";
+    // Headline: Day → window total + per-active-day; Month/Year → current bucket.
+    let heroNum, heroSub;
+    if (this._period === "day") {
+      const tot = bars.reduce((a, b) => a + b.kwh, 0);
+      heroNum = f1(tot);
+      heroSub = `${L("last 21 days", "últimos 21 días")} · ${nonzero.length} ${L("active days", "días activos")} · ${f1(avg)} kWh/${L("day", "día")}`;
+    } else {
+      const cur = bars[bars.length - 1];
+      heroNum = f1(cur.kwh);
+      heroSub = `${_esc(cur.label)}${cur.km ? ` · ${f0(cur.km)} km` : ""}${cur.cost ? ` · ${f1(cur.cost)} ${_esc(sym)}` : ""}`;
+    }
+    this.innerHTML = `<ha-card>
+      ${head}
+      <div class="cc-hero"><span class="cc-num">${heroNum}</span><span class="cc-unit">kWh</span></div>
+      <div class="cc-sub">${heroSub}</div>
+      <div class="cc-chart">${barsHtml}${avgLine}</div>
+      <style>${css}</style>
+    </ha-card>`;
+  }
+}
+customElements.define("ev-trip-consumption-card", EvTripConsumptionCard);
+window.customCards.push({ type: "ev-trip-consumption-card", name: "EV Trip — consumption (day/month/year)", description: "Energy consumed (kWh) per day, month or year with a period toggle." });
 
 // ==========================================================================
 // Custom card: monthly activity calendar built from EXISTING data —
