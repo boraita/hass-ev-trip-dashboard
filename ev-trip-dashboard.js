@@ -1246,6 +1246,7 @@ function cargasView(D, hass, V, cfg) {
   cfg = cfg || {};
   V = V || D;
   const cards = [];
+  const analytics = []; // charger-vs-battery section → LEFT column when present
 
   cards.push(mushroomTitle("Charges", "Last 30 days", "mdi:battery-charging"));
 
@@ -1398,7 +1399,7 @@ function cargasView(D, hass, V, cfg) {
   // and, for not_home charges, the geocoded street + a Google Maps link. This
   // replaces the old "fix last charge" helper+script editor entirely.
   const locationEntity = (cfg && cfg.location_entity) || (hass ? pickVehicleEntity(hass, V, "location", cfg) : null);
-  cards.push({ type: "custom:ev-trip-history-card", device: D, kind: "charges", title: "Charge history", locationEntity });
+  cards.push({ type: "custom:ev-trip-history-card", device: D, kind: "charges", title: "Charge history", locationEntity, scrollRows: 5 });
 
   // ---- Charger-vs-battery analytics (optional package) ------------------
   // Fed by /config/packages/byd_charge_analytics.yaml: wallbox kWh vs kWh into
@@ -1409,8 +1410,8 @@ function cargasView(D, hass, V, cfg) {
       type: "custom:mushroom-template-card", entity, primary: nm, icon, icon_color: clr, multiline_secondary: false,
       secondary: `{% set f = states(entity) | float(none) %}{{ (f | round(${dp})) if f is not none else '—' }}{{ ' ' ~ state_attr(entity,'unit_of_measurement') if state_attr(entity,'unit_of_measurement') else '' }}`,
     });
-    cards.push(heading(L("Charger vs battery", "Cargador vs batería"), "mdi:transmission-tower"));
-    cards.push({
+    analytics.push(heading(L("Charger vs battery", "Cargador vs batería"), "mdi:transmission-tower"));
+    analytics.push({
       type: "conditional",
       conditions: [{ condition: "state", entity: `sensor.${D}_charge_in_progress`, state: "charging" }],
       card: {
@@ -1423,7 +1424,7 @@ function cargasView(D, hass, V, cfg) {
       },
     });
     const row = (entity, nm, icon) => ({ entity, name: nm, icon });
-    cards.push({
+    analytics.push({
       type: "entities", title: L("Charge — summary", "Carga — resumen"), show_header_toggle: false, state_color: true,
       entities: [
         { type: "section", label: L("🔌 From charger (kWh)", "🔌 Del cargador (kWh)") },
@@ -1438,10 +1439,15 @@ function cargasView(D, hass, V, cfg) {
         row("sensor.byd_charge_efficiency_weekly", L("This week", "Semanal"), "mdi:speedometer-slow"),
         row("sensor.byd_charge_efficiency_monthly", L("This month", "Mensual"), "mdi:speedometer-medium"),
         row("sensor.byd_charge_efficiency_yearly", L("This year", "Anual"), "mdi:speedometer"),
+        // What the CAR actually consumed driving (logger sensor) — only monthly exists.
+        ...(has(hass, `sensor.${D}_energy_this_month`) ? [
+          { type: "section", label: L("🚗 Consumed driving (kWh)", "🚗 Consumido conduciendo (kWh)") },
+          row(`sensor.${D}_energy_this_month`, L("This month", "Mensual"), "mdi:car-electric"),
+        ] : []),
       ],
     });
     if (hasCard("apexcharts-card")) {
-      cards.push({
+      analytics.push({
         type: "custom:apexcharts-card",
         header: { show: true, title: L("Charge efficiency (30d)", "Eficiencia de carga (30d)"), show_states: true },
         graph_span: "30d",
@@ -1452,25 +1458,28 @@ function cargasView(D, hass, V, cfg) {
         ],
       });
     } else {
-      cards.push({
+      analytics.push({
         type: "history-graph", title: L("Charge efficiency — last 30 days", "Eficiencia de carga — últimos 30 días"), hours_to_show: 720,
         entities: ["sensor.byd_charge_efficiency_weekly", "sensor.byd_charge_efficiency_monthly"],
       });
     }
-    cards.push({
+    analytics.push({
       type: "statistics-graph", title: L("Charger vs battery kWh (monthly)", "kWh cargador vs batería (mensual)"),
       period: "month", stat_types: ["change"],
       entities: ["sensor.byd_charger_kwh_monthly", "sensor.byd_battery_kwh_monthly"],
     });
   }
 
+  // Two columns when the analytics package is present: LEFT = charger-vs-battery
+  // analytics, RIGHT = the charge list (everything else). They stack on mobile.
+  const sections = analytics.length ? [grid(analytics), grid(cards)] : [grid(cards)];
   return {
     title: "Charges",
     path: "charges",
     icon: "mdi:ev-station",
     type: "sections",
     max_columns: 2,
-    sections: [grid(cards)],
+    sections,
   };
 }
 
@@ -2505,6 +2514,9 @@ class EvTripHistoryCard extends HTMLElement {
                 padding:14px 16px 10px;font-weight:600;font-size:1.05em;}
           .head .count{color:var(--secondary-text-color);font-weight:400;font-size:.82em;}
           .list{display:flex;flex-direction:column;gap:10px;padding:0 12px 14px;}
+          .list--scroll{scrollbar-width:thin;}
+          .list--scroll::-webkit-scrollbar{width:6px;}
+          .list--scroll::-webkit-scrollbar-thumb{background:var(--divider-color);border-radius:3px;}
           .empty{padding:24px 16px;text-align:center;color:var(--secondary-text-color);}
 
           /* ---- mushroom-like row ---- */
@@ -2630,7 +2642,7 @@ class EvTripHistoryCard extends HTMLElement {
         </style>
         <div class="head"><span>${_esc(this._config.title || (kind === "journeys" ? "Journeys" : "Charges"))}</span>
           <span class="count">${rows.length} ${rows.length === 1 ? kind.replace(/s$/, "") : kind}</span></div>
-        <div class="list">${inner}</div>
+        <div class="list${this._config.scrollRows ? " list--scroll" : ""}"${this._config.scrollRows ? ` style="max-height:${Math.round(this._config.scrollRows * 78)}px;overflow-y:auto;"` : ""}>${inner}</div>
       </ha-card>`;
   }
 
