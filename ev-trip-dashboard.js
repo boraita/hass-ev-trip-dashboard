@@ -1400,6 +1400,70 @@ function cargasView(D, hass, V, cfg) {
   const locationEntity = (cfg && cfg.location_entity) || (hass ? pickVehicleEntity(hass, V, "location", cfg) : null);
   cards.push({ type: "custom:ev-trip-history-card", device: D, kind: "charges", title: "Charge history", locationEntity });
 
+  // ---- Charger-vs-battery analytics (optional package) ------------------
+  // Fed by /config/packages/byd_charge_analytics.yaml: wallbox kWh vs kWh into
+  // the battery + efficiency, per session and per week/month/year. Only shown
+  // where those entities exist (so it's harmless on cars without the package).
+  if (has(hass, "sensor.byd_charge_session_charger_kwh")) {
+    const liveTile = (entity, nm, icon, clr, dp) => ({
+      type: "custom:mushroom-template-card", entity, primary: nm, icon, icon_color: clr, multiline_secondary: false,
+      secondary: `{% set f = states(entity) | float(none) %}{{ (f | round(${dp})) if f is not none else '—' }}{{ ' ' ~ state_attr(entity,'unit_of_measurement') if state_attr(entity,'unit_of_measurement') else '' }}`,
+    });
+    cards.push(heading(L("Charger vs battery", "Cargador vs batería"), "mdi:transmission-tower"));
+    cards.push({
+      type: "conditional",
+      conditions: [{ condition: "state", entity: `sensor.${D}_charge_in_progress`, state: "charging" }],
+      card: {
+        type: "grid", columns: 3, square: false,
+        cards: [
+          liveTile("sensor.byd_charge_session_charger_kwh", L("From charger", "Del cargador"), "mdi:ev-station", "blue", 2),
+          liveTile("sensor.byd_charge_session_battery_kwh", L("To battery", "A batería"), "mdi:car-battery", "green", 2),
+          liveTile("sensor.byd_charge_session_efficiency", L("Efficiency", "Eficiencia"), "mdi:gauge", "amber", 0),
+        ],
+      },
+    });
+    const row = (entity, nm, icon) => ({ entity, name: nm, icon });
+    cards.push({
+      type: "entities", title: L("Charge — summary", "Carga — resumen"), show_header_toggle: false, state_color: true,
+      entities: [
+        { type: "section", label: L("🔌 From charger (kWh)", "🔌 Del cargador (kWh)") },
+        row("sensor.byd_charger_kwh_weekly", L("This week", "Semanal"), "mdi:calendar-week"),
+        row("sensor.byd_charger_kwh_monthly", L("This month", "Mensual"), "mdi:calendar-month"),
+        row("sensor.byd_charger_kwh_yearly", L("This year", "Anual"), "mdi:calendar-star"),
+        { type: "section", label: L("🔋 To battery (kWh)", "🔋 A batería (kWh)") },
+        row("sensor.byd_battery_kwh_weekly", L("This week", "Semanal"), "mdi:calendar-week"),
+        row("sensor.byd_battery_kwh_monthly", L("This month", "Mensual"), "mdi:calendar-month"),
+        row("sensor.byd_battery_kwh_yearly", L("This year", "Anual"), "mdi:calendar-star"),
+        { type: "section", label: L("📈 Efficiency (%)", "📈 Eficiencia (%)") },
+        row("sensor.byd_charge_efficiency_weekly", L("This week", "Semanal"), "mdi:speedometer-slow"),
+        row("sensor.byd_charge_efficiency_monthly", L("This month", "Mensual"), "mdi:speedometer-medium"),
+        row("sensor.byd_charge_efficiency_yearly", L("This year", "Anual"), "mdi:speedometer"),
+      ],
+    });
+    if (hasCard("apexcharts-card")) {
+      cards.push({
+        type: "custom:apexcharts-card",
+        header: { show: true, title: L("Charge efficiency (30d)", "Eficiencia de carga (30d)"), show_states: true },
+        graph_span: "30d",
+        apex_config: { chart: { height: 200 }, yaxis: { min: 0, max: 100, decimalsInFloat: 0 }, stroke: { width: 2 } },
+        series: [
+          { entity: "sensor.byd_charge_efficiency_weekly", name: L("Weekly", "Semanal"), type: "area", curve: "smooth", opacity: 0.25, color: "#43a047" },
+          { entity: "sensor.byd_charge_efficiency_monthly", name: L("Monthly", "Mensual"), type: "line", curve: "smooth", color: "#039be5" },
+        ],
+      });
+    } else {
+      cards.push({
+        type: "history-graph", title: L("Charge efficiency — last 30 days", "Eficiencia de carga — últimos 30 días"), hours_to_show: 720,
+        entities: ["sensor.byd_charge_efficiency_weekly", "sensor.byd_charge_efficiency_monthly"],
+      });
+    }
+    cards.push({
+      type: "statistics-graph", title: L("Charger vs battery kWh (monthly)", "kWh cargador vs batería (mensual)"),
+      period: "month", stat_types: ["change"],
+      entities: ["sensor.byd_charger_kwh_monthly", "sensor.byd_battery_kwh_monthly"],
+    });
+  }
+
   return {
     title: "Charges",
     path: "charges",
