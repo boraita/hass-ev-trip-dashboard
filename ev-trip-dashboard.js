@@ -1426,27 +1426,9 @@ function cargasView(D, hass, V, cfg) {
         ],
       },
     });
-    const row = (entity, nm, icon) => ({ entity, name: nm, icon });
-    analytics.push({
-      type: "entities", title: L("Charge — summary", "Carga — resumen"), show_header_toggle: false, state_color: true,
-      entities: [
-        { type: "section", label: L("🔌 From charger (kWh)", "🔌 Del cargador (kWh)") },
-        row("sensor.byd_charger_kwh_weekly", L("This week", "Semanal"), "mdi:calendar-week"),
-        row("sensor.byd_charger_kwh_monthly", L("This month", "Mensual"), "mdi:calendar-month"),
-        row("sensor.byd_charger_kwh_yearly", L("This year", "Anual"), "mdi:calendar-star"),
-        { type: "section", label: L("🔋 To battery (kWh)", "🔋 A batería (kWh)") },
-        row("sensor.byd_battery_kwh_weekly", L("This week", "Semanal"), "mdi:calendar-week"),
-        row("sensor.byd_battery_kwh_monthly", L("This month", "Mensual"), "mdi:calendar-month"),
-        row("sensor.byd_battery_kwh_yearly", L("This year", "Anual"), "mdi:calendar-star"),
-        // Efficiency intentionally NOT shown per period — it's per charge only
-        // (the live-session tile above + each charge in the history). Per owner.
-        // What the CAR actually consumed driving (logger sensor) — only monthly exists.
-        ...(has(hass, `sensor.${D}_energy_this_month`) ? [
-          { type: "section", label: L("🚗 Consumed driving (kWh)", "🚗 Consumido conduciendo (kWh)") },
-          row(`sensor.${D}_energy_this_month`, L("This month", "Mensual"), "mdi:car-electric"),
-        ] : []),
-      ],
-    });
+    // Icon tiles: charger / battery / driving kWh, per week·month·year (compare).
+    // Driving week/year are derived in the card (no logger sensor for them).
+    analytics.push({ type: "custom:ev-charge-summary-card", device: D });
     analytics.push({
       type: "statistics-graph", title: L("Charger vs battery kWh (monthly)", "kWh cargador vs batería (mensual)"),
       period: "month", stat_types: ["change"],
@@ -3990,9 +3972,10 @@ class EvTripConsumptionCard extends HTMLElement {
       .cc-bar{flex:1 1 0;height:100%;display:flex;flex-direction:column;justify-content:flex-end;align-items:center;position:relative;}
       .cc-fill{width:78%;min-height:1px;border-radius:3px 3px 0 0;background:linear-gradient(180deg,var(--info-color,#039be5),var(--primary-color));opacity:.85;}
       .cc-bar.cc-cur .cc-fill{opacity:1;background:linear-gradient(180deg,var(--success-color,#43a047),var(--primary-color));}
-      .cc-lbl{position:absolute;bottom:-18px;font-size:.6em;white-space:nowrap;color:var(--secondary-text-color);}
-      .cc-avg{position:absolute;left:14px;right:14px;border-top:1px dashed var(--secondary-text-color);opacity:.6;}
-      .cc-avglbl{position:absolute;right:16px;font-size:.62em;color:var(--secondary-text-color);transform:translateY(-50%);}
+      .cc-lbl{position:absolute;bottom:-18px;font-size:.68em;white-space:nowrap;color:var(--primary-text-color);opacity:.75;font-variant-numeric:tabular-nums;}
+      .cc-avg{position:absolute;left:14px;right:14px;border-top:1px dashed var(--secondary-text-color);opacity:.5;}
+      .cc-avglbl{position:absolute;right:14px;font-size:.64em;font-weight:700;color:var(--primary-text-color);transform:translateY(-50%);
+                 background:var(--card-background-color,var(--ha-card-background));padding:0 4px;border-radius:4px;}
       .cc-empty{padding:10px 16px 22px;color:var(--secondary-text-color);}`;
     const bars = this._series(D);
     if (!bars || !bars.length) {
@@ -4034,6 +4017,76 @@ class EvTripConsumptionCard extends HTMLElement {
 }
 customElements.define("ev-trip-consumption-card", EvTripConsumptionCard);
 window.customCards.push({ type: "ev-trip-consumption-card", name: "EV Trip — consumption (day/month/year)", description: "Energy consumed (kWh) per day, month or year with a period toggle." });
+
+// ==========================================================================
+// Custom card: charger vs battery vs driving, as big icon tiles, per
+// week/month/year so the periods are easy to compare. Charger/battery come
+// from the byd_charge_analytics package sensors; driving (energy consumed) is
+// derived — week from recent_trips (current calendar week), month from
+// sensor.<D>_energy_this_month, year from monthly_history. Only rendered when
+// the package's charger sensor exists.
+// ==========================================================================
+class EvChargeSummaryCard extends HTMLElement {
+  setConfig(config) { this._config = config || {}; this._device = this._config.device || null; }
+  set hass(hass) { this._hass = hass; this._render(); }
+  getCardSize() { return 6; }
+  _num(id) { const s = this._hass.states[id]; const v = s ? parseFloat(s.state) : NaN; return isNaN(v) ? null : v; }
+  _drivingWeek(D) {
+    const trips = ((this._hass.states[`sensor.${D}_recent_trips`] || {}).attributes || {}).trips || [];
+    const now = new Date(); const monday = new Date(now);
+    monday.setHours(0, 0, 0, 0); monday.setDate(now.getDate() - ((now.getDay() + 6) % 7)); // Monday 00:00
+    let kwh = 0, any = false;
+    for (const t of trips) { const d = new Date(t.started_at || t.ended_at); if (isNaN(d) || d < monday) continue; const e = Number(t.energy_kwh); if (!isNaN(e)) { kwh += e; any = true; } }
+    return any ? kwh : null;
+  }
+  _drivingYear(D) {
+    const months = ((this._hass.states[`sensor.${D}_monthly_history`] || {}).attributes || {}).months;
+    if (!Array.isArray(months)) return null;
+    const y = String(new Date().getFullYear()); let kwh = 0, any = false;
+    for (const m of months) { if (String(m.month || "").slice(0, 4) === y) { const e = Number(m.energy_kwh); if (!isNaN(e)) { kwh += e; any = true; } } }
+    return any ? kwh : null;
+  }
+  _render() {
+    if (!this._hass) return;
+    _setUiLang(this._hass);
+    const D = this._device || detectDevice(this._hass); this._device = D;
+    const f1 = (v) => (v == null || isNaN(v) ? "—" : Number(v).toFixed(1));
+    const periods = [
+      { key: "weekly", label: L("This week", "Esta semana"), driving: this._drivingWeek(D) },
+      { key: "monthly", label: L("This month", "Este mes"), driving: this._num(`sensor.${D}_energy_this_month`) },
+      { key: "yearly", label: L("This year", "Este año"), driving: this._drivingYear(D) },
+    ];
+    const tile = (icon, clr, lbl, val) =>
+      `<div class="cv-tile"><ha-icon icon="${icon}" style="color:${clr}"></ha-icon><div class="cv-lbl">${lbl}</div><div class="cv-val">${val}<span class="cv-u"> kWh</span></div></div>`;
+    const rows = periods.map((p) => `
+        <div class="cv-period">${_esc(p.label)}</div>
+        <div class="cv-grid">
+          ${tile("mdi:ev-station", "var(--info-color,#039be5)", L("From charger", "Del cargador"), f1(this._num(`sensor.byd_charger_kwh_${p.key}`)))}
+          ${tile("mdi:car-battery", "var(--success-color,#43a047)", L("To battery", "A batería"), f1(this._num(`sensor.byd_battery_kwh_${p.key}`)))}
+          ${tile("mdi:car-electric", "var(--error-color,#e53935)", L("Driving", "Conducción"), f1(p.driving))}
+        </div>`).join("");
+    this.innerHTML = `<ha-card>
+      <div class="cv-head"><ha-icon icon="mdi:transmission-tower"></ha-icon>${L("Charger · battery · driving", "Cargador · batería · conducción")}</div>
+      ${rows}
+      <style>
+        .cv-head{display:flex;align-items:center;gap:7px;padding:14px 16px 4px;font-weight:600;font-size:1.05em;}
+        .cv-head ha-icon{--mdc-icon-size:20px;color:var(--primary-color);}
+        .cv-period{padding:10px 16px 2px;font-size:.78em;font-weight:700;letter-spacing:.04em;
+                   text-transform:uppercase;color:var(--secondary-text-color);}
+        .cv-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;padding:0 12px 4px;}
+        .cv-tile{display:flex;flex-direction:column;align-items:center;text-align:center;gap:3px;
+                 background:var(--secondary-background-color,var(--card-background-color));
+                 border:1px solid var(--divider-color);border-radius:14px;padding:12px 6px;}
+        .cv-tile ha-icon{--mdc-icon-size:26px;}
+        .cv-lbl{font-size:.72em;color:var(--secondary-text-color);line-height:1.1;}
+        .cv-val{font-size:1.35em;font-weight:800;color:var(--primary-text-color);font-variant-numeric:tabular-nums;}
+        .cv-u{font-size:.5em;font-weight:600;color:var(--secondary-text-color);}
+      </style>
+    </ha-card>`;
+  }
+}
+customElements.define("ev-charge-summary-card", EvChargeSummaryCard);
+window.customCards.push({ type: "ev-charge-summary-card", name: "EV Trip — charge vs driving summary", description: "Charger / battery / driving kWh as icon tiles, per week/month/year." });
 
 // ==========================================================================
 // Custom card: monthly activity calendar built from EXISTING data —
