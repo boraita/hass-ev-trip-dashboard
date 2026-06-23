@@ -1404,36 +1404,12 @@ function cargasView(D, hass, V, cfg) {
   const locationEntity = (cfg && cfg.location_entity) || (hass ? pickVehicleEntity(hass, V, "location", cfg) : null);
   cards.push({ type: "custom:ev-trip-history-card", device: D, kind: "charges", title: "Charge history", locationEntity, scrollRows: 5 });
 
-  // ---- Charger-vs-battery analytics (optional package) ------------------
-  // Fed by /config/packages/byd_charge_analytics.yaml: wallbox kWh vs kWh into
-  // the battery + efficiency, per session and per week/month/year. Only shown
-  // where those entities exist (so it's harmless on cars without the package).
-  if (has(hass, "sensor.byd_charge_session_charger_kwh")) {
-    const liveTile = (entity, nm, icon, clr, dp) => ({
-      type: "custom:mushroom-template-card", entity, primary: nm, icon, icon_color: clr, multiline_secondary: false,
-      secondary: `{% set f = states(entity) | float(none) %}{{ (f | round(${dp})) if f is not none else '—' }}{{ ' ' ~ state_attr(entity,'unit_of_measurement') if state_attr(entity,'unit_of_measurement') else '' }}`,
-    });
-    analytics.push(heading(L("Charger vs battery", "Cargador vs batería"), "mdi:transmission-tower"));
-    analytics.push({
-      type: "conditional",
-      conditions: [{ condition: "state", entity: `sensor.${D}_charge_in_progress`, state: "charging" }],
-      card: {
-        type: "grid", columns: 3, square: false,
-        cards: [
-          liveTile("sensor.byd_charge_session_charger_kwh", L("From charger", "Del cargador"), "mdi:ev-station", "blue", 2),
-          liveTile("sensor.byd_charge_session_battery_kwh", L("To battery", "A batería"), "mdi:car-battery", "green", 2),
-          liveTile("sensor.byd_charge_session_efficiency", L("Efficiency", "Eficiencia"), "mdi:gauge", "amber", 0),
-        ],
-      },
-    });
-    // Icon tiles: charger / battery / driving kWh, per week·month·year (compare).
-    // Driving week/year are derived in the card (no logger sensor for them).
+  // ---- Charged vs driving summary (LEFT column) -------------------------
+  // Icon tiles of REAL charged kWh (from recent_charges, so today's charges show)
+  // vs driving kWh, per Today/Week/Month/Year. Uses the logger (the optional
+  // byd_charge package meters read 0 because their wallbox source isn't flowing).
+  if (has(hass, `sensor.${D}_recent_charges`)) {
     analytics.push({ type: "custom:ev-charge-summary-card", device: D });
-    analytics.push({
-      type: "statistics-graph", title: L("Charger vs battery kWh (monthly)", "kWh cargador vs batería (mensual)"),
-      period: "month", stat_types: ["change"],
-      entities: ["sensor.byd_charger_kwh_monthly", "sensor.byd_battery_kwh_monthly"],
-    });
   }
 
   // Two columns when the analytics package is present: LEFT = charger-vs-battery
@@ -4031,12 +4007,25 @@ class EvChargeSummaryCard extends HTMLElement {
   set hass(hass) { this._hass = hass; this._render(); }
   getCardSize() { return 6; }
   _num(id) { const s = this._hass.states[id]; const v = s ? parseFloat(s.state) : NaN; return isNaN(v) ? null : v; }
-  _drivingWeek(D) {
+  _starts() {
+    const now = new Date();
+    const today = new Date(now); today.setHours(0, 0, 0, 0);
+    const week = new Date(today); week.setDate(today.getDate() - ((now.getDay() + 6) % 7)); // Monday
+    return { today, week, month: new Date(now.getFullYear(), now.getMonth(), 1), year: new Date(now.getFullYear(), 0, 1) };
+  }
+  // Real charges (logger recent_charges) on/after `start`. The byd_charge package
+  // meters read 0 (their wallbox source isn't flowing), so we use the logger's
+  // actual charge records — which carry dates, so today's charges show up.
+  _charged(D, start) {
+    const ch = ((this._hass.states[`sensor.${D}_recent_charges`] || {}).attributes || {}).charges || [];
+    let kwh = 0, n = 0;
+    for (const c of ch) { const d = new Date(c.ended_at || c.started_at); if (isNaN(d) || d < start) continue; const e = Number(c.kwh); if (!isNaN(e)) { kwh += e; n++; } }
+    return { kwh, n };
+  }
+  _drivingTrips(D, start) {
     const trips = ((this._hass.states[`sensor.${D}_recent_trips`] || {}).attributes || {}).trips || [];
-    const now = new Date(); const monday = new Date(now);
-    monday.setHours(0, 0, 0, 0); monday.setDate(now.getDate() - ((now.getDay() + 6) % 7)); // Monday 00:00
     let kwh = 0, any = false;
-    for (const t of trips) { const d = new Date(t.started_at || t.ended_at); if (isNaN(d) || d < monday) continue; const e = Number(t.energy_kwh); if (!isNaN(e)) { kwh += e; any = true; } }
+    for (const t of trips) { const d = new Date(t.started_at || t.ended_at); if (isNaN(d) || d < start) continue; const e = Number(t.energy_kwh); if (!isNaN(e)) { kwh += e; any = true; } }
     return any ? kwh : null;
   }
   _drivingYear(D) {
@@ -4051,42 +4040,50 @@ class EvChargeSummaryCard extends HTMLElement {
     _setUiLang(this._hass);
     const D = this._device || detectDevice(this._hass); this._device = D;
     const f1 = (v) => (v == null || isNaN(v) ? "—" : Number(v).toFixed(1));
+    const s = this._starts();
+    const monthDrv = this._num(`sensor.${D}_energy_this_month`);
+    const yearDrv = this._drivingYear(D);
     const periods = [
-      { key: "weekly", label: L("This week", "Esta semana"), driving: this._drivingWeek(D) },
-      { key: "monthly", label: L("This month", "Este mes"), driving: this._num(`sensor.${D}_energy_this_month`) },
-      { key: "yearly", label: L("This year", "Este año"), driving: this._drivingYear(D) },
+      { label: L("Today", "Hoy"), start: s.today, drv: this._drivingTrips(D, s.today) },
+      { label: L("This week", "Esta semana"), start: s.week, drv: this._drivingTrips(D, s.week) },
+      { label: L("This month", "Este mes"), start: s.month, drv: monthDrv != null ? monthDrv : this._drivingTrips(D, s.month) },
+      { label: L("This year", "Este año"), start: s.year, drv: yearDrv != null ? yearDrv : this._drivingTrips(D, s.year) },
     ];
-    const tile = (icon, clr, lbl, val) =>
-      `<div class="cv-tile"><ha-icon icon="${icon}" style="color:${clr}"></ha-icon><div class="cv-lbl">${lbl}</div><div class="cv-val">${val}<span class="cv-u"> kWh</span></div></div>`;
-    const rows = periods.map((p) => `
+    const tile = (icon, clr, lbl, val, sub) =>
+      `<div class="cv-tile"><ha-icon icon="${icon}" style="color:${clr}"></ha-icon><div class="cv-lbl">${lbl}</div><div class="cv-val">${val}<span class="cv-u"> kWh</span></div>${sub ? `<div class="cv-sub">${sub}</div>` : ""}</div>`;
+    const rows = periods.map((p) => {
+      const c = this._charged(D, p.start);
+      const sub = c.n ? `${c.n} ${L(c.n === 1 ? "charge" : "charges", c.n === 1 ? "carga" : "cargas")}` : L("no charges", "sin cargas");
+      return `
         <div class="cv-period">${_esc(p.label)}</div>
         <div class="cv-grid">
-          ${tile("mdi:ev-station", "var(--info-color,#039be5)", L("From charger", "Del cargador"), f1(this._num(`sensor.byd_charger_kwh_${p.key}`)))}
-          ${tile("mdi:car-battery", "var(--success-color,#43a047)", L("To battery", "A batería"), f1(this._num(`sensor.byd_battery_kwh_${p.key}`)))}
-          ${tile("mdi:car-electric", "var(--error-color,#e53935)", L("Driving", "Conducción"), f1(p.driving))}
-        </div>`).join("");
+          ${tile("mdi:ev-station", "var(--info-color,#039be5)", L("Charged", "Cargado"), f1(c.kwh), sub)}
+          ${tile("mdi:car-electric", "var(--error-color,#e53935)", L("Driving", "Conducción"), f1(p.drv), "")}
+        </div>`;
+    }).join("");
     this.innerHTML = `<ha-card>
-      <div class="cv-head"><ha-icon icon="mdi:transmission-tower"></ha-icon>${L("Charger · battery · driving", "Cargador · batería · conducción")}</div>
+      <div class="cv-head"><ha-icon icon="mdi:transmission-tower"></ha-icon>${L("Charged vs driving", "Cargado vs conducción")}</div>
       ${rows}
       <style>
         .cv-head{display:flex;align-items:center;gap:7px;padding:14px 16px 4px;font-weight:600;font-size:1.05em;}
         .cv-head ha-icon{--mdc-icon-size:20px;color:var(--primary-color);}
         .cv-period{padding:10px 16px 2px;font-size:.78em;font-weight:700;letter-spacing:.04em;
                    text-transform:uppercase;color:var(--secondary-text-color);}
-        .cv-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;padding:0 12px 4px;}
+        .cv-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:8px;padding:0 12px 4px;}
         .cv-tile{display:flex;flex-direction:column;align-items:center;text-align:center;gap:3px;
                  background:var(--secondary-background-color,var(--card-background-color));
                  border:1px solid var(--divider-color);border-radius:14px;padding:12px 6px;}
         .cv-tile ha-icon{--mdc-icon-size:26px;}
         .cv-lbl{font-size:.72em;color:var(--secondary-text-color);line-height:1.1;}
-        .cv-val{font-size:1.35em;font-weight:800;color:var(--primary-text-color);font-variant-numeric:tabular-nums;}
+        .cv-val{font-size:1.5em;font-weight:800;color:var(--primary-text-color);font-variant-numeric:tabular-nums;}
         .cv-u{font-size:.5em;font-weight:600;color:var(--secondary-text-color);}
+        .cv-sub{font-size:.66em;color:var(--secondary-text-color);}
       </style>
     </ha-card>`;
   }
 }
 customElements.define("ev-charge-summary-card", EvChargeSummaryCard);
-window.customCards.push({ type: "ev-charge-summary-card", name: "EV Trip — charge vs driving summary", description: "Charger / battery / driving kWh as icon tiles, per week/month/year." });
+window.customCards.push({ type: "ev-charge-summary-card", name: "EV Trip — charged vs driving", description: "Real charged (recent_charges) vs driving kWh as icon tiles, per today/week/month/year." });
 
 // ==========================================================================
 // Custom card: monthly activity calendar built from EXISTING data —
