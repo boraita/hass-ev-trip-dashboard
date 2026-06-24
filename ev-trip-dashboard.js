@@ -4038,6 +4038,10 @@ class EvChargeSummaryCard extends HTMLElement {
     let kwh = 0, any = false;
     for (const c of ch) {
       const d = new Date(c.ended_at || c.started_at); if (isNaN(d) || d < start) continue;
+      // NB: Number(null)===0, so guard on null FIRST — charges without a real
+      // soc_start must be skipped, not treated as starting from 0% (that
+      // inflated "to battery" above the charged kWh).
+      if (c.soc_start == null || c.soc_end == null) continue;
       const s0 = Number(c.soc_start), s1 = Number(c.soc_end);
       if (!isNaN(s0) && !isNaN(s1) && s1 >= s0) { kwh += ((s1 - s0) / 100) * cap; any = true; }
     }
