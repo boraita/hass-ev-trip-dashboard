@@ -1390,6 +1390,17 @@ function cargasView(D, hass, V, cfg) {
           "_recent_charges'];\n  const arr = s && s.attributes && Array.isArray(s.attributes.charges) ? s.attributes.charges : null;\n  return arr ? String(arr.length) : '—';\n]]]",
         styles: chKpiStyles("var(--success-color)"),
       },
+      // AC→DC charging efficiency (30-day rolling median) — only once the EVSE
+      // power sensor has produced data, so it never shows a bare "unknown".
+      ...(hasVal(hass, `sensor.${D}_avg_charging_efficiency_30d`) ? [{
+        type: "custom:button-card",
+        entity: `sensor.${D}_avg_charging_efficiency_30d`,
+        name: L("Avg efficiency", "Eficiencia media"),
+        icon: "mdi:gauge",
+        show_state: true, show_name: true, show_icon: true,
+        styles: chKpiStyles("var(--accent-color)"),
+        state_display: "[[[ const v = entity && entity.state; return (v==null||v==='unavailable'||v==='unknown') ? '—' : `${Number(v).toFixed(0)}%` ]]]",
+      }] : []),
     ],
   });
 
@@ -2565,6 +2576,8 @@ class EvTripHistoryCard extends HTMLElement {
                     border-color:var(--warning-color, #fb8c00);}
           .chip--soc{color:var(--info-color, #039be5);border-color:var(--info-color, #039be5);}
           .chip--soc ha-icon{--mdc-icon-size:13px;}
+          .chip--eff{color:var(--success-color,#43a047);border-color:var(--success-color,#43a047);}
+          .chip--eff ha-icon{--mdc-icon-size:13px;}
           .chip--live{color:var(--success-color,#43a047);border-color:var(--success-color,#43a047);
                       font-weight:700;animation:evpulse 1.6s ease-in-out infinite;}
           .chip--live ha-icon{--mdc-icon-size:13px;}
@@ -2862,6 +2875,12 @@ class EvTripHistoryCard extends HTMLElement {
         const ss0 = r0(c.soc_start), se0 = r0(c.soc_end);
         const socStr = se0 != null ? (ss0 != null ? `${ss0}→${se0}% (+${se0 - ss0})` : `→${se0}%`) : null;
         const socChip = socStr ? `<span class="chip chip--soc"><ha-icon icon="mdi:battery-charging-high"></ha-icon>${socStr}</span>` : "";
+        // AC→DC charging efficiency for THIS charge (logger v0.5.90, from the
+        // EVSE power sensor). Present only once a charge runs with EVSE metering.
+        const effV = c.charging_efficiency_pct;
+        const effChip = effV != null && !isNaN(Number(effV))
+          ? `<span class="chip chip--eff"><ha-icon icon="mdi:gauge"></ha-icon>${Number(effV).toFixed(0)}%${c.evse_energy_kwh != null && !isNaN(Number(c.evse_energy_kwh)) ? ` · ${Number(c.evse_energy_kwh).toFixed(1)} kWh AC` : ""}</span>`
+          : "";
         return `
           <div class="csession">
             <div class="session">
@@ -2871,6 +2890,7 @@ class EvTripHistoryCard extends HTMLElement {
                   <span class="chip">${_endpoint(null, c.location)}</span>
                   ${typeChip}
                   ${socChip}
+                  ${effChip}
                 </div>
                 <div class="smetrics"><b>${fmtNum(c.kwh)}</b> kWh · <b>${fmtNum(c.price_per_kwh)}</b> ${_esc(sym(c.currency))}/kWh${extra}</div>
                 ${locHtml}
