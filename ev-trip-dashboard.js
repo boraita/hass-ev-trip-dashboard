@@ -4022,6 +4022,27 @@ class EvChargeSummaryCard extends HTMLElement {
     for (const c of ch) { const d = new Date(c.ended_at || c.started_at); if (isNaN(d) || d < start) continue; const e = Number(c.kwh); if (!isNaN(e)) { kwh += e; n++; } }
     return { kwh, n };
   }
+  // Usable pack capacity (kWh) for the SoC→kWh battery-energy estimate.
+  _capacity(D) {
+    const soh = _findSensorByAttr(this._hass, D, "battery_soh", "declared_capacity_kwh");
+    if (soh) { const a = soh.attributes || {}; const c = parseFloat(a.calibrated_capacity_kwh); if (!isNaN(c) && c > 0) return c; const dd = parseFloat(a.declared_capacity_kwh); if (!isNaN(dd) && dd > 0) return dd; }
+    const eff = parseFloat(((this._hass.states[`sensor.${D}_recent_trips`] || {}).attributes || {}).effective_battery_capacity_kwh);
+    return isNaN(eff) || eff <= 0 ? null : eff;
+  }
+  // kWh that actually reached the battery = Σ (soc_end−soc_start)/100 × capacity,
+  // over charges in the period that carry both SoC ends. Derived (the package
+  // battery meter reads 0) — the real "to battery" the owner wants.
+  _battery(D, start, cap) {
+    if (cap == null) return null;
+    const ch = ((this._hass.states[`sensor.${D}_recent_charges`] || {}).attributes || {}).charges || [];
+    let kwh = 0, any = false;
+    for (const c of ch) {
+      const d = new Date(c.ended_at || c.started_at); if (isNaN(d) || d < start) continue;
+      const s0 = Number(c.soc_start), s1 = Number(c.soc_end);
+      if (!isNaN(s0) && !isNaN(s1) && s1 >= s0) { kwh += ((s1 - s0) / 100) * cap; any = true; }
+    }
+    return any ? kwh : null;
+  }
   _drivingTrips(D, start) {
     const trips = ((this._hass.states[`sensor.${D}_recent_trips`] || {}).attributes || {}).trips || [];
     let kwh = 0, any = false;
@@ -4041,6 +4062,7 @@ class EvChargeSummaryCard extends HTMLElement {
     const D = this._device || detectDevice(this._hass); this._device = D;
     const f1 = (v) => (v == null || isNaN(v) ? "—" : Number(v).toFixed(1));
     const s = this._starts();
+    const cap = this._capacity(D);
     const monthDrv = this._num(`sensor.${D}_energy_this_month`);
     const yearDrv = this._drivingYear(D);
     const periods = [
@@ -4053,29 +4075,31 @@ class EvChargeSummaryCard extends HTMLElement {
       `<div class="cv-tile"><ha-icon icon="${icon}" style="color:${clr}"></ha-icon><div class="cv-lbl">${lbl}</div><div class="cv-val">${val}<span class="cv-u"> kWh</span></div>${sub ? `<div class="cv-sub">${sub}</div>` : ""}</div>`;
     const rows = periods.map((p) => {
       const c = this._charged(D, p.start);
+      const bat = this._battery(D, p.start, cap);
       const sub = c.n ? `${c.n} ${L(c.n === 1 ? "charge" : "charges", c.n === 1 ? "carga" : "cargas")}` : L("no charges", "sin cargas");
       return `
         <div class="cv-period">${_esc(p.label)}</div>
         <div class="cv-grid">
           ${tile("mdi:ev-station", "var(--info-color,#039be5)", L("Charged", "Cargado"), f1(c.kwh), sub)}
+          ${tile("mdi:car-battery", "var(--success-color,#43a047)", L("To battery", "A batería"), f1(bat), L("from SoC", "por SoC"))}
           ${tile("mdi:car-electric", "var(--error-color,#e53935)", L("Driving", "Conducción"), f1(p.drv), "")}
         </div>`;
     }).join("");
     this.innerHTML = `<ha-card>
-      <div class="cv-head"><ha-icon icon="mdi:transmission-tower"></ha-icon>${L("Charged vs driving", "Cargado vs conducción")}</div>
+      <div class="cv-head"><ha-icon icon="mdi:transmission-tower"></ha-icon>${L("Charged · battery · driving", "Cargado · batería · conducción")}</div>
       ${rows}
       <style>
         .cv-head{display:flex;align-items:center;gap:7px;padding:14px 16px 4px;font-weight:600;font-size:1.05em;}
         .cv-head ha-icon{--mdc-icon-size:20px;color:var(--primary-color);}
         .cv-period{padding:10px 16px 2px;font-size:.78em;font-weight:700;letter-spacing:.04em;
                    text-transform:uppercase;color:var(--secondary-text-color);}
-        .cv-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:8px;padding:0 12px 4px;}
+        .cv-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;padding:0 12px 4px;}
         .cv-tile{display:flex;flex-direction:column;align-items:center;text-align:center;gap:3px;
                  background:var(--secondary-background-color,var(--card-background-color));
                  border:1px solid var(--divider-color);border-radius:14px;padding:12px 6px;}
         .cv-tile ha-icon{--mdc-icon-size:26px;}
         .cv-lbl{font-size:.72em;color:var(--secondary-text-color);line-height:1.1;}
-        .cv-val{font-size:1.5em;font-weight:800;color:var(--primary-text-color);font-variant-numeric:tabular-nums;}
+        .cv-val{font-size:1.25em;font-weight:800;color:var(--primary-text-color);font-variant-numeric:tabular-nums;}
         .cv-u{font-size:.5em;font-weight:600;color:var(--secondary-text-color);}
         .cv-sub{font-size:.66em;color:var(--secondary-text-color);}
       </style>
