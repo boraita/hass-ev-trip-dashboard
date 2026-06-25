@@ -6341,6 +6341,24 @@ class EvTripGlanceCard extends HTMLElement {
     if (c < 32) return ["#ffa726", "#ef6c00"]; // warm — orange
     return ["#ef5350", "#c62828"];             // hot — red
   }
+  // Empty → full gradient stops for a battery state of charge (%).
+  _battColor(p) {
+    if (p == null || isNaN(p)) return ["#90a4ae", "#607d8b"];
+    if (p < 15) return ["#ef5350", "#c62828"]; // critical — red
+    if (p < 30) return ["#ffa726", "#ef6c00"]; // low — orange
+    if (p < 55) return ["#ffca28", "#f9a825"]; // amber
+    if (p < 80) return ["#9ccc65", "#558b2f"]; // good — light green
+    return ["#66bb6a", "#2e7d32"];             // full — green
+  }
+  // Battery icon matching the level (and a charging bolt while charging).
+  _battIcon(p, charging) {
+    if (p == null || isNaN(p)) return "mdi:battery-off-outline";
+    const step = Math.max(0, Math.min(100, Math.round(p / 10) * 10));
+    if (charging) return step <= 0 ? "mdi:battery-charging-outline" : `mdi:battery-charging-${step}`;
+    if (step >= 100) return "mdi:battery";
+    if (step <= 0) return "mdi:battery-outline";
+    return `mdi:battery-${step}`;
+  }
   _render() {
     if (!this._hass) return;
     _setUiLang(this._hass);
@@ -6353,6 +6371,22 @@ class EvTripGlanceCard extends HTMLElement {
       `<div class="gl-chip" style="background:linear-gradient(135deg,${c1},${c2})"><ha-icon icon="${icon}"></ha-icon></div>` +
       `<div class="gl-tv">${value}<span class="gl-tu">${unit ? " " + _esc(unit) : ""}</span></div>` +
       `<div class="gl-tl">${_esc(label)}</div></div>`;
+
+    // Battery — compact, color-coded by level, charging-aware.
+    const bat = stOf(cfg.batteryEntity);
+    if (bat) {
+      const v = parseFloat(bat.state);
+      const chSt = stOf(cfg.chargingEntity);
+      const charging = chSt && String(chSt.state).toLowerCase() === "charging";
+      const [c1, c2] = this._battColor(v);
+      tiles.push(mk(this._battIcon(v, charging), L("Battery", "Batería"), fmt(v, 0), "%", c1, c2));
+    }
+    // Range — the car's own range, with a cool distance icon.
+    const rng = stOf(cfg.rangeEntity);
+    if (rng && !isNaN(parseFloat(rng.state))) {
+      const u = (rng.attributes || {}).unit_of_measurement || "km";
+      tiles.push(mk("mdi:map-marker-distance", L("Range", "Autonomía"), fmt(parseFloat(rng.state), 0), u, "#26a69a", "#00695c"));
+    }
 
     const out = stOf(cfg.outsideEntity);
     if (out) {
@@ -6375,7 +6409,7 @@ class EvTripGlanceCard extends HTMLElement {
     this.innerHTML =
       `<ha-card><div class="gl-wrap">${tiles.join("")}</div>` +
       `<style>` +
-      `.gl-wrap{display:grid;grid-template-columns:repeat(${tiles.length},1fr);gap:10px;padding:12px;}` +
+      `.gl-wrap{display:grid;grid-template-columns:repeat(auto-fit,minmax(84px,1fr));gap:10px;padding:12px;}` +
       `.gl-t{display:flex;flex-direction:column;align-items:center;gap:6px;text-align:center;` +
       `background:var(--secondary-background-color,var(--card-background-color));` +
       `border:1px solid var(--divider-color);border-radius:14px;padding:13px 6px;}` +
@@ -6398,77 +6432,25 @@ window.customCards.push({ type: "ev-trip-glance-card", name: "EV Trip — glance
 function drivingView(D, V, hass, cfg) {
   const status = [heading("Status", "mdi:car-electric")];
 
-  // Optional mushroom chips strip — battery %, charging state, range — a quick
-  // at-a-glance header above the gauge. Only when mushroom-chips-card exists.
-  if (hasCard("mushroom-chips-card")) {
-    const chips = [
-      {
-        type: "template",
-        entity: `sensor.${D}_battery_percent`,
-        icon: "{% set b = states(entity)|int(0) %}{{ 'mdi:battery' if b>=95 else 'mdi:battery-' ~ ((b/10)|round*10|int) if b>=10 else 'mdi:battery-outline' }}",
-        icon_color: "{% set b = states(entity)|int(0) %}{{ 'red' if b<20 else 'amber' if b<50 else 'green' }}",
-        content: "{{ states(entity) }}%",
-      },
-    ];
-    if (has(hass, `sensor.${D}_charge_in_progress`)) {
-      chips.push({
-        type: "template",
-        entity: `sensor.${D}_charge_in_progress`,
-        icon: "{{ 'mdi:ev-station' if is_state(entity,'charging') else 'mdi:power-plug-off' }}",
-        icon_color: "{{ 'blue' if is_state(entity,'charging') else 'disabled' }}",
-        content: "{{ states(entity) }}",
-      });
-    }
-    const rangeEnt = has(hass, `sensor.${D}_range_at_recent_efficiency`)
-      ? `sensor.${D}_range_at_recent_efficiency`
-      : pickVehicleEntity(hass, V, "range", cfg);
-    if (rangeEnt) {
-      chips.push({
-        type: "template",
-        entity: rangeEnt,
-        icon: "mdi:map-marker-distance",
-        icon_color: "teal",
-        content: "{{ states(entity)|round(0) }} km",
-      });
-    }
-    status.push({ type: "custom:mushroom-chips-card", alignment: "center", chips });
-  }
-
-  // Battery: a mini-graph 24h curve (preferred — shows the trend), the
-  // half-moon gauge when mini-graph-card isn't installed, and — when the
-  // battery has no numeric value yet (e.g. the car is asleep/offline, so the
-  // sensor is 'unknown') — a plain tile that shows "Unknown" instead of the
-  // mini-graph's "NaN %" / the gauge's "non-numeric" error.
-  if (!hasVal(hass, `sensor.${D}_battery_percent`)) {
-    status.push({
-      type: "tile",
-      entity: `sensor.${D}_battery_percent`,
-      name: "Battery",
-      icon: "mdi:battery-off-outline",
-    });
-  } else if (hasCard("mini-graph-card")) {
-    status.push({
-      type: "custom:mini-graph-card",
-      name: "Battery",
-      icon: "mdi:battery-charging",
-      hours_to_show: 24,
-      points_per_hour: 2,
-      line_width: 4,
-      smoothing: true,
-      show: { fill: "fade", state: true, name: true },
-      entities: [{ entity: `sensor.${D}_battery_percent`, name: "Battery" }],
-    });
-  } else {
-    status.push({
-      type: "gauge",
-      entity: `sensor.${D}_battery_percent`,
-      name: "Battery",
-      min: 0,
-      max: 100,
-      needle: true,
-      severity: { green: 50, yellow: 20, red: 0 },
-    });
-  }
+  // Status glance — Battery · Range · Outside · Cabin · Odometer, all in ONE
+  // card with color-coded gradient icon chips. Battery shifts red→green by
+  // level (compact, next to range) and shows a charging bolt while charging;
+  // temps shift cold→hot. Range uses the car's own sensor (logger range as
+  // fallback). The card self-hides any tile whose entity is absent.
+  const vRange = pickVehicleEntity(hass, V, "range", cfg);
+  const rangeEntity = vRange || (has(hass, `sensor.${D}_range_at_recent_efficiency`) ? `sensor.${D}_range_at_recent_efficiency` : null);
+  const vOut = pickVehicleEntity(hass, V, "outside_temp", cfg);
+  const vCab = pickVehicleEntity(hass, V, "cabin_temp", cfg);
+  const vOdo = pickVehicleEntity(hass, V, "odometer", cfg);
+  status.push({
+    type: "custom:ev-trip-glance-card",
+    batteryEntity: has(hass, `sensor.${D}_battery_percent`) ? `sensor.${D}_battery_percent` : null,
+    chargingEntity: has(hass, `sensor.${D}_charge_in_progress`) ? `sensor.${D}_charge_in_progress` : null,
+    rangeEntity,
+    outsideEntity: vOut || null,
+    cabinEntity: vCab || null,
+    odoEntity: hasVal(hass, vOdo) ? vOdo : null,
+  });
 
   // Live trip in progress — right after the battery; self-hides when not driving.
   status.push({ type: "custom:ev-trip-active-card", device: D });
@@ -6503,27 +6485,8 @@ function drivingView(D, V, hass, cfg) {
     chargeTarget: cfg && cfg.charge_target, // % to charge to (default 100)
   });
 
-  // Range — show ONLY the car's own range (the In-battery / To-100% energy
-  // tiles and the logger "real range" were dropped per user request). Fall
-  // back to the logger range only when the car exposes no range sensor.
-  const vRange = pickVehicleEntity(hass, V, "range", cfg);
-  const rangeEntity = vRange || (has(hass, `sensor.${D}_range_at_recent_efficiency`) ? `sensor.${D}_range_at_recent_efficiency` : null);
-  if (rangeEntity) status.push(kpiTile(rangeEntity, L("Range", "Autonomía"), "mdi:map-marker-distance", "teal"));
-
-  // Outside & cabin temperature + odometer — one polished glance row with
-  // color-coded icon chips (replaces the plain mushroom tiles). Self-hides
-  // when none of the three entities exist on this car.
-  const vOut = pickVehicleEntity(hass, V, "outside_temp", cfg);
-  const vCab = pickVehicleEntity(hass, V, "cabin_temp", cfg);
-  const vOdo = pickVehicleEntity(hass, V, "odometer", cfg);
-  if (vOut || vCab || hasVal(hass, vOdo)) {
-    status.push({
-      type: "custom:ev-trip-glance-card",
-      outsideEntity: vOut || null,
-      cabinEntity: vCab || null,
-      odoEntity: hasVal(hass, vOdo) ? vOdo : null,
-    });
-  }
+  // (Battery · Range · Outside · Cabin · Odometer are all rendered by the
+  // single ev-trip-glance-card placed near the top of the status column.)
 
   // (The live in-progress trip is rendered by the ev-trip-active-card placed
   // right after the battery above — it self-hides when no trip is open.)
