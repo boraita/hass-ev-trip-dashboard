@@ -4397,7 +4397,11 @@ class EvTripCalendarCard extends HTMLElement {
       e.km += Number(tr.distance_km) || 0;
     }
     for (const ch of cArr) {
-      const k = _localDateKey(ch.started_at || ch.ended_at);
+      // File a charge on the day it ENDED (matches the charge-history list and
+      // the user's "today's charge" intuition). Overnight / multi-day sessions
+      // would otherwise land on the start day and vanish from the day it
+      // actually completed.
+      const k = _localDateKey(ch.ended_at || ch.started_at);
       if (!k) continue;
       const e = ensure(k);
       e.charges.push(ch);
