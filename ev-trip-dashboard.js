@@ -4033,38 +4033,21 @@ class EvChargeSummaryCard extends HTMLElement {
     const week = new Date(today); week.setDate(today.getDate() - ((now.getDay() + 6) % 7)); // Monday
     return { today, week, month: new Date(now.getFullYear(), now.getMonth(), 1), year: new Date(now.getFullYear(), 0, 1) };
   }
-  // Real charges (logger recent_charges) on/after `start`. The byd_charge package
-  // meters read 0 (their wallbox source isn't flowing), so we use the logger's
-  // actual charge records — which carry dates, so today's charges show up.
-  _charged(D, start) {
+  // kWh that actually entered the BATTERY (DC) — the logger's per-charge `kwh`
+  // is the SoC-derived battery energy (e.g. kwh 38.8 ≈ 47% × 82.5 kWh). Sum it
+  // over the period. Returns {kwh, n} (n = number of charges).
+  _battery(D, start) {
     const ch = ((this._hass.states[`sensor.${D}_recent_charges`] || {}).attributes || {}).charges || [];
     let kwh = 0, n = 0;
     for (const c of ch) { const d = new Date(c.ended_at || c.started_at); if (isNaN(d) || d < start) continue; const e = Number(c.kwh); if (!isNaN(e)) { kwh += e; n++; } }
     return { kwh, n };
   }
-  // Usable pack capacity (kWh) for the SoC→kWh battery-energy estimate.
-  _capacity(D) {
-    const soh = _findSensorByAttr(this._hass, D, "battery_soh", "declared_capacity_kwh");
-    if (soh) { const a = soh.attributes || {}; const c = parseFloat(a.calibrated_capacity_kwh); if (!isNaN(c) && c > 0) return c; const dd = parseFloat(a.declared_capacity_kwh); if (!isNaN(dd) && dd > 0) return dd; }
-    const eff = parseFloat(((this._hass.states[`sensor.${D}_recent_trips`] || {}).attributes || {}).effective_battery_capacity_kwh);
-    return isNaN(eff) || eff <= 0 ? null : eff;
-  }
-  // kWh that actually reached the battery = Σ (soc_end−soc_start)/100 × capacity,
-  // over charges in the period that carry both SoC ends. Derived (the package
-  // battery meter reads 0) — the real "to battery" the owner wants.
-  _battery(D, start, cap) {
-    if (cap == null) return null;
+  // kWh drawn FROM the charger/wall (AC) — per-charge evse_energy_kwh, present
+  // only once the EVSE power sensor has metered a charge. null otherwise.
+  _charger(D, start) {
     const ch = ((this._hass.states[`sensor.${D}_recent_charges`] || {}).attributes || {}).charges || [];
     let kwh = 0, any = false;
-    for (const c of ch) {
-      const d = new Date(c.ended_at || c.started_at); if (isNaN(d) || d < start) continue;
-      // NB: Number(null)===0, so guard on null FIRST — charges without a real
-      // soc_start must be skipped, not treated as starting from 0% (that
-      // inflated "to battery" above the charged kWh).
-      if (c.soc_start == null || c.soc_end == null) continue;
-      const s0 = Number(c.soc_start), s1 = Number(c.soc_end);
-      if (!isNaN(s0) && !isNaN(s1) && s1 >= s0) { kwh += ((s1 - s0) / 100) * cap; any = true; }
-    }
+    for (const c of ch) { const d = new Date(c.ended_at || c.started_at); if (isNaN(d) || d < start) continue; const e = Number(c.evse_energy_kwh); if (!isNaN(e) && e > 0) { kwh += e; any = true; } }
     return any ? kwh : null;
   }
   _drivingTrips(D, start) {
@@ -4086,7 +4069,6 @@ class EvChargeSummaryCard extends HTMLElement {
     const D = this._device || detectDevice(this._hass); this._device = D;
     const f1 = (v) => (v == null || isNaN(v) ? "—" : Number(v).toFixed(1));
     const s = this._starts();
-    const cap = this._capacity(D);
     const monthDrv = this._num(`sensor.${D}_energy_this_month`);
     const yearDrv = this._drivingYear(D);
     const periods = [
@@ -4098,19 +4080,21 @@ class EvChargeSummaryCard extends HTMLElement {
     const tile = (icon, clr, lbl, val, sub) =>
       `<div class="cv-tile"><ha-icon icon="${icon}" style="color:${clr}"></ha-icon><div class="cv-lbl">${lbl}</div><div class="cv-val">${val}<span class="cv-u"> kWh</span></div>${sub ? `<div class="cv-sub">${sub}</div>` : ""}</div>`;
     const rows = periods.map((p) => {
-      const c = this._charged(D, p.start);
-      const bat = this._battery(D, p.start, cap);
-      const sub = c.n ? `${c.n} ${L(c.n === 1 ? "charge" : "charges", c.n === 1 ? "carga" : "cargas")}` : L("no charges", "sin cargas");
+      const bat = this._battery(D, p.start);          // DC into battery (logger kwh)
+      const chg = this._charger(D, p.start);          // AC from wall (evse, when metered)
+      const nSub = bat.n ? `${bat.n} ${L(bat.n === 1 ? "charge" : "charges", bat.n === 1 ? "carga" : "cargas")}` : L("no charges", "sin cargas");
+      // Efficiency = battery(DC) / charger(AC) when both exist.
+      const effSub = chg != null && chg > 0 ? `${(bat.kwh / chg * 100).toFixed(0)}% eff` : L("needs EVSE", "falta EVSE");
       return `
         <div class="cv-period">${_esc(p.label)}</div>
         <div class="cv-grid">
-          ${tile("mdi:ev-station", "var(--info-color,#039be5)", L("Charged", "Cargado"), f1(c.kwh), sub)}
-          ${tile("mdi:car-battery", "var(--success-color,#43a047)", L("To battery", "A batería"), f1(bat), L("from SoC", "por SoC"))}
+          ${tile("mdi:ev-station", "var(--info-color,#039be5)", L("From charger", "Del cargador"), f1(chg), effSub)}
+          ${tile("mdi:car-battery", "var(--success-color,#43a047)", L("To battery", "A batería"), f1(bat.kwh), nSub)}
           ${tile("mdi:car-electric", "var(--error-color,#e53935)", L("Driving", "Conducción"), f1(p.drv), "")}
         </div>`;
     }).join("");
     this.innerHTML = `<ha-card>
-      <div class="cv-head"><ha-icon icon="mdi:transmission-tower"></ha-icon>${L("Charged · battery · driving", "Cargado · batería · conducción")}</div>
+      <div class="cv-head"><ha-icon icon="mdi:transmission-tower"></ha-icon>${L("Charger · battery · driving", "Cargador · batería · conducción")}</div>
       ${rows}
       <style>
         .cv-head{display:flex;align-items:center;gap:7px;padding:14px 16px 4px;font-weight:600;font-size:1.05em;}
