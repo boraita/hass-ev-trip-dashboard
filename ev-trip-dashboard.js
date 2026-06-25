@@ -2820,12 +2820,27 @@ class EvTripHistoryCard extends HTMLElement {
         const type = c.type ? String(c.type).toUpperCase() : (c.is_dcfc ? "DC" : null);
         const typeChip = type ? `<span class="chip chip--${type === "DC" ? "dc" : "ac"}">${_esc(type)}</span>` : "";
         const total = c.total_cost != null ? `${fmtNum(c.total_cost, 2)} ${_esc(sym(c.currency))}` : DASH;
-        // Duration (time the charge took) + average power, derived from the
-        // timestamps + kWh (no per-sample curve is stored for past charges).
+        // Per-charge power-vs-time curve (recorder history, fetched lazily).
+        const id = c.charge_id != null ? c.charge_id : c.id;
+        const cv = id != null ? this._curves[id] : undefined;
+        // Duration = time ACTUALLY charging, not plugged-in. started_at→ended_at
+        // spans the whole connection (a car left plugged overnight reads ~24h),
+        // so prefer the power curve: sum the minutes where charge power > 0.2 kW.
+        // Fallback to the plug span ONLY when it implies a real rate (≥1.5 kW);
+        // otherwise it's mostly idle and we show no (misleading) duration.
         let durMin = null;
-        if (c.started_at && c.ended_at) {
-          const d = (new Date(c.ended_at) - new Date(c.started_at)) / 60000;
-          if (!isNaN(d) && d >= 0) durMin = d;
+        if (Array.isArray(cv) && cv.length >= 2) {
+          let m = 0;
+          for (let i = 1; i < cv.length; i++) {
+            const dt = (cv[i].t - cv[i - 1].t) / 60000, p = cv[i - 1].v;
+            if (p > 0.2 && dt > 0 && dt < 120) m += dt;
+          }
+          if (m > 0) durMin = m;
+        }
+        if (durMin == null && c.started_at && c.ended_at) {
+          const span = (new Date(c.ended_at) - new Date(c.started_at)) / 60000;
+          const impliedKw = c.kwh != null && span > 0 ? Number(c.kwh) / (span / 60) : null;
+          if (!isNaN(span) && span >= 0 && impliedKw != null && impliedKw >= 1.5) durMin = span;
         }
         const durStr =
           durMin == null ? null : durMin >= 60 ? `${Math.floor(durMin / 60)}h ${Math.round(durMin % 60)}m` : `${Math.round(durMin)} min`;
@@ -2833,9 +2848,6 @@ class EvTripHistoryCard extends HTMLElement {
         const extra =
           (durStr ? ` · <ha-icon class="s-mini" icon="mdi:timer-outline"></ha-icon>${durStr}` : "") +
           (avgKw != null ? ` · <b>${avgKw.toFixed(1)}</b> kW avg` : "");
-        // Per-charge power-vs-time curve (recorder history, fetched lazily).
-        const id = c.charge_id != null ? c.charge_id : c.id;
-        const cv = id != null ? this._curves[id] : undefined;
         let curve;
         if (cv == null || cv === "loading") curve = `<div class="cv-msg">Loading power curve…</div>`;
         else if (!Array.isArray(cv) || cv.length < 2) curve = `<div class="cv-msg">No power history for this charge.</div>`;
