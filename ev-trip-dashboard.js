@@ -6323,6 +6323,75 @@ window.customCards = window.customCards || [];
 window.customCards.push({ type: "ev-trip-active-card", name: "EV Trip — live trip", description: "The in-progress trip (shown only while driving)." });
 
 // ==========================================================================
+// Custom card: a polished "glance" row for the Driving screen — outside &
+// cabin temperature + odometer, each as a tile with a color-coded gradient
+// icon chip (temps shift cold→hot). Renders only the tiles whose entities
+// exist; nothing if none were passed.
+// ==========================================================================
+class EvTripGlanceCard extends HTMLElement {
+  setConfig(config) { this._config = config || {}; }
+  set hass(hass) { this._hass = hass; this._render(); }
+  getCardSize() { return 1; }
+  // Cold → hot gradient stops for a temperature in °C.
+  _tempColor(c) {
+    if (c == null || isNaN(c)) return ["#90a4ae", "#607d8b"];
+    if (c < 5)  return ["#42a5f5", "#1565c0"]; // cold — blue
+    if (c < 15) return ["#26c6da", "#00838f"]; // cool — cyan
+    if (c < 25) return ["#66bb6a", "#2e7d32"]; // mild — green
+    if (c < 32) return ["#ffa726", "#ef6c00"]; // warm — orange
+    return ["#ef5350", "#c62828"];             // hot — red
+  }
+  _render() {
+    if (!this._hass) return;
+    _setUiLang(this._hass);
+    const cfg = this._config || {};
+    const stOf = (id) => (id && this._hass.states[id]) || null;
+    const fmt = (v, dp) => (v == null || isNaN(v) ? "—" : Number(v).toFixed(dp));
+    const tiles = [];
+    const mk = (icon, label, value, unit, c1, c2) =>
+      `<div class="gl-t">` +
+      `<div class="gl-chip" style="background:linear-gradient(135deg,${c1},${c2})"><ha-icon icon="${icon}"></ha-icon></div>` +
+      `<div class="gl-tv">${value}<span class="gl-tu">${unit ? " " + _esc(unit) : ""}</span></div>` +
+      `<div class="gl-tl">${_esc(label)}</div></div>`;
+
+    const out = stOf(cfg.outsideEntity);
+    if (out) {
+      const v = parseFloat(out.state), u = (out.attributes || {}).unit_of_measurement || "°C";
+      const [c1, c2] = this._tempColor(v);
+      tiles.push(mk("mdi:sun-thermometer", L("Outside", "Exterior"), fmt(v, 0), u, c1, c2));
+    }
+    const cab = stOf(cfg.cabinEntity);
+    if (cab) {
+      const v = parseFloat(cab.state), u = (cab.attributes || {}).unit_of_measurement || "°C";
+      const [c1, c2] = this._tempColor(v);
+      tiles.push(mk("mdi:car-seat", L("Cabin", "Interior"), fmt(v, 0), u, c1, c2));
+    }
+    const odo = stOf(cfg.odoEntity);
+    if (odo && !isNaN(parseFloat(odo.state))) {
+      const u = (odo.attributes || {}).unit_of_measurement || "km";
+      tiles.push(mk("mdi:road-variant", L("Odometer", "Odómetro"), fmt(parseFloat(odo.state), 0), u, "#7e57c2", "#4527a0"));
+    }
+    if (!tiles.length) { this.innerHTML = ""; return; }
+    this.innerHTML =
+      `<ha-card><div class="gl-wrap">${tiles.join("")}</div>` +
+      `<style>` +
+      `.gl-wrap{display:grid;grid-template-columns:repeat(${tiles.length},1fr);gap:10px;padding:12px;}` +
+      `.gl-t{display:flex;flex-direction:column;align-items:center;gap:6px;text-align:center;` +
+      `background:var(--secondary-background-color,var(--card-background-color));` +
+      `border:1px solid var(--divider-color);border-radius:14px;padding:13px 6px;}` +
+      `.gl-chip{width:42px;height:42px;border-radius:50%;display:flex;align-items:center;justify-content:center;` +
+      `box-shadow:0 2px 7px rgba(0,0,0,.20);}` +
+      `.gl-chip ha-icon{--mdc-icon-size:25px;color:#fff;}` +
+      `.gl-tv{font-size:1.4em;font-weight:800;font-variant-numeric:tabular-nums;line-height:1.05;}` +
+      `.gl-tu{font-size:.5em;font-weight:600;color:var(--secondary-text-color);}` +
+      `.gl-tl{font-size:.62em;letter-spacing:.05em;text-transform:uppercase;color:var(--secondary-text-color);}` +
+      `</style></ha-card>`;
+  }
+}
+customElements.define("ev-trip-glance-card", EvTripGlanceCard);
+window.customCards.push({ type: "ev-trip-glance-card", name: "EV Trip — glance", description: "Outside/cabin temperature + odometer with colored icon chips." });
+
+// ==========================================================================
 // RESTORED from v1.5.0 (user favourites, pre-2.0): Driving + Trips views.
 // Additive — the 9-view equivalents stay until these are validated.
 // ==========================================================================
@@ -6404,6 +6473,26 @@ function drivingView(D, V, hass, cfg) {
   // Live trip in progress — right after the battery; self-hides when not driving.
   status.push({ type: "custom:ev-trip-active-card", device: D });
 
+  // Live location map — shown ONLY while a trip is in progress, so you can see
+  // where the car is in near-real-time (the marker moves as the device_tracker
+  // updates). hours_to_show:1 also draws the recent path. Conditional on the
+  // logger's current_trip_distance > 0, so it disappears once the trip ends.
+  const liveLoc = (cfg && cfg.location_entity) || pickVehicleEntity(hass, V, "location", cfg);
+  if (liveLoc && has(hass, `sensor.${D}_current_trip_distance`)) {
+    status.push({
+      type: "conditional",
+      conditions: [{ condition: "numeric_state", entity: `sensor.${D}_current_trip_distance`, above: 0 }],
+      card: {
+        type: "map",
+        title: L("Live location", "Ubicación en vivo"),
+        entities: [{ entity: liveLoc }],
+        hours_to_show: 1,
+        default_zoom: 15,
+        aspect_ratio: "16:9",
+      },
+    });
+  }
+
   // Live charge status (charging / paused-while-plugged / last-charge summary).
   status.push({
     type: "custom:ev-charge-status-card",
@@ -6414,25 +6503,27 @@ function drivingView(D, V, hass, cfg) {
     chargeTarget: cfg && cfg.charge_target, // % to charge to (default 100)
   });
 
-  // Battery / range / odometer. Logger gives a real-world range estimate;
-  // the car integration (optional) gives its own range + odometer.
-  const kpis = [
-    { entity: `sensor.${D}_battery_energy`, name: "In battery", icon: "mdi:battery-charging", color: "green" },
-    { entity: `sensor.${D}_energy_to_full_charge`, name: "To 100%", icon: "mdi:battery-plus", color: "blue" },
-  ];
-  if (has(hass, `sensor.${D}_range_at_recent_efficiency`))
-    kpis.push({ entity: `sensor.${D}_range_at_recent_efficiency`, name: "Real range", icon: "mdi:map-marker-distance", color: "teal" });
+  // Range — show ONLY the car's own range (the In-battery / To-100% energy
+  // tiles and the logger "real range" were dropped per user request). Fall
+  // back to the logger range only when the car exposes no range sensor.
   const vRange = pickVehicleEntity(hass, V, "range", cfg);
-  if (vRange) kpis.push({ entity: vRange, name: "Range", icon: "mdi:map-marker-radius", color: "teal" });
-  const vOdo = pickVehicleEntity(hass, V, "odometer", cfg);
-  if (hasVal(hass, vOdo)) kpis.push({ entity: vOdo, name: "Odometer", icon: "mdi:counter", color: "grey", decimals: 0 });
-  // Mushroom template tiles (one per KPI) when available, else native tiles.
-  for (const k of kpis) status.push(kpiTile(k.entity, k.name, k.icon, k.color, k.decimals));
+  const rangeEntity = vRange || (has(hass, `sensor.${D}_range_at_recent_efficiency`) ? `sensor.${D}_range_at_recent_efficiency` : null);
+  if (rangeEntity) status.push(kpiTile(rangeEntity, L("Range", "Autonomía"), "mdi:map-marker-distance", "teal"));
 
+  // Outside & cabin temperature + odometer — one polished glance row with
+  // color-coded icon chips (replaces the plain mushroom tiles). Self-hides
+  // when none of the three entities exist on this car.
   const vOut = pickVehicleEntity(hass, V, "outside_temp", cfg);
-  if (vOut) status.push(kpiTile(vOut, "Outside", "mdi:thermometer", "orange"));
   const vCab = pickVehicleEntity(hass, V, "cabin_temp", cfg);
-  if (vCab) status.push(kpiTile(vCab, "Cabin", "mdi:car-seat", "orange"));
+  const vOdo = pickVehicleEntity(hass, V, "odometer", cfg);
+  if (vOut || vCab || hasVal(hass, vOdo)) {
+    status.push({
+      type: "custom:ev-trip-glance-card",
+      outsideEntity: vOut || null,
+      cabinEntity: vCab || null,
+      odoEntity: hasVal(hass, vOdo) ? vOdo : null,
+    });
+  }
 
   // (The live in-progress trip is rendered by the ev-trip-active-card placed
   // right after the battery above — it self-hides when no trip is open.)
