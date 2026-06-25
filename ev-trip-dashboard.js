@@ -2800,6 +2800,8 @@ class EvTripHistoryCard extends HTMLElement {
           const typeChip = type ? `<span class="chip chip--${type === "DC" ? "dc" : "ac"}">${_esc(type)}</span>` : "";
           const pwrEnt = this._hass.states[`sensor.${this._device}_current_charge_power`];
           const pwr = pwrEnt && !isNaN(parseFloat(pwrEnt.state)) ? `${Number(pwrEnt.state).toFixed(1)} kW` : null;
+          const liveEff = parseFloat(((this._hass.states[`sensor.${this._device}_current_charge_efficiency`] || {}).state));
+          const effChipLive = !isNaN(liveEff) && liveEff > 0 ? `<span class="chip chip--eff"><ha-icon icon="mdi:gauge"></ha-icon>${liveEff.toFixed(0)}%</span>` : "";
           const total = c.total_cost != null ? `${fmtNum(c.total_cost, 2)} ${_esc(sym(c.currency))}` : DASH;
           return `
             <div class="csession">
@@ -2810,6 +2812,7 @@ class EvTripHistoryCard extends HTMLElement {
                     <span class="chip">${_endpoint(null, c.location)}</span>
                     ${typeChip}
                     ${socChip}
+                    ${effChipLive}
                   </div>
                   <div class="smetrics"><b>${fmtNum(c.kwh)}</b> kWh${pwr ? ` · <b>${pwr}</b>` : ""}${c.price_per_kwh != null ? ` · <b>${fmtNum(c.price_per_kwh)}</b> ${_esc(sym(c.currency))}/kWh` : ""}${c.started_at ? ` · ${L("since", "desde")} ${timeOf(c.started_at)}` : ""}</div>
                 </div>
@@ -6151,6 +6154,9 @@ class EvChargeStatusCard extends HTMLElement {
       const dur = durMin == null ? DASH : durMin >= 60 ? `${Math.floor(durMin / 60)}h ${Math.round(durMin % 60)}m` : `${Math.round(durMin)} min`;
       const energy = st.energy != null ? st.energy : st.lastEnergy;
       const sym = cur[st.type] || "€";
+      // Live AC→DC charging efficiency (logger current_charge_efficiency, fed by
+      // the EVSE power sensor). Shown as a tile only once it has a real value.
+      const chargeEff = parseFloat(((this._hass.states[`sensor.${D}_current_charge_efficiency`] || {}).state));
       // ETA: energy still needed ÷ current power. Honours an optional charge
       // target (e.g. 80%) so the estimate matches where you actually stop —
       // energy-to-target is derived from the pack capacity (battery_energy +
@@ -6206,6 +6212,7 @@ class EvChargeStatusCard extends HTMLElement {
             ${tile("mdi:lightning-bolt", "Added", num(energy, 2), "kWh")}
             ${tile("mdi:flash", "Power", num(st.power, 1), "kW")}
             ${tile("mdi:timer-outline", "Time", dur, "")}
+            ${charging && !isNaN(chargeEff) && chargeEff > 0 ? tile("mdi:gauge", L("Efficiency", "Eficiencia"), chargeEff.toFixed(0), "%") : ""}
           </div>
         </ha-card>${styles}`;
       return;
