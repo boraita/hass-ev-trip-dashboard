@@ -257,6 +257,46 @@ And at the top level of `recent_trips` attributes:
 | `effective_battery_capacity_kwh` | Calibrated pack capacity (= declared while < 5 valid charges) |
 | `battery_capacity_calibration_charges` | n of charges that fed the capacity median |
 
+### Driver detection (generic)
+
+The per-trip `driver` field (and `sensor.__DEVICE___driver_stats_30_days`, plus the driver chip in the Trips / Calendar views) is filled by the logger from a **single `driver_sensor`** you configure — any entity **whose _state_ is the driver's name**. The logger reads it when a trip opens and keeps re-checking during the trip until it resolves; states like `none` / `off` / `not_connected` / `disconnected` / `unknown` mean "nobody identified" and leave the trip's `driver` empty (so the chip simply doesn't show — that's expected, not a bug).
+
+You can point `driver_sensor` at a manufacturer "connected Bluetooth device" sensor, an `input_select` the household toggles, or a template. **For a generic, low-maintenance setup that hardcodes no names, phones or MAC addresses, derive the driver from which `person` is at the car** — it iterates HA's `person` registry and returns the closest one to the vehicle, so adding/removing people in HA just works:
+
+```yaml
+template:
+  - sensor:
+      - name: "Car Driver"
+        unique_id: car_driver
+        icon: mdi:account-tie-hat
+        state: >
+          {# Only per-car value: the vehicle's location entity #}
+          {% set car = 'device_tracker.<vehicle>_location' %}
+          {% set clat = state_attr(car, 'latitude') %}
+          {% set clon = state_attr(car, 'longitude') %}
+          {% set ns = namespace(name='none', best=0.20) %}   {# 200 m threshold, in km #}
+          {% if clat is not none and clon is not none %}
+            {% for p in states.person %}
+              {% set plat = state_attr(p.entity_id, 'latitude') %}
+              {% set plon = state_attr(p.entity_id, 'longitude') %}
+              {% if plat is not none and plon is not none %}
+                {% set d = distance(clat, clon, plat, plon) %}
+                {% if d is not none and d < ns.best %}
+                  {% set ns.name = p.name %}
+                  {% set ns.best = d %}
+                {% endif %}
+              {% endif %}
+            {% endfor %}
+          {% endif %}
+          {{ ns.name }}
+```
+
+Then set `driver_sensor: sensor.car_driver` in the logger options. Notes:
+
+- **Generic by design** — no names, phones or MACs are written; it uses each `person`'s `friendly_name` and GPS. The only per-install value is the car's `device_tracker` location entity (the same one the dashboard already resolves per vehicle).
+- **What it identifies** — proximity tells you *who is in the car*, not driver-vs-passenger. With one person aboard (the common case) that's the driver; if two `person`s are both at the car it returns the nearest. True driver-vs-passenger needs a seat-occupancy or car-Bluetooth signal, which is necessarily vehicle-specific.
+- A manual `input_select` (e.g. *Rafa / Elena / none*) is a fine fallback for borrowed cars or when GPS is stale; you can also combine them (use the proximity sensor, fall back to the `input_select` when it returns `none`).
+
 ---
 
 ## Recovery & corrections — what to use, when
