@@ -40,12 +40,39 @@ apex_config:
           `</div>`;
       }
 series:
+  # v0.6.x — split trips into two series so noisy short-distance
+  # samples don't pollute the eye-tracked baseline of "real" highway/
+  # commute efficiency. Low-confidence trips render as 35 %-opacity
+  # grey, high-confidence as solid blue. Toggleable via the apex
+  # legend if the user wants only one or the other.
   - entity: sensor.__DEVICE___recent_trips
-    name: Trips
+    name: Trips (reliable)
+    color: '#2196F3'
     data_generator: |
       const trips = entity.attributes.trips || [];
       return trips
-        .filter(t => t.distance_km > 0 && t.consumption_kwh_100km > 0)
+        .filter(t => !t.low_confidence
+                     && t.distance_km > 0
+                     && t.consumption_kwh_100km > 0)
+        .map(t => ({
+          x: t.distance_km,
+          y: t.consumption_kwh_100km,
+          tripId: t.trip_id,
+          origin: t.origin,
+          destination: t.destination,
+        }));
+  - entity: sensor.__DEVICE___recent_trips
+    name: Trips (low confidence)
+    color: '#9E9E9E'
+    opacity: 0.35
+    show:
+      legend_value: false
+    data_generator: |
+      const trips = entity.attributes.trips || [];
+      return trips
+        .filter(t => t.low_confidence
+                     && t.distance_km > 0
+                     && t.consumption_kwh_100km > 0)
         .map(t => ({
           x: t.distance_km,
           y: t.consumption_kwh_100km,

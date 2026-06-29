@@ -146,10 +146,17 @@ cards:
       {#- Force newest-first ordering by started_at so the most recent trip is always on top. -#}
       {%- set trips = trips | sort(attribute='started_at', reverse=True) %}
       {%- for t in trips[:10] %}
-      ### {{ as_timestamp(t.started_at) | timestamp_custom('%d/%m/%Y') }} · {{ as_timestamp(t.started_at) | timestamp_custom('%H:%M') }}
+      {#- v0.6.x logger flags low-signal trips (short distance, wide
+          consumption band). Dim the whole row + add a ⚠ chip so the
+          user knows a high kWh/100km point isn't a regression — it's a
+          3 km city loop with HVAC dominating the integral. -#}
+      {%- set low = t.low_confidence | default(false) %}
+      {%- set lo = t.consumption_lower_kwh_100km %}
+      {%- set hi = t.consumption_upper_kwh_100km %}
+      {% if low %}<span style="opacity:0.55">{% endif %}### {{ as_timestamp(t.started_at) | timestamp_custom('%d/%m/%Y') }} · {{ as_timestamp(t.started_at) | timestamp_custom('%H:%M') }}{% if low %} <span title="Trip too short / noisy — point estimate is signal-poor; see band">⚠ baja confianza</span>{% endif %}
       | Distance | Consumption | Efficiency | Cost | Score |
       |---:|---:|---:|---:|:--:|
-      | {{ t.distance_km | default('—') }} km | {{ t.energy_kwh | default('—') }} kWh | {{ t.consumption_kwh_100km | default('—') }} kWh/100km | {{ t.cost | default('—') }} {{ t.currency | default('') }} | {% set s = t.score | float(0) %}{% if s >= 7 %}🟢{% elif s >= 4 %}🟡{% else %}🔴{% endif %} **{{ t.score | default('—') }}** |
+      | {{ t.distance_km | default('—') }} km | {{ t.energy_kwh | default('—') }} kWh | {{ t.consumption_kwh_100km | default('—') }} kWh/100km{% if low and lo is not none and hi is not none %} <small>({{ lo }}–{{ hi }})</small>{% endif %} | {{ t.cost | default('—') }} {{ t.currency | default('') }} | {% set s = t.score | float(0) %}{% if s >= 7 %}🟢{% elif s >= 4 %}🟡{% else %}🔴{% endif %} **{{ t.score | default('—') }}** |
 
       _{{ t.origin | default('—') }} → {{ t.destination | default('—') }}_
       {#- Google-Maps route link: emit ONLY when origin != destination (skip round trips).
@@ -166,6 +173,7 @@ cards:
 
       ---
       {%- endif %}
+      {% if low %}</span>{% endif %}
       {%- else %}
       _No trips recorded yet._
       {%- endfor %}

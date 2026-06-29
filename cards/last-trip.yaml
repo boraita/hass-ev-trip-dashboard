@@ -45,13 +45,23 @@ cards:
     secondary: >-
       {% set st = state_attr('sensor.__DEVICE___last_trip_distance', 'started_at') %}
       {% set en = state_attr('sensor.__DEVICE___last_trip_distance', 'ended_at') %}
+      {% set low = state_attr('sensor.__DEVICE___last_trip_distance', 'low_confidence') %}
+      {% set lo = state_attr('sensor.__DEVICE___last_trip_consumption', 'consumption_lower_kwh_100km') %}
+      {% set hi = state_attr('sensor.__DEVICE___last_trip_consumption', 'consumption_upper_kwh_100km') %}
       {% if st and en %}
-        {{ as_timestamp(st) | timestamp_custom('%H:%M', true) }} → {{ as_timestamp(en) | timestamp_custom('%H:%M', true) }}
+        {{ as_timestamp(st) | timestamp_custom('%H:%M', true) }} → {{ as_timestamp(en) | timestamp_custom('%H:%M', true) }}{% if low %}  ·  ⚠ baja confianza{% if lo is not none and hi is not none %} (banda {{ lo }}–{{ hi }} kWh/100km){% endif %}{% endif %}
       {% else %}—{% endif %}
-    icon: mdi:map-marker-path
-    icon_color: blue
+    # v0.6.x — colour the header icon orange when the last trip is
+    # low_confidence so the user notices the caveat at a glance
+    # without having to scan the secondary text.
+    icon: >-
+      {% set low = state_attr('sensor.__DEVICE___last_trip_distance', 'low_confidence') %}
+      {{ 'mdi:alert-circle-outline' if low else 'mdi:map-marker-path' }}
+    icon_color: >-
+      {% set low = state_attr('sensor.__DEVICE___last_trip_distance', 'low_confidence') %}
+      {{ 'orange' if low else 'blue' }}
     fill_container: true
-    multiline_secondary: false
+    multiline_secondary: true
 
   # ---------------------------------------------------------------------------
   # KPI GRID — distance · duration · energy · consumption (2×2).

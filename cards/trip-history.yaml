@@ -1,5 +1,12 @@
-# Last 10 trips, BYD-app style table.
+# Last N trips, BYD-app style table.
 # Replace __DEVICE__ with your device slug.
+#
+# v0.6.x logger exposes `low_confidence` (True when the trip is too
+# short or its consumption band is wider than 40 % of the headline).
+# Those rows render dimmed + with a ⚠ chip so the user understands a
+# 30+ kWh/100km point on a 3 km city loop is signal-poor, not a
+# regression. The full band [lower, upper] is also surfaced so a
+# template-savvy user can see the spread at a glance.
 
 type: markdown
 content: |
@@ -7,9 +14,13 @@ content: |
   {%- set trips = state_attr('sensor.__DEVICE___recent_trips', 'trips') or [] %}
   {%- set trips = trips | sort(attribute='started_at', reverse=True) %}
   {%- for t in trips %}
+  {%- set low = t.low_confidence | default(false) %}
+  {%- set lo = t.consumption_lower_kwh_100km %}
+  {%- set hi = t.consumption_upper_kwh_100km %}
 
-  **{{ as_timestamp(t.ended_at) | timestamp_custom('%d/%m %H:%M') }}**{% if t.journey_id %} · _journey #{{ t.journey_id }}_{% endif %}
+  {% if low %}<span style="opacity:0.55">{% endif %}**{{ as_timestamp(t.ended_at) | timestamp_custom('%d/%m %H:%M') }}**{% if low %} · ⚠ baja confianza{% endif %}{% if t.journey_id %} · _journey #{{ t.journey_id }}_{% endif %}
   | Distance | Energy | Efficiency | Cost | Score |
   |---:|---:|---:|---:|---:|
-  | {{ t.distance_km }} km | {{ t.energy_kwh or "—" }} kWh | {{ t.consumption_kwh_100km or "—" }} kWh/100 | {{ t.cost or "—" }} {{ t.currency or "" }} | **{{ t.score or "—" }}** |
+  | {{ t.distance_km }} km | {{ t.energy_kwh or "—" }} kWh | {{ t.consumption_kwh_100km or "—" }} kWh/100{% if low and lo is not none and hi is not none %} _({{ lo }}–{{ hi }})_{% endif %} | {{ t.cost or "—" }} {{ t.currency or "" }} | **{{ t.score or "—" }}** |
+  {% if low %}</span>{% endif %}
   {%- endfor %}
