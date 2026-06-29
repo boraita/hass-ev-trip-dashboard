@@ -130,11 +130,35 @@ cards:
             - color: var(--warning-color)
             - width: 28px
 
+      # v0.6.6 — when low_confidence, render the BAND (`lo–hi
+      # kWh/100km`) as the headline instead of the point estimate.
+      # Background: a 3-7 km trip on integer-percent SoC sensors has
+      # ±0.4 kWh of unavoidable quantization noise (BYD pantalla
+      # interna says 24.7 kWh/100km, our SoC-derived point says 35.4,
+      # the band [23.8–46.9] correctly contains the truth). Showing
+      # the band tells the user honestly "we know it's in this range"
+      # instead of picking a biased point. Falls back to the regular
+      # entity state for high-confidence trips.
       - type: custom:button-card
         entity: sensor.__DEVICE___last_trip_consumption
         name: Eficiencia
         icon: mdi:speedometer
-        show_state: true
+        show_state: false
+        show_label: true
+        state_display: ""
+        label: |
+          [[[
+            const trips = (states['sensor.__DEVICE___recent_trips']
+                          && states['sensor.__DEVICE___recent_trips'].attributes
+                          && states['sensor.__DEVICE___recent_trips'].attributes.trips) || [];
+            const t = trips[0] || {};
+            if (t.low_confidence && t.consumption_lower_kwh_100km != null
+                                  && t.consumption_upper_kwh_100km != null) {
+              return `${Math.round(t.consumption_lower_kwh_100km)}–${Math.round(t.consumption_upper_kwh_100km)} kWh/100km · ⚠`;
+            }
+            const v = entity && entity.state;
+            return v && v !== 'unknown' ? `${v} kWh/100km` : '—';
+          ]]]
         styles:
           card:
             - padding: 12px
@@ -143,8 +167,8 @@ cards:
           name:
             - font-size: 12px
             - color: var(--secondary-text-color)
-          state:
-            - font-size: 22px
+          label:
+            - font-size: 20px
             - font-weight: 600
           icon:
             - color: var(--accent-color)

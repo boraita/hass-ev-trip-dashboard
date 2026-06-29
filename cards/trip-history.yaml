@@ -18,9 +18,16 @@ content: |
   {%- set lo = t.consumption_lower_kwh_100km %}
   {%- set hi = t.consumption_upper_kwh_100km %}
 
+  {%- set eff_display %}
+    {%- if low and lo is not none and hi is not none -%}
+      {{ lo | round(0) | int }}–{{ hi | round(0) | int }} kWh/100
+    {%- else -%}
+      {{ t.consumption_kwh_100km or "—" }} kWh/100
+    {%- endif %}
+  {%- endset %}
   {% if low %}<span style="opacity:0.55">{% endif %}**{{ as_timestamp(t.ended_at) | timestamp_custom('%d/%m %H:%M') }}**{% if low %} · ⚠ baja confianza{% endif %}{% if t.journey_id %} · _journey #{{ t.journey_id }}_{% endif %}
   | Distance | Energy | Efficiency | Cost | Score |
   |---:|---:|---:|---:|---:|
-  | {{ t.distance_km }} km | {{ t.energy_kwh or "—" }} kWh | {{ t.consumption_kwh_100km or "—" }} kWh/100{% if low and lo is not none and hi is not none %} _({{ lo }}–{{ hi }})_{% endif %} | {{ t.cost or "—" }} {{ t.currency or "" }} | **{{ t.score or "—" }}** |
+  | {{ t.distance_km }} km | {{ t.energy_kwh or "—" }} kWh | {{ eff_display | trim }} | {{ t.cost or "—" }} {{ t.currency or "" }} | **{{ t.score or "—" }}** |
   {% if low %}</span>{% endif %}
   {%- endfor %}
