@@ -720,6 +720,11 @@ function tendenciasView(D, hass, cfg) {
   cards.push({ type: "custom:ev-trip-monthly-card", device: D });
   // Daily km sparkline (replaces the apex 60-day line below once validated).
   cards.push({ type: "custom:ev-trip-daily-card", device: D });
+  // Consumption with the Day/Week/Month/Year toggle — surfaced here in Trends
+  // (same card as the Efficiency view; the period choice is shared via
+  // localStorage). Gives the weekly avg-consumption + km view in the place
+  // where time-series trends live.
+  cards.push({ type: "custom:ev-trip-consumption-card", device: D });
 
   // Apex "Monthly Km & kWh" + "60-day line" removed — the ev-trip-monthly-card
   // and ev-trip-daily-card above render the same data reliably (apex category
