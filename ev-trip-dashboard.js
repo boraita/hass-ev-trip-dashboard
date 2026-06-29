@@ -3907,7 +3907,7 @@ class EvTripConsumptionCard extends HTMLElement {
   setConfig(config) {
     this._config = config || {};
     this._device = this._config.device || null;
-    try { const m = localStorage.getItem("evTripConsPeriod"); this._period = ["day", "month", "year"].includes(m) ? m : "month"; }
+    try { const m = localStorage.getItem("evTripConsPeriod"); this._period = ["day", "week", "month", "year"].includes(m) ? m : "month"; }
     catch (_e) { this._period = "month"; }
   }
   set hass(hass) { this._hass = hass; this._render(); }
@@ -3940,6 +3940,33 @@ class EvTripConsumptionCard extends HTMLElement {
       }
       return Object.keys(byY).sort().map((y) => ({ label: y, ...byY[y] }));
     }
+    // Week: sum recent_trips by ISO week (Monday-start), zero-filled from the
+    // earliest week with data up to the current week (capped at 16). Note this
+    // only spans what the recent_trips rolling window covers (~last weeks); the
+    // logger has no weekly_history sensor. The dashed line = the weekly average.
+    if (this._period === "week") {
+      const trips = ((this._hass.states[`sensor.${D}_recent_trips`] || {}).attributes || {}).trips || [];
+      const wkStart = (iso) => { const x = new Date(iso); if (isNaN(x)) return null; x.setHours(0, 0, 0, 0); x.setDate(x.getDate() - ((x.getDay() + 6) % 7)); return x; };
+      const byW = {}; let earliest = null;
+      for (const t of trips) {
+        const ws = wkStart(t.started_at || t.ended_at); if (!ws) continue;
+        const k = _localDateKey(ws.toISOString());
+        const e = byW[k] || (byW[k] = { kwh: 0, km: 0, cost: 0 });
+        e.kwh += Number(t.energy_kwh) || 0; e.km += Number(t.distance_km) || 0; e.cost += Number(t.cost) || 0;
+        if (!earliest || ws < earliest) earliest = ws;
+      }
+      if (!earliest) return [];
+      const cur = wkStart(new Date().toISOString());
+      const minStart = new Date(cur); minStart.setDate(minStart.getDate() - 15 * 7);
+      if (earliest < minStart) earliest = minStart;
+      const p = (n) => String(n).padStart(2, "0");
+      const out = [];
+      for (const w = new Date(earliest); w <= cur; w.setDate(w.getDate() + 7)) {
+        const e = byW[_localDateKey(w.toISOString())] || { kwh: 0, km: 0, cost: 0 };
+        out.push({ label: `${p(w.getDate())}/${p(w.getMonth() + 1)}`, kwh: e.kwh, km: e.km, cost: e.cost });
+      }
+      return out;
+    }
     // Day: sum recent_trips by local date, zero-filled over the last 21 days.
     const trips = ((this._hass.states[`sensor.${D}_recent_trips`] || {}).attributes || {}).trips || [];
     const byD = {};
@@ -3967,7 +3994,7 @@ class EvTripConsumptionCard extends HTMLElement {
     const sym = _deviceCurrency(this._hass, D);
     const f0 = (v) => (v == null || isNaN(v) ? "—" : Number(v).toFixed(0));
     const f1 = (v) => (v == null || isNaN(v) ? "—" : Number(v).toFixed(1));
-    const seg = [["day", L("Day", "Día")], ["month", L("Month", "Mes")], ["year", L("Year", "Año")]]
+    const seg = [["day", L("Day", "Día")], ["week", L("Week", "Semana")], ["month", L("Month", "Mes")], ["year", L("Year", "Año")]]
       .map(([m, lbl]) => `<button class="cc-btn${m === this._period ? " on" : ""}" data-m="${m}">${lbl}</button>`).join("");
     const head = `<div class="cc-head"><span>${L("Consumption", "Consumo")}</span><div class="cc-seg">${seg}</div></div>`;
     const css = `
@@ -4012,6 +4039,10 @@ class EvTripConsumptionCard extends HTMLElement {
       const tot = bars.reduce((a, b) => a + b.kwh, 0);
       heroNum = f1(tot);
       heroSub = `${L("last 21 days", "últimos 21 días")} · ${nonzero.length} ${L("active days", "días activos")} · ${f1(avg)} kWh/${L("day", "día")}`;
+    } else if (this._period === "week") {
+      const cur = bars[bars.length - 1];
+      heroNum = f1(cur.kwh);
+      heroSub = `${L("this week", "esta semana")}${cur.km ? ` · ${f0(cur.km)} km` : ""} · ${nonzero.length} ${L("active weeks", "semanas activas")} · ${f1(avg)} kWh/${L("wk", "sem")}`;
     } else {
       const cur = bars[bars.length - 1];
       heroNum = f1(cur.kwh);
