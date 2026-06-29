@@ -3940,11 +3940,26 @@ class EvTripConsumptionCard extends HTMLElement {
       }
       return Object.keys(byY).sort().map((y) => ({ label: y, ...byY[y] }));
     }
-    // Week: sum recent_trips by ISO week (Monday-start), zero-filled from the
-    // earliest week with data up to the current week (capped at 16). Note this
-    // only spans what the recent_trips rolling window covers (~last weeks); the
-    // logger has no weekly_history sensor. The dashed line = the weekly average.
+    // Week: prefer the logger's weekly_history sensor (a long, reliable series
+    // aggregated from ALL trips, Monday-start ISO weeks). Fall back to grouping
+    // recent_trips (the short rolling window) when that sensor/attribute is
+    // absent — so the card works on older logger versions too. The dashed line
+    // = the weekly average.
     if (this._period === "week") {
+      const weeks = ((this._hass.states[`sensor.${D}_weekly_history`] || {}).attributes || {}).weeks;
+      if (Array.isArray(weeks) && weeks.length) {
+        // week_start is "YYYY-MM-DD" (Monday); split for a tz-safe DD/MM label.
+        const fmtWk = (ws) => { const a = String(ws).split("-"); return a.length === 3 ? `${a[2]}/${a[1]}` : String(ws); };
+        return weeks.slice(-16).map((w) => ({
+          label: fmtWk(w.week_start),
+          kwh: Number(w.energy_kwh) || 0,
+          km: Number(w.distance_km) || 0,
+          cost: Number(w.cost) || 0,
+        }));
+      }
+      // Fallback: sum recent_trips by ISO week (Monday-start), zero-filled from
+      // the earliest week with data up to the current week (capped at 16). Only
+      // spans what the recent_trips rolling window covers (~last weeks).
       const trips = ((this._hass.states[`sensor.${D}_recent_trips`] || {}).attributes || {}).trips || [];
       const wkStart = (iso) => { const x = new Date(iso); if (isNaN(x)) return null; x.setHours(0, 0, 0, 0); x.setDate(x.getDate() - ((x.getDay() + 6) % 7)); return x; };
       const byW = {}; let earliest = null;
