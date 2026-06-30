@@ -234,3 +234,36 @@ sensor. Handle absence gracefully (entity will be missing, not just unavailable)
 When the pending items land, the dashboard needs **no structural change**: the
 trip list auto-uses the bigger window and real destinations, and the records card
 auto-switches from "best of recent" to "best all-time".
+
+---
+
+## 6. Vehicle entity naming (brand maps)
+
+Building on §3c (the car-integration entities the cards consume), this section
+defines the canonical naming and how to remap it per brand.
+
+The cards reference the car integration's entities through the `__VEHICLE__`
+slug plus a **canonical suffix**. The canonical scheme is BYD's (the reference
+car). Cars with different entity names are supported via per-brand maps in
+`vehicle-maps/<brand>.map` applied by `scripts/apply-vehicle-map.sh <brand>`
+before the slug substitution.
+
+Canonical Group A suffixes (concept → where it is used):
+
+| Canonical suffix (BYD) | Domain | Concept |
+|---|---|---|
+| `front_left_tire_pressure` … `rear_right_tire_pressure` | `sensor` | TPMS, 4 wheels |
+| `location` | `device_tracker` | GPS tracker |
+| `power_system` | `binary_sensor` | car online/awake |
+| `state_of_health` | `sensor` | battery SoH |
+| `odometer` | `sensor` | odometer |
+| `exterior_temperature` / `cabin_temperature` | `sensor` | temperatures |
+
+Domains do not change across brands — a map only renames the **suffix**.
+
+To add a brand: copy `vehicle-maps/template.map`, set each right-hand suffix to
+your integration's real name (or `<token> <token>` if identical), delete lines
+for entities your car lacks, and run `scripts/apply-vehicle-map.sh <brand>`. The
+script's pre-flight lists any canonical token left unmapped. Group B telemetry
+(BYD-cloud consumption, `pm25_*`, doors/windows) is intentionally out of scope —
+those cards degrade on their own when the entities are absent.
