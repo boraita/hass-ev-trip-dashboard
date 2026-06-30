@@ -46,5 +46,28 @@ t2() {
   fi
 }
 
-t1; t2
+# --- Test 3: no false positive — odometer/cabin are declared no-ops ---
+t3() {
+  local d=/tmp/tvm_t3; setup_cards "$d"
+  local out; out=$(scripts/apply-vehicle-map.sh tesla "$d" 2>&1 >/dev/null)
+  if echo "$out" | grep -q "pre-flight"; then
+    die "preflight-no-false-positive" "reported a token despite all being mapped/no-op: $out"
+  else
+    pass "pre-flight silent when every Group A token is mapped or no-op"
+  fi
+}
+
+# --- Test 4: detects a Group A token with no map entry at all ---
+t4() {
+  local d=/tmp/tvm_t4; setup_cards "$d"
+  # exterior_temperature is in tesla.map; remove it to simulate "forgotten"
+  grep -v '^exterior_temperature' vehicle-maps/tesla.map > /tmp/tvm_t4.map
+  echo '        g: sensor.__VEHICLE___exterior_temperature' >> "$d/sample.yaml"
+  local out; out=$(VEHICLE_MAP_OVERRIDE=/tmp/tvm_t4.map scripts/apply-vehicle-map.sh tesla "$d" 2>&1 >/dev/null)
+  echo "$out" | grep -q "exterior_temperature" \
+    && pass "pre-flight reports an unmapped Group A token" \
+    || die "preflight-detects-new" "did not report exterior_temperature: $out"
+}
+
+t1; t2; t3; t4
 [ "$fail" -eq 0 ] && echo "ALL PASS" || { echo "SOME FAILED"; exit 1; }

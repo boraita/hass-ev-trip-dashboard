@@ -13,7 +13,7 @@ cd "$(dirname "$0")/.."
 
 brand="${1:?usage: apply-vehicle-map.sh <brand> [cards-dir]}"
 cards_dir="${2:-cards}"
-map="vehicle-maps/${brand}.map"
+map="${VEHICLE_MAP_OVERRIDE:-vehicle-maps/${brand}.map}"
 
 [ -f "$map" ] || { echo "ERROR: map not found: $map" >&2; exit 1; }
 [ -d "$cards_dir" ] || { echo "ERROR: cards dir not found: $cards_dir" >&2; exit 1; }
@@ -35,4 +35,21 @@ while read -r canonical real _; do
   done
 done < "$map"
 
+# Pre-flight: warn about Group A tokens still in BYD-canonical form that are
+# NOT listed in the map at all (a no-op entry counts as "listed" = intentional).
+GROUP_A="front_left_tire_pressure front_right_tire_pressure \
+rear_left_tire_pressure rear_right_tire_pressure location power_system \
+state_of_health exterior_temperature odometer cabin_temperature"
+unmapped=""
+for t in $GROUP_A; do
+  if grep -rqE "__VEHICLE___${t}([^A-Za-z0-9_]|\$)" "$cards_dir" 2>/dev/null; then
+    if ! awk -v k="$t" '$1==k {f=1} END{exit !f}' "$map"; then
+      unmapped="${unmapped} ${t}"
+    fi
+  fi
+done
+if [ -n "$unmapped" ]; then
+  echo "pre-flight: Group A tokens left unmapped (not listed in $map):" >&2
+  for t in $unmapped; do echo "  - $t" >&2; done
+fi
 echo "applied $map to $cards_dir/"
