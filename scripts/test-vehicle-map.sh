@@ -73,7 +73,7 @@ t4() {
 #     real cards reproduces the hand-remapped Group A refs in the wired cards. ---
 t5() {
   local d=/tmp/tvm_t5; rm -rf "$d"; cp -r cards "$d"
-  scripts/apply-vehicle-map.sh tesla "$d" >/dev/null 2>&1
+  scripts/apply-vehicle-map.sh tesla "$d" >/dev/null 2>&1 || { die "equivalence" "apply-vehicle-map.sh failed in t5"; return; }
   # slug substitution (same as the install pipeline)
   for f in "$d"/*.yaml; do
     sed -e 's/__VEHICLE__/relampago/g' -e 's/__DEVICE__/relampago/g' "$f" > "$f.s" && mv "$f.s" "$f"
