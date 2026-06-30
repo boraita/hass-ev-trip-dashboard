@@ -28,6 +28,7 @@ while read -r canonical real _; do
   [ -z "${real:-}" ] && continue
   [ "$real" = "$canonical" ] && continue
   for f in "$cards_dir"/*.yaml; do
+    [ -e "$f" ] || continue
     sed -E \
       -e "s/__VEHICLE___${canonical}([^A-Za-z0-9_])/__VEHICLE___${real}\1/g" \
       -e "s/__VEHICLE___${canonical}\$/__VEHICLE___${real}/g" \

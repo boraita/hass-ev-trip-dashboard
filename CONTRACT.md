@@ -266,4 +266,7 @@ your integration's real name (or `<token> <token>` if identical), delete lines
 for entities your car lacks, and run `scripts/apply-vehicle-map.sh <brand>`. The
 script's pre-flight lists any canonical token left unmapped. Group B telemetry
 (BYD-cloud consumption, `pm25_*`, doors/windows) is intentionally out of scope —
-those cards degrade on their own when the entities are absent.
+those cards degrade on their own when the entities are absent. Note: the brand
+map covers the dashboard **cards** only; the `packages/vehicle-on-from-speed.yaml`
+helper also uses `__VEHICLE__` tokens (`vehicle_on`, `speed`, `power`) which are
+not Group A and must be mapped separately by the brand integrator.
