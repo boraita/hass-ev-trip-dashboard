@@ -69,5 +69,27 @@ t4() {
     || die "preflight-detects-new" "did not report exterior_temperature: $out"
 }
 
-t1; t2; t3; t4
+# --- Test 5: equivalence — apply tesla.map + slug sub to a clean copy of the
+#     real cards reproduces the hand-remapped Group A refs in the wired cards. ---
+t5() {
+  local d=/tmp/tvm_t5; rm -rf "$d"; cp -r cards "$d"
+  scripts/apply-vehicle-map.sh tesla "$d" >/dev/null 2>&1
+  # slug substitution (same as the install pipeline)
+  for f in "$d"/*.yaml; do
+    sed -e 's/__VEHICLE__/relampago/g' -e 's/__DEVICE__/relampago/g' "$f" > "$f.s" && mv "$f.s" "$f"
+  done
+  local got; got=$(grep -rhoE \
+    "(sensor|binary_sensor|device_tracker)\.relampago_(tpms_[a-z_]+|location_tracker|online|battery_state_of_health|odometer)" \
+    "$d/resumen-vehicle.yaml" "$d/trip-detail.yaml" | sort -u)
+  local want; want=$(sort -u tests/fixtures/tesla-expected-group-a.txt)
+  if [ "$got" = "$want" ] \
+     && ! grep -rqE "relampago_(front_left_tire_pressure|power_system|state_of_health)" \
+          "$d/resumen-vehicle.yaml" "$d/trip-detail.yaml"; then
+    pass "equivalence: script reproduces hand-remapped wired cards"
+  else
+    die "equivalence" "Group A refs differ from fixture or BYD names remain"
+  fi
+}
+
+t1; t2; t3; t4; t5
 [ "$fail" -eq 0 ] && echo "ALL PASS" || { echo "SOME FAILED"; exit 1; }

@@ -1,0 +1,8 @@
+binary_sensor.relampago_online
+device_tracker.relampago_location_tracker
+sensor.relampago_battery_state_of_health
+sensor.relampago_odometer
+sensor.relampago_tpms_front_left
+sensor.relampago_tpms_front_right
+sensor.relampago_tpms_rear_left
+sensor.relampago_tpms_rear_right
