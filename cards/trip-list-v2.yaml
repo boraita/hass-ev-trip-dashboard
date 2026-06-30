@@ -166,6 +166,20 @@ cards:
       | {{ t.distance_km | default('—') }} km | {{ t.energy_kwh | default('—') }} kWh | {{ eff_display | trim }} | {{ t.cost | default('—') }} {{ t.currency | default('') }} | {% set s = t.score | float(0) %}{% if s >= 7 %}🟢{% elif s >= 4 %}🟡{% else %}🔴{% endif %} **{{ t.score | default('—') }}** |
 
       _{{ t.origin | default('—') }} → {{ t.destination | default('—') }}_
+      {#- v0.7.2 — idle split chip. Only renders when the trip
+          captured ≥1 min of idle time AND the ratio is meaningful
+          (≥10 %). Color hints: ≥50 % = red, ≥25 % = amber, else
+          plain grey. Helps the user see at a glance that a high
+          headline kWh/100km is "AC mientras esperabas" rather than
+          conducción ineficiente. -#}
+      {%- set idle_min = t.idle_minutes %}
+      {%- set idle_pct = t.idle_ratio_pct %}
+      {%- set moving = t.moving_consumption_kwh_100km %}
+      {%- if idle_min is not none and idle_min >= 1 and idle_pct is not none and idle_pct >= 10 %}
+      {%- set chip = '🟠' if idle_pct >= 50 else ('🟡' if idle_pct >= 25 else '⚪') %}
+
+      <small>{{ chip }} Parado {{ idle_min | round(0) | int }} min ({{ idle_pct | round(0) | int }} %){% if moving is not none %} · en marcha {{ moving | round(1) }} kWh/100km{% endif %}</small>
+      {%- endif %}
       {#- Google-Maps route link: emit ONLY when origin != destination (skip round trips).
           Prefer precise lat/lon (v0.5.3+); fall back to text search by zone name. -#}
       {%- set same_place = (t.origin or '') | string == (t.destination or '') | string %}

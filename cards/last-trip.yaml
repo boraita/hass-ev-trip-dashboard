@@ -175,6 +175,51 @@ cards:
             - width: 28px
 
   # ---------------------------------------------------------------------------
+  # IDLE SPLIT — v0.7.2 surfaces "tiempo parado" + "consumo en marcha"
+  # so the user can tell when a high kWh/100km headline is "waited
+  # with AC on" rather than inefficient driving. Renders ONLY when
+  # the trip captured idle data (synth / recovered trips skip).
+  # The primary line shows minutes idle + ratio; the secondary line
+  # contrasts moving-only consumption with the headline so it's
+  # obvious how much of the consumption is parking-with-AC overhead.
+  # ---------------------------------------------------------------------------
+  - type: custom:mushroom-template-card
+    primary: >-
+      {% set t = state_attr('sensor.__DEVICE___recent_trips', 'trips')[0]
+                 if state_attr('sensor.__DEVICE___recent_trips', 'trips')
+                 else none %}
+      {% if t and t.idle_minutes is not none and t.idle_minutes > 0 %}
+        Parado: {{ t.idle_minutes | round(0) | int }} min
+        {%- if t.idle_ratio_pct is not none %}
+        · {{ t.idle_ratio_pct | round(0) | int }} % del viaje
+        {%- endif %}
+      {% endif %}
+    secondary: >-
+      {% set t = state_attr('sensor.__DEVICE___recent_trips', 'trips')[0]
+                 if state_attr('sensor.__DEVICE___recent_trips', 'trips')
+                 else none %}
+      {% if t and t.idle_minutes is not none and t.idle_minutes > 0 %}
+        Consumo en marcha: {{ t.moving_consumption_kwh_100km | round(1) }} kWh/100km
+        {%- if t.idle_energy_kwh_est is not none %}
+        · {{ t.idle_energy_kwh_est | round(2) }} kWh evaporados esperando
+        {%- endif %}
+      {% endif %}
+    icon: >-
+      {% set t = state_attr('sensor.__DEVICE___recent_trips', 'trips')[0]
+                 if state_attr('sensor.__DEVICE___recent_trips', 'trips')
+                 else none %}
+      {% set ratio = (t.idle_ratio_pct if t else 0) or 0 %}
+      {{ 'mdi:car-clock' if ratio >= 30 else 'mdi:timer-pause-outline' }}
+    icon_color: >-
+      {% set t = state_attr('sensor.__DEVICE___recent_trips', 'trips')[0]
+                 if state_attr('sensor.__DEVICE___recent_trips', 'trips')
+                 else none %}
+      {% set ratio = (t.idle_ratio_pct if t else 0) or 0 %}
+      {% if ratio >= 50 %}red{% elif ratio >= 25 %}amber{% else %}grey{% endif %}
+    fill_container: true
+    multiline_secondary: true
+
+  # ---------------------------------------------------------------------------
   # COST — full-width emphasis row.
   # v0.5.76 — also shows cost_basis_per_kwh (weighted €/kWh from the FIFO
   # inventory the kWh of this trip actually drew from).
