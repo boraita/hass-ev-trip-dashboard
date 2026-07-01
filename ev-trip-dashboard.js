@@ -4281,17 +4281,34 @@ customElements.define("ev-trip-eff-trend-card", EvTripEffTrendCard);
 window.customCards.push({ type: "ev-trip-eff-trend-card", name: "EV Trip — consumption trend", description: "Average consumption (kWh/100km) as a filled line chart per day/week/month, with your-average and model reference lines." });
 
 // ==========================================================================
-// Custom card: charger vs battery vs driving, as big icon tiles, per
-// week/month/year so the periods are easy to compare. Charger/battery come
-// from the byd_charge_analytics package sensors; driving (energy consumed) is
-// derived — week from recent_trips (current calendar week), month from
-// sensor.<D>_energy_this_month, year from monthly_history. Only rendered when
-// the package's charger sensor exists.
+// Custom card: charger vs battery vs driving, as one row of three icon tiles
+// with a week/month/year toggle (compact — fits a column without stacking a
+// grid per period). Charger/battery come from the byd_charge_analytics package
+// sensors; driving (energy consumed) is derived — week from recent_trips
+// (current calendar week), month from sensor.<D>_energy_this_month, year from
+// monthly_history. Only rendered when the package's charger sensor exists.
 // ==========================================================================
 class EvChargeSummaryCard extends HTMLElement {
-  setConfig(config) { this._config = config || {}; this._device = this._config.device || null; }
+  setConfig(config) {
+    this._config = config || {};
+    this._device = this._config.device || null;
+    try { const m = localStorage.getItem("evChargeSummaryPeriod"); this._period = ["week", "month", "year"].includes(m) ? m : "week"; }
+    catch (_e) { this._period = "week"; }
+  }
   set hass(hass) { this._hass = hass; this._render(); }
-  getCardSize() { return 6; }
+  getCardSize() { return 3; }
+  connectedCallback() {
+    if (this._bound) return;
+    this._bound = true;
+    this.addEventListener("click", (ev) => {
+      const b = ev.target && ev.target.closest && ev.target.closest(".cs-btn[data-m]");
+      if (b && this.contains(b)) {
+        this._period = b.getAttribute("data-m");
+        try { localStorage.setItem("evChargeSummaryPeriod", this._period); } catch (_e) {}
+        this._render();
+      }
+    });
+  }
   _num(id) { const s = this._hass.states[id]; const v = s ? parseFloat(s.state) : NaN; return isNaN(v) ? null : v; }
   _starts() {
     const now = new Date();
@@ -4339,6 +4356,7 @@ class EvChargeSummaryCard extends HTMLElement {
   _render() {
     if (!this._hass) return;
     _setUiLang(this._hass);
+    if (!this._bound && typeof this.addEventListener === "function") this.connectedCallback();
     const D = this._device || detectDevice(this._hass); this._device = D;
     const f1 = (v) => (v == null || isNaN(v) ? "—" : Number(v).toFixed(1));
     const s = this._starts();
@@ -4367,35 +4385,31 @@ class EvChargeSummaryCard extends HTMLElement {
       const chg = eff != null && eff > 0 && bat != null ? bat / (eff / 100) : null;
       return { bat, chg, eff, n, drv };
     };
-    const periods = [
-      { label: L("Today", "Hoy"), kind: "today", start: s.today },
-      { label: L("This week", "Esta semana"), kind: "week", start: s.week },
-      { label: L("This month", "Este mes"), kind: "month", start: s.month },
-      { label: L("This year", "Este año"), kind: "year", start: s.year },
-    ];
+    const startOf = { week: s.week, month: s.month, year: s.year };
+    const r = resolve(this._period, startOf[this._period]);
+    const nSub = r.n ? `${r.n} ${L(r.n === 1 ? "charge" : "charges", r.n === 1 ? "carga" : "cargas")}` : L("no charges", "sin cargas");
+    const effSub = r.eff != null ? `${r.eff.toFixed(0)}% eff` : (r.n ? L("needs EVSE", "falta EVSE") : "");
     const tile = (icon, clr, lbl, val, sub) =>
       `<div class="cv-tile"><ha-icon icon="${icon}" style="color:${clr}"></ha-icon><div class="cv-lbl">${lbl}</div><div class="cv-val">${val}<span class="cv-u"> kWh</span></div>${sub ? `<div class="cv-sub">${sub}</div>` : ""}</div>`;
-    const rows = periods.map((p) => {
-      const r = resolve(p.kind, p.start);
-      const nSub = r.n ? `${r.n} ${L(r.n === 1 ? "charge" : "charges", r.n === 1 ? "carga" : "cargas")}` : L("no charges", "sin cargas");
-      const effSub = r.eff != null ? `${r.eff.toFixed(0)}% eff` : (r.n ? L("needs EVSE", "falta EVSE") : "");
-      return `
-        <div class="cv-period">${_esc(p.label)}</div>
-        <div class="cv-grid">
-          ${tile("mdi:ev-station", "var(--info-color,#039be5)", L("From charger", "Del cargador"), f1(r.chg), effSub)}
-          ${tile("mdi:car-battery", "var(--success-color,#43a047)", L("To battery", "A batería"), f1(r.bat), nSub)}
-          ${tile("mdi:car-electric", "var(--error-color,#e53935)", L("Driving", "Conducción"), f1(r.drv), "")}
-        </div>`;
-    }).join("");
+    // Single period, switchable — keeps the card to one row of three tiles so it
+    // sits cleanly in a column (no more stacked per-period grids).
+    const seg = [["week", L("Week", "Semana")], ["month", L("Month", "Mes")], ["year", L("Year", "Año")]]
+      .map(([m, lbl]) => `<button class="cs-btn${m === this._period ? " on" : ""}" data-m="${m}">${lbl}</button>`).join("");
     this.innerHTML = `<ha-card>
-      <div class="cv-head"><ha-icon icon="mdi:transmission-tower"></ha-icon>${L("Charger · battery · driving", "Cargador · batería · conducción")}</div>
-      ${rows}
+      <div class="cv-head"><ha-icon icon="mdi:transmission-tower"></ha-icon><span class="cv-title">${L("Charger · battery · driving", "Cargador · batería · conducción")}</span><div class="cs-seg">${seg}</div></div>
+      <div class="cv-grid">
+        ${tile("mdi:ev-station", "var(--info-color,#039be5)", L("From charger", "Del cargador"), f1(r.chg), effSub)}
+        ${tile("mdi:car-battery", "var(--success-color,#43a047)", L("To battery", "A batería"), f1(r.bat), nSub)}
+        ${tile("mdi:car-electric", "var(--error-color,#e53935)", L("Driving", "Conducción"), f1(r.drv), "")}
+      </div>
       <style>
-        .cv-head{display:flex;align-items:center;gap:7px;padding:14px 16px 4px;font-weight:600;font-size:1.05em;}
+        .cv-head{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:6px;padding:14px 16px 8px;font-weight:600;font-size:1.05em;}
         .cv-head ha-icon{--mdc-icon-size:20px;color:var(--primary-color);}
-        .cv-period{padding:10px 16px 2px;font-size:.78em;font-weight:700;letter-spacing:.04em;
-                   text-transform:uppercase;color:var(--secondary-text-color);}
-        .cv-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;padding:0 12px 4px;}
+        .cv-title{flex:1 1 auto;}
+        .cs-seg{display:inline-flex;gap:2px;background:var(--secondary-background-color,rgba(0,0,0,.06));border:1px solid var(--divider-color);border-radius:999px;padding:2px;}
+        .cs-btn{cursor:pointer;border:0;background:transparent;color:var(--secondary-text-color);font-weight:700;font-size:.72em;padding:4px 10px;border-radius:999px;}
+        .cs-btn.on{background:var(--primary-color);color:var(--text-primary-color,#fff);}
+        .cv-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;padding:0 12px 14px;}
         .cv-tile{display:flex;flex-direction:column;align-items:center;text-align:center;gap:3px;
                  background:var(--secondary-background-color,var(--card-background-color));
                  border:1px solid var(--divider-color);border-radius:14px;padding:12px 6px;}
@@ -4409,7 +4423,7 @@ class EvChargeSummaryCard extends HTMLElement {
   }
 }
 customElements.define("ev-charge-summary-card", EvChargeSummaryCard);
-window.customCards.push({ type: "ev-charge-summary-card", name: "EV Trip — charged vs driving", description: "Real charged (recent_charges) vs driving kWh as icon tiles, per today/week/month/year." });
+window.customCards.push({ type: "ev-charge-summary-card", name: "EV Trip — charged vs driving", description: "Real charged (recent_charges) vs driving kWh as one row of icon tiles, with a week/month/year toggle." });
 
 // ==========================================================================
 // Custom card: monthly activity calendar built from EXISTING data —
