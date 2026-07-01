@@ -4054,25 +4054,30 @@ class EvTripConsumptionCard extends HTMLElement {
       const pct = Math.round((b.kwh / maxV) * 100);
       const cur = i === bars.length - 1;
       const lbl = lblIdx.has(i) ? `<div class="cc-lbl">${_esc(b.label)}</div>` : "";
-      const tip = `${_esc(b.label)} — ${f1(b.kwh)} kWh${b.km ? ` · ${f0(b.km)} km` : ""}`;
+      const c = b.km > 0 ? (b.kwh / b.km) * 100 : null;
+      const tip = `${_esc(b.label)} — ${f1(b.kwh)} kWh${b.km ? ` · ${f0(b.km)} km` : ""}${c != null ? ` · ${f1(c)} kWh/100km` : ""}`;
       return `<div class="cc-bar${cur ? " cc-cur" : ""}" title="${tip}"><div class="cc-fill" style="height:${pct}%"></div>${lbl}</div>`;
     }).join("");
     const avgPct = Math.round((avg / maxV) * 100);
     const avgLine = avg > 0 ? `<div class="cc-avg" style="bottom:${22 + (avgPct / 100) * (104 - 22)}px"></div><div class="cc-avglbl" style="bottom:${22 + (avgPct / 100) * (104 - 22)}px">${L("avg", "media")} ${f1(avg)}</div>` : "";
+    // kWh/100km for a (kwh, km) pair — same formula as the logger's
+    // avg_consumption_kwh_100km. Null when no distance (avoids /0 nonsense).
+    const consLbl = (kwh, km) => (km > 0 ? ` · ${f1((kwh / km) * 100)} kWh/100km` : "");
     // Headline: Day → window total + per-active-day; Month/Year → current bucket.
     let heroNum, heroSub;
     if (this._period === "day") {
       const tot = bars.reduce((a, b) => a + b.kwh, 0);
+      const totKm = bars.reduce((a, b) => a + b.km, 0);
       heroNum = f1(tot);
-      heroSub = `${L("last 21 days", "últimos 21 días")} · ${nonzero.length} ${L("active days", "días activos")} · ${f1(avg)} kWh/${L("day", "día")}`;
+      heroSub = `${L("last 21 days", "últimos 21 días")} · ${nonzero.length} ${L("active days", "días activos")} · ${f1(avg)} kWh/${L("day", "día")}${consLbl(tot, totKm)}`;
     } else if (this._period === "week") {
       const cur = bars[bars.length - 1];
       heroNum = f1(cur.kwh);
-      heroSub = `${L("this week", "esta semana")}${cur.km ? ` · ${f0(cur.km)} km` : ""} · ${nonzero.length} ${L("active weeks", "semanas activas")} · ${f1(avg)} kWh/${L("wk", "sem")}`;
+      heroSub = `${L("this week", "esta semana")}${cur.km ? ` · ${f0(cur.km)} km` : ""} · ${nonzero.length} ${L("active weeks", "semanas activas")} · ${f1(avg)} kWh/${L("wk", "sem")}${consLbl(cur.kwh, cur.km)}`;
     } else {
       const cur = bars[bars.length - 1];
       heroNum = f1(cur.kwh);
-      heroSub = `${_esc(cur.label)}${cur.km ? ` · ${f0(cur.km)} km` : ""}${cur.cost ? ` · ${f1(cur.cost)} ${_esc(sym)}` : ""}`;
+      heroSub = `${_esc(cur.label)}${cur.km ? ` · ${f0(cur.km)} km` : ""}${cur.cost ? ` · ${f1(cur.cost)} ${_esc(sym)}` : ""}${consLbl(cur.kwh, cur.km)}`;
     }
     this.innerHTML = `<ha-card>
       ${head}
