@@ -866,6 +866,12 @@ function eficienciaView(D, hass, V, cfg) {
       "[[[ const n = entity && Number(entity.state); return (n==null||isNaN(n)) ? '—' : `${n.toFixed(1)} kWh/100km`; ]]]",
   });
 
+  // ---- Average consumption TREND (kWh/100km) — filled line chart, the
+  // "am I using more or less lately?" view (7 days / week / month) with a
+  // your-average and (when available) model reference line. Easier to read
+  // than bars for spotting the trend.
+  cards.push({ type: "custom:ev-trip-eff-trend-card", device: D });
+
   // ---- Energy consumed (kWh) per day / month / year, with a period toggle --
   cards.push({ type: "custom:ev-trip-consumption-card", device: D });
 
@@ -4079,6 +4085,195 @@ class EvTripConsumptionCard extends HTMLElement {
 }
 customElements.define("ev-trip-consumption-card", EvTripConsumptionCard);
 window.customCards.push({ type: "ev-trip-consumption-card", name: "EV Trip — consumption (day/month/year)", description: "Energy consumed (kWh) per day, month or year with a period toggle." });
+
+// ==========================================================================
+// Custom card: AVERAGE CONSUMPTION TREND (kWh/100km) as a filled line chart —
+// the "am I using more or less lately?" view (mirrors the BYD app's 7-day
+// consumption graph). Points per day (last 7) / ISO week / month, computed
+// from recent_trips (day/week) or monthly_history (month). Draws the value at
+// each point, a dashed "your average" line over the shown period, and — when
+// the car exposes a model-average consumption sensor (e.g. BYD) — a second
+// dashed "model" reference line. Fixed to kWh/100km (the natural unit here).
+// ==========================================================================
+class EvTripEffTrendCard extends HTMLElement {
+  setConfig(config) {
+    this._config = config || {};
+    this._device = this._config.device || null;
+    try { const m = localStorage.getItem("evTripEffTrendPeriod"); this._period = ["day", "week", "month"].includes(m) ? m : "day"; }
+    catch (_e) { this._period = "day"; }
+  }
+  set hass(hass) { this._hass = hass; this._render(); }
+  getCardSize() { return 4; }
+  connectedCallback() {
+    if (this._bound) return;
+    this._bound = true;
+    this.addEventListener("click", (ev) => {
+      const b = ev.target && ev.target.closest && ev.target.closest(".et-btn[data-m]");
+      if (b && this.contains(b)) {
+        this._period = b.getAttribute("data-m");
+        try { localStorage.setItem("evTripEffTrendPeriod", this._period); } catch (_e) {}
+        this._render();
+      }
+    });
+  }
+  // The car/model average consumption (kWh/100km) if any sensor exposes it —
+  // e.g. BYD's `..._model_average_consumption_avg_30d`. null when absent.
+  _modelAvg() {
+    const D = this._device; const pref = `sensor.${D}`;
+    let best = null, best7 = null;
+    for (const id in this._hass.states) {
+      if (id.indexOf(pref) !== 0 || !/model_average_consumption/.test(id)) continue;
+      const v = parseFloat(this._hass.states[id].state); if (isNaN(v) || v <= 0) continue;
+      if (/30d/.test(id)) best = v; else if (/7d/.test(id)) best7 = v; else if (best == null) best = v;
+    }
+    return best != null ? best : best7;
+  }
+  // [{label, v (kWh/100km, 0 when no km), km, active}] for the active period.
+  _buckets(D) {
+    const mk = (label, energy, km) => ({ label, km, v: km > 0 ? (energy / km) * 100 : 0, active: km > 0 });
+    if (this._period === "month") {
+      const months = ((this._hass.states[`sensor.${D}_monthly_history`] || {}).attributes || {}).months;
+      if (!Array.isArray(months) || !months.length) return [];
+      return months.slice(-8).map((m) => mk(_fmtMonth(m.month), Number(m.energy_kwh) || 0, Number(m.distance_km) || 0));
+    }
+    const trips = ((this._hass.states[`sensor.${D}_recent_trips`] || {}).attributes || {}).trips || [];
+    const p = (n) => String(n).padStart(2, "0");
+    if (this._period === "week") {
+      const wkStart = (iso) => { const x = new Date(iso); if (isNaN(x)) return null; x.setHours(0, 0, 0, 0); x.setDate(x.getDate() - ((x.getDay() + 6) % 7)); return x; };
+      const byW = {}; let earliest = null;
+      for (const t of trips) {
+        const ws = wkStart(t.started_at || t.ended_at); if (!ws) continue;
+        const k = _localDateKey(ws.toISOString());
+        const e = byW[k] || (byW[k] = { energy: 0, km: 0 });
+        e.energy += Number(t.energy_kwh) || 0; e.km += Number(t.distance_km) || 0;
+        if (!earliest || ws < earliest) earliest = ws;
+      }
+      if (!earliest) return [];
+      const cur = wkStart(new Date().toISOString());
+      const minStart = new Date(cur); minStart.setDate(minStart.getDate() - 7 * 7);
+      if (earliest < minStart) earliest = minStart;
+      const out = [];
+      for (const w = new Date(earliest); w <= cur; w.setDate(w.getDate() + 7)) {
+        const e = byW[_localDateKey(w.toISOString())] || { energy: 0, km: 0 };
+        out.push(mk(`${p(w.getDate())}/${p(w.getMonth() + 1)}`, e.energy, e.km));
+      }
+      return out;
+    }
+    // day: last 7 days including today
+    const byD = {};
+    for (const t of trips) {
+      const k = _localDateKey(t.started_at || t.ended_at); if (!k) continue;
+      const e = byD[k] || (byD[k] = { energy: 0, km: 0 });
+      e.energy += Number(t.energy_kwh) || 0; e.km += Number(t.distance_km) || 0;
+    }
+    const out = []; const now = new Date();
+    for (let i = 6; i >= 0; i--) {
+      const d = new Date(now); d.setDate(d.getDate() - i);
+      const e = byD[_localDateKey(d.toISOString())] || { energy: 0, km: 0 };
+      out.push(mk(i === 0 ? L("Today", "Hoy") : `${p(d.getDate())}-${p(d.getMonth() + 1)}`, e.energy, e.km));
+    }
+    return out;
+  }
+  _render() {
+    if (!this._hass) return;
+    _setUiLang(this._hass);
+    if (!this._bound && typeof this.addEventListener === "function") this.connectedCallback();
+    const D = this._device || detectDevice(this._hass); this._device = D;
+    const seg = [["day", L("7 days", "7 días")], ["week", L("Week", "Semana")], ["month", L("Month", "Mes")]]
+      .map(([m, lbl]) => `<button class="et-btn${m === this._period ? " on" : ""}" data-m="${m}">${lbl}</button>`).join("");
+    const head = `<div class="et-head"><span>${L("Avg consumption", "Consumo medio")} <b>kWh/100km</b></span><div class="et-seg">${seg}</div></div>`;
+    const css = `
+      .et-head{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px;padding:14px 16px 4px;font-weight:600;font-size:1.05em;}
+      .et-head b{color:var(--secondary-text-color);font-weight:600;font-size:.8em;}
+      .et-seg{display:inline-flex;gap:2px;background:var(--secondary-background-color,rgba(0,0,0,.06));border:1px solid var(--divider-color);border-radius:999px;padding:2px;}
+      .et-btn{cursor:pointer;border:0;background:transparent;color:var(--secondary-text-color);font-weight:700;font-size:.72em;padding:4px 10px;border-radius:999px;}
+      .et-btn.on{background:var(--primary-color);color:var(--text-primary-color,#fff);}
+      .et-legend{display:flex;gap:14px;flex-wrap:wrap;padding:2px 16px 4px;font-size:.72em;color:var(--secondary-text-color);}
+      .et-legend i{font-style:normal;display:inline-flex;align-items:center;gap:5px;}
+      .et-swatch{width:16px;height:0;border-top:3px solid var(--et-line,#26a69a);border-radius:2px;}
+      .et-swatch.dash{border-top:2px dashed var(--secondary-text-color);}
+      .et-swatch.model{border-top:2px dashed var(--et-model,#f59e0b);}
+      .et-hero{padding:0 16px 2px;font-size:.85em;color:var(--secondary-text-color);font-variant-numeric:tabular-nums;}
+      .et-hero b{font-size:1.7em;color:var(--primary-text-color);font-weight:800;}
+      .et-svg{display:block;width:100%;height:auto;padding:4px 4px 8px;box-sizing:border-box;}
+      .et-empty{padding:12px 16px 20px;color:var(--secondary-text-color);}`;
+    const bars = this._buckets(D);
+    if (!bars.length) {
+      this.innerHTML = `<ha-card>${head}<div class="et-empty">${L("No consumption data yet for this period.", "Aún sin datos de consumo para este periodo.")}</div><style>${css}</style></ha-card>`;
+      return;
+    }
+    const active = bars.filter((b) => b.active);
+    const myAvg = active.length ? active.reduce((a, b) => a + b.v, 0) / active.length : 0;
+    const model = this._modelAvg();
+    // ---- SVG geometry ----
+    const W = 360, H = 200, PL = 30, PR = 12, PT = 24, PB = 24;
+    const x0 = PL, x1 = W - PR, y0 = PT, y1 = H - PB;
+    const rawMax = Math.max(...bars.map((b) => b.v), myAvg, model || 0, 1);
+    const niceStep = (x) => { const pw = Math.pow(10, Math.floor(Math.log10(x))); const f = x / pw; const n = f <= 1 ? 1 : f <= 2 ? 2 : f <= 5 ? 5 : 10; return n * pw; };
+    const step = niceStep(rawMax / 4);
+    const yMax = Math.max(step, Math.ceil((rawMax * 1.1) / step) * step);
+    const n = bars.length;
+    const sx = (i) => (n > 1 ? x0 + (i / (n - 1)) * (x1 - x0) : (x0 + x1) / 2);
+    const sy = (v) => y1 - (v / yMax) * (y1 - y0);
+    // gridlines + y labels
+    let grid = "";
+    for (let g = 0; g <= yMax + 0.001; g += step) {
+      const yy = sy(g).toFixed(1);
+      grid += `<line x1="${x0}" y1="${yy}" x2="${x1}" y2="${yy}" class="et-grid"/><text x="${x0 - 5}" y="${(sy(g) + 3).toFixed(1)}" text-anchor="end" class="et-yl">${g % 1 === 0 ? g : g.toFixed(0)}</text>`;
+    }
+    // area + line
+    const pts = bars.map((b, i) => [sx(i), sy(b.v)]);
+    const line = pts.map((pt, i) => `${i ? "L" : "M"}${pt[0].toFixed(1)},${pt[1].toFixed(1)}`).join(" ");
+    const area = `M${pts[0][0].toFixed(1)},${y1} ` + pts.map((pt) => `L${pt[0].toFixed(1)},${pt[1].toFixed(1)}`).join(" ") + ` L${pts[n - 1][0].toFixed(1)},${y1} Z`;
+    // dots + value labels
+    const dots = bars.map((b, i) => {
+      const [px, py] = pts[i];
+      const anchor = i === 0 ? "start" : i === n - 1 ? "end" : "middle";
+      const lbl = `<text x="${px.toFixed(1)}" y="${(py - 8).toFixed(1)}" text-anchor="${anchor}" class="et-pl">${b.v.toFixed(1)}</text>`;
+      return `<circle cx="${px.toFixed(1)}" cy="${py.toFixed(1)}" r="3.2" class="et-dot"/>${lbl}`;
+    }).join("");
+    // x labels
+    const xls = bars.map((b, i) => {
+      const anchor = i === 0 ? "start" : i === n - 1 ? "end" : "middle";
+      return `<text x="${sx(i).toFixed(1)}" y="${H - 6}" text-anchor="${anchor}" class="et-xl">${_esc(b.label)}</text>`;
+    }).join("");
+    // reference dashed lines
+    const refMy = `<line x1="${x0}" y1="${sy(myAvg).toFixed(1)}" x2="${x1}" y2="${sy(myAvg).toFixed(1)}" class="et-ref"/>`;
+    const refModel = model != null ? `<line x1="${x0}" y1="${sy(model).toFixed(1)}" x2="${x1}" y2="${sy(model).toFixed(1)}" class="et-ref model"/>` : "";
+    const gid = `etg-${_esc(String(D))}`;
+    const svg = `<svg viewBox="0 0 ${W} ${H}" class="et-svg">
+      <defs><linearGradient id="${gid}" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0%" stop-color="var(--et-line,#26a69a)" stop-opacity="0.35"/>
+        <stop offset="100%" stop-color="var(--et-line,#26a69a)" stop-opacity="0.02"/>
+      </linearGradient></defs>
+      ${grid}
+      <path d="${area}" fill="url(#${gid})"/>
+      <path d="${line}" class="et-linep"/>
+      ${refMy}${refModel}${dots}${xls}
+      <style>
+        .et-grid{stroke:var(--divider-color);stroke-width:1;opacity:.5;}
+        .et-yl{fill:var(--secondary-text-color);font-size:9px;}
+        .et-xl{fill:var(--secondary-text-color);font-size:9px;}
+        .et-pl{fill:var(--primary-text-color);font-size:9.5px;font-weight:700;}
+        .et-linep{fill:none;stroke:var(--et-line,#26a69a);stroke-width:2.5;stroke-linejoin:round;stroke-linecap:round;}
+        .et-dot{fill:var(--et-line,#26a69a);stroke:var(--card-background-color,#fff);stroke-width:1.5;}
+        .et-ref{stroke:var(--secondary-text-color);stroke-width:1.5;stroke-dasharray:5 4;opacity:.65;}
+        .et-ref.model{stroke:var(--et-model,#f59e0b);opacity:.8;}
+      </style>
+    </svg>`;
+    const legend = `<div class="et-legend">
+      <i><span class="et-swatch"></span>${L("You", "Yo")}</i>
+      <i><span class="et-swatch dash"></span>${L("your avg", "tu media")} ${myAvg.toFixed(1)}</i>
+      ${model != null ? `<i><span class="et-swatch model"></span>${L("model", "modelo")} ${model.toFixed(1)}</i>` : ""}
+    </div>`;
+    const trend = active.length >= 2 ? active[active.length - 1].v - active[0].v : 0;
+    const arrow = trend < -0.3 ? "▼" : trend > 0.3 ? "▲" : "→";
+    const hero = `<div class="et-hero"><b>${myAvg.toFixed(1)}</b> kWh/100km · ${L("avg over", "media de")} ${active.length} ${this._period === "day" ? L("active days", "días activos") : this._period === "week" ? L("weeks", "semanas") : L("months", "meses")} · ${arrow}</div>`;
+    this.innerHTML = `<ha-card style="--et-line:#26a69a;--et-model:#f59e0b;">${head}${hero}${legend}${svg}<style>${css}</style></ha-card>`;
+  }
+}
+customElements.define("ev-trip-eff-trend-card", EvTripEffTrendCard);
+window.customCards.push({ type: "ev-trip-eff-trend-card", name: "EV Trip — consumption trend", description: "Average consumption (kWh/100km) as a filled line chart per day/week/month, with your-average and model reference lines." });
 
 // ==========================================================================
 // Custom card: charger vs battery vs driving, as big icon tiles, per
