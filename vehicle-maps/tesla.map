@@ -1,0 +1,13 @@
+# Tesla via the tesla_custom integration. Maps BYD-canonical entity
+# suffixes (left) to Tesla's real suffixes (right). real == canonical
+# is an explicit no-op (kept so the pre-flight knows it is intentional).
+front_left_tire_pressure   tpms_front_left
+front_right_tire_pressure  tpms_front_right
+rear_left_tire_pressure    tpms_rear_left
+rear_right_tire_pressure   tpms_rear_right
+location                   location_tracker
+power_system               online
+state_of_health            battery_state_of_health
+exterior_temperature       temperature_outside
+odometer                   odometer
+cabin_temperature          cabin_temperature
