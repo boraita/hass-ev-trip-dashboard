@@ -4292,7 +4292,7 @@ class EvChargeSummaryCard extends HTMLElement {
   setConfig(config) {
     this._config = config || {};
     this._device = this._config.device || null;
-    try { const m = localStorage.getItem("evChargeSummaryPeriod"); this._period = ["week", "month", "year"].includes(m) ? m : "week"; }
+    try { const m = localStorage.getItem("evChargeSummaryPeriod"); this._period = ["week", "month", "year", "total"].includes(m) ? m : "week"; }
     catch (_e) { this._period = "week"; }
   }
   set hass(hass) { this._hass = hass; this._render(); }
@@ -4310,11 +4310,13 @@ class EvChargeSummaryCard extends HTMLElement {
     });
   }
   _num(id) { const s = this._hass.states[id]; const v = s ? parseFloat(s.state) : NaN; return isNaN(v) ? null : v; }
-  _starts() {
-    const now = new Date();
-    const today = new Date(now); today.setHours(0, 0, 0, 0);
-    const week = new Date(today); week.setDate(today.getDate() - ((now.getDay() + 6) % 7)); // Monday
-    return { today, week, month: new Date(now.getFullYear(), now.getMonth(), 1), year: new Date(now.getFullYear(), 0, 1) };
+  // Rolling look-back cutoffs (time BACKWARD), not calendar-to-date — so the
+  // card reads as "the last 7/30/365 days" and never looks empty early in a
+  // week/month. `total` = all-time.
+  _cutoffs() {
+    const now = Date.now();
+    const back = (days) => new Date(now - days * 86400000);
+    return { week: back(7), month: back(30), year: back(365), total: new Date(0) };
   }
   // Window aggregate from recent_charges since `start`. battery = Σ kwh (DC into
   // the pack); evse = Σ evse_energy_kwh over EVSE-metered charges (AC); matchBat
@@ -4346,11 +4348,17 @@ class EvChargeSummaryCard extends HTMLElement {
     }
     return any ? kwh : null;
   }
-  _drivingYear(D) {
+  // Driving kWh from monthly_history for months at/after `cutoff` (used for the
+  // year/total rows, where the ~50-trip window would badly undercount). A month
+  // is included when its start date is >= cutoff; total passes epoch → all.
+  _drivingHist(D, cutoff) {
     const months = ((this._hass.states[`sensor.${D}_monthly_history`] || {}).attributes || {}).months;
     if (!Array.isArray(months)) return null;
-    const y = String(new Date().getFullYear()); let kwh = 0, any = false;
-    for (const m of months) { if (String(m.month || "").slice(0, 4) === y) { const e = Number(m.energy_kwh); if (!isNaN(e)) { kwh += e; any = true; } } }
+    let kwh = 0, any = false;
+    for (const m of months) {
+      const md = new Date(String(m.month || "") + "-01"); if (isNaN(md) || md < cutoff) continue;
+      const e = Number(m.energy_kwh); if (!isNaN(e)) { kwh += e; any = true; }
+    }
     return any ? kwh : null;
   }
   _render() {
@@ -4359,41 +4367,37 @@ class EvChargeSummaryCard extends HTMLElement {
     if (!this._bound && typeof this.addEventListener === "function") this.connectedCallback();
     const D = this._device || detectDevice(this._hass); this._device = D;
     const f1 = (v) => (v == null || isNaN(v) ? "—" : Number(v).toFixed(1));
-    const s = this._starts();
-    // Resolve the four tiles for one period. Month/year read the logger's
-    // authoritative period sensors (the rolling recent_charges window can't
-    // represent a whole month/year — it caps at ~28 entries). Today/week have
-    // no per-day/week logger sensor, so they use the window. From-charger (AC)
-    // is DERIVED as battery ÷ efficiency so it stays physically consistent
-    // (AC ≥ DC) — the measured grid_* value is partial while only some charges
-    // are EVSE-metered, which otherwise reads as charger << battery.
-    const resolve = (kind, start) => {
+    const cut = this._cutoffs();
+    // A plausible charging efficiency is 50–100 %. The logger can emit garbage
+    // (e.g. evse_energy_kwh < kwh → 157 %); clamp it out so the derived
+    // "From charger" (= battery ÷ efficiency) can never read charger < battery.
+    const plaus = (e) => (e != null && e >= 50 && e <= 100 ? e : null);
+    const effYear = this._num(`sensor.${D}_avg_charging_efficiency_this_year`);
+    const effMonth = this._num(`sensor.${D}_avg_charging_efficiency_this_month`);
+    // Resolve the three tiles for one ROLLING period. Battery/charger sum the
+    // recent_charges window since the cutoff (total uses the lifetime sensor);
+    // driving uses the trip window for week/month and monthly_history for
+    // year/total (where the ~50-trip window would undercount). From-charger is
+    // derived from battery ÷ a SANE efficiency (this window's, else the 30d/
+    // year logger averages) so it stays physically consistent (AC ≥ DC).
+    const resolve = (kind) => {
+      const start = cut[kind];
       const w = this._chargeAgg(D, start);
-      let bat = w.batKwh, eff = w.eff, n = w.n, drv;
-      if (kind === "month") {
-        bat = this._num(`sensor.${D}_energy_charged_this_month`) ?? bat;
-        eff = this._num(`sensor.${D}_avg_charging_efficiency_this_month`) ?? eff;
-        n = this._num(`sensor.${D}_charges_this_month`) ?? n;
-        drv = this._num(`sensor.${D}_energy_this_month`) ?? this._drivingTrips(D, start);
-      } else if (kind === "year") {
-        bat = this._num(`sensor.${D}_battery_energy_charged_this_year`) ?? this._num(`sensor.${D}_battery_energy_charged_lifetime`) ?? bat;
-        eff = this._num(`sensor.${D}_avg_charging_efficiency_this_year`) ?? eff;
-        drv = this._drivingYear(D) ?? this._drivingTrips(D, start);
-      } else {
-        drv = this._drivingTrips(D, start);
-      }
-      const chg = eff != null && eff > 0 && bat != null ? bat / (eff / 100) : null;
+      let bat = w.batKwh, n = w.n;
+      if (kind === "total") bat = this._num(`sensor.${D}_battery_energy_charged_lifetime`) ?? bat;
+      const eff = plaus(w.eff) ?? plaus(effYear) ?? plaus(effMonth);
+      const chg = eff != null && bat != null ? bat / (eff / 100) : null;
+      const drv = kind === "week" || kind === "month" ? this._drivingTrips(D, start) : (this._drivingHist(D, start) ?? this._drivingTrips(D, start));
       return { bat, chg, eff, n, drv };
     };
-    const startOf = { week: s.week, month: s.month, year: s.year };
-    const r = resolve(this._period, startOf[this._period]);
+    const r = resolve(this._period);
     const nSub = r.n ? `${r.n} ${L(r.n === 1 ? "charge" : "charges", r.n === 1 ? "carga" : "cargas")}` : L("no charges", "sin cargas");
     const effSub = r.eff != null ? `${r.eff.toFixed(0)}% eff` : (r.n ? L("needs EVSE", "falta EVSE") : "");
     const tile = (icon, clr, lbl, val, sub) =>
       `<div class="cv-tile"><ha-icon icon="${icon}" style="color:${clr}"></ha-icon><div class="cv-lbl">${lbl}</div><div class="cv-val">${val}<span class="cv-u"> kWh</span></div>${sub ? `<div class="cv-sub">${sub}</div>` : ""}</div>`;
     // Single period, switchable — keeps the card to one row of three tiles so it
     // sits cleanly in a column (no more stacked per-period grids).
-    const seg = [["week", L("Week", "Semana")], ["month", L("Month", "Mes")], ["year", L("Year", "Año")]]
+    const seg = [["week", L("Week", "Semana")], ["month", L("Month", "Mes")], ["year", L("Year", "Año")], ["total", L("Total", "Total")]]
       .map(([m, lbl]) => `<button class="cs-btn${m === this._period ? " on" : ""}" data-m="${m}">${lbl}</button>`).join("");
     this.innerHTML = `<ha-card>
       <div class="cv-head"><ha-icon icon="mdi:transmission-tower"></ha-icon><span class="cv-title">${L("Charger · battery · driving", "Cargador · batería · conducción")}</span><div class="cs-seg">${seg}</div></div>
