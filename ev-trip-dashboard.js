@@ -4399,6 +4399,23 @@ class EvChargeSummaryCard extends HTMLElement {
     // sits cleanly in a column (no more stacked per-period grids).
     const seg = [["week", L("Week", "Semana")], ["month", L("Month", "Mes")], ["year", L("Year", "Año")], ["total", L("Total", "Total")]]
       .map(([m, lbl]) => `<button class="cs-btn${m === this._period ? " on" : ""}" data-m="${m}">${lbl}</button>`).join("");
+    // Comparison bar chart under the tiles — the same three values on a shared
+    // scale, so the relationship is obvious at a glance (charger ≥ battery = the
+    // charging loss; driving vs battery = drove more/less than you charged).
+    const maxV = Math.max(r.chg || 0, r.bat || 0, r.drv || 0, 0.001);
+    const bar = (lbl, val, color) => {
+      const has = val != null && !isNaN(val);
+      const pct = has ? Math.max(2, Math.round((val / maxV) * 100)) : 0;
+      const valTxt = has ? `${f1(val)}<span class="cv-bu"> kWh</span>` : "—";
+      return `<div class="cv-brow"><span class="cv-blbl">${lbl}</span>` +
+        `<div class="cv-btrack">${has ? `<div class="cv-bfill" style="width:${pct}%;background:${color}"></div>` : ""}</div>` +
+        `<span class="cv-bval">${valTxt}</span></div>`;
+    };
+    const barsHtml = `<div class="cv-bars">` +
+      bar(L("From charger", "Del cargador"), r.chg, "var(--info-color,#039be5)") +
+      bar(L("To battery", "A batería"), r.bat, "var(--success-color,#43a047)") +
+      bar(L("Driving", "Conducción"), r.drv, "var(--error-color,#e53935)") +
+      `</div>`;
     this.innerHTML = `<ha-card>
       <div class="cv-head"><ha-icon icon="mdi:transmission-tower"></ha-icon><span class="cv-title">${L("Charger · battery · driving", "Cargador · batería · conducción")}</span><div class="cs-seg">${seg}</div></div>
       <div class="cv-grid">
@@ -4406,6 +4423,7 @@ class EvChargeSummaryCard extends HTMLElement {
         ${tile("mdi:car-battery", "var(--success-color,#43a047)", L("To battery", "A batería"), f1(r.bat), nSub)}
         ${tile("mdi:car-electric", "var(--error-color,#e53935)", L("Driving", "Conducción"), f1(r.drv), "")}
       </div>
+      ${barsHtml}
       <style>
         .cv-head{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:6px;padding:14px 16px 8px;font-weight:600;font-size:1.05em;}
         .cv-head ha-icon{--mdc-icon-size:20px;color:var(--primary-color);}
@@ -4422,6 +4440,13 @@ class EvChargeSummaryCard extends HTMLElement {
         .cv-val{font-size:1.25em;font-weight:800;color:var(--primary-text-color);font-variant-numeric:tabular-nums;}
         .cv-u{font-size:.5em;font-weight:600;color:var(--secondary-text-color);}
         .cv-sub{font-size:.66em;color:var(--secondary-text-color);}
+        .cv-bars{display:flex;flex-direction:column;gap:9px;padding:2px 16px 16px;}
+        .cv-brow{display:grid;grid-template-columns:76px 1fr auto;align-items:center;gap:10px;}
+        .cv-blbl{font-size:.7em;color:var(--secondary-text-color);}
+        .cv-btrack{background:var(--divider-color);border-radius:7px;height:13px;overflow:hidden;}
+        .cv-bfill{height:100%;border-radius:7px;transition:width .3s ease;}
+        .cv-bval{font-size:.82em;font-weight:800;font-variant-numeric:tabular-nums;min-width:58px;text-align:right;}
+        .cv-bu{font-size:.6em;font-weight:600;color:var(--secondary-text-color);}
       </style>
     </ha-card>`;
   }
