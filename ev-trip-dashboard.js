@@ -6792,19 +6792,21 @@ function drivingView(D, V, hass, cfg) {
     });
   }
 
-  // Live charge status — self-hides unless actively charging.
-  status.push({
-    type: "custom:ev-charge-status-card",
-    device: D,
-    plugEntity: (cfg && cfg.plug_entity) || pickVehicleEntity(hass, V, "plug", cfg),
-    chargingEntity: pickVehicleEntity(hass, V, "charging", cfg),
-    powerEntity: resolveChargePower(hass, D, cfg),
-    chargeTarget: cfg && cfg.charge_target, // % to charge to (default 100)
-  });
-  // Right below it: the charger·battery·driving summary (rolling week/month/
-  // year/total + comparison bars). Always visible, so when the charge card is
-  // hidden (not charging) this is what shows in its place.
-  if (has(hass, `sensor.${D}_recent_charges`)) status.push({ type: "custom:ev-charge-summary-card", device: D });
+  // Charge status + charger·battery·driving summary, wrapped in a vertical
+  // stack so they stay ALIGNED in the same column (a plain grid section would
+  // masonry them into separate sub-columns). The charge card self-hides unless
+  // actively charging, so when idle only the summary shows in this slot.
+  status.push(vstack([
+    {
+      type: "custom:ev-charge-status-card",
+      device: D,
+      plugEntity: (cfg && cfg.plug_entity) || pickVehicleEntity(hass, V, "plug", cfg),
+      chargingEntity: pickVehicleEntity(hass, V, "charging", cfg),
+      powerEntity: resolveChargePower(hass, D, cfg),
+      chargeTarget: cfg && cfg.charge_target, // % to charge to (default 100)
+    },
+    ...(has(hass, `sensor.${D}_recent_charges`) ? [{ type: "custom:ev-charge-summary-card", device: D }] : []),
+  ]));
 
   // (Battery · Range · Outside · Cabin · Odometer are all rendered by the
   // single ev-trip-glance-card placed near the top of the status column.)
