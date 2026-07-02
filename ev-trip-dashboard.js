@@ -4399,6 +4399,23 @@ class EvChargeSummaryCard extends HTMLElement {
     // sits cleanly in a column (no more stacked per-period grids).
     const seg = [["week", L("Week", "Semana")], ["month", L("Month", "Mes")], ["year", L("Year", "Año")], ["total", L("Total", "Total")]]
       .map(([m, lbl]) => `<button class="cs-btn${m === this._period ? " on" : ""}" data-m="${m}">${lbl}</button>`).join("");
+    // Comparison bar chart under the tiles — the same three values on a shared
+    // scale, so the relationship is obvious at a glance (charger ≥ battery = the
+    // charging loss; driving vs battery = drove more/less than you charged).
+    const maxV = Math.max(r.chg || 0, r.bat || 0, r.drv || 0, 0.001);
+    const bar = (lbl, val, color) => {
+      const has = val != null && !isNaN(val);
+      const pct = has ? Math.max(2, Math.round((val / maxV) * 100)) : 0;
+      const valTxt = has ? `${f1(val)}<span class="cv-bu"> kWh</span>` : "—";
+      return `<div class="cv-brow"><span class="cv-blbl">${lbl}</span>` +
+        `<div class="cv-btrack">${has ? `<div class="cv-bfill" style="width:${pct}%;background:${color}"></div>` : ""}</div>` +
+        `<span class="cv-bval">${valTxt}</span></div>`;
+    };
+    const barsHtml = `<div class="cv-bars">` +
+      bar(L("From charger", "Del cargador"), r.chg, "var(--info-color,#039be5)") +
+      bar(L("To battery", "A batería"), r.bat, "var(--success-color,#43a047)") +
+      bar(L("Driving", "Conducción"), r.drv, "var(--error-color,#e53935)") +
+      `</div>`;
     this.innerHTML = `<ha-card>
       <div class="cv-head"><ha-icon icon="mdi:transmission-tower"></ha-icon><span class="cv-title">${L("Charger · battery · driving", "Cargador · batería · conducción")}</span><div class="cs-seg">${seg}</div></div>
       <div class="cv-grid">
@@ -4406,6 +4423,7 @@ class EvChargeSummaryCard extends HTMLElement {
         ${tile("mdi:car-battery", "var(--success-color,#43a047)", L("To battery", "A batería"), f1(r.bat), nSub)}
         ${tile("mdi:car-electric", "var(--error-color,#e53935)", L("Driving", "Conducción"), f1(r.drv), "")}
       </div>
+      ${barsHtml}
       <style>
         .cv-head{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:6px;padding:14px 16px 8px;font-weight:600;font-size:1.05em;}
         .cv-head ha-icon{--mdc-icon-size:20px;color:var(--primary-color);}
@@ -4422,6 +4440,13 @@ class EvChargeSummaryCard extends HTMLElement {
         .cv-val{font-size:1.25em;font-weight:800;color:var(--primary-text-color);font-variant-numeric:tabular-nums;}
         .cv-u{font-size:.5em;font-weight:600;color:var(--secondary-text-color);}
         .cv-sub{font-size:.66em;color:var(--secondary-text-color);}
+        .cv-bars{display:flex;flex-direction:column;gap:9px;padding:2px 16px 16px;}
+        .cv-brow{display:grid;grid-template-columns:76px 1fr auto;align-items:center;gap:10px;}
+        .cv-blbl{font-size:.7em;color:var(--secondary-text-color);}
+        .cv-btrack{background:var(--divider-color);border-radius:7px;height:13px;overflow:hidden;}
+        .cv-bfill{height:100%;border-radius:7px;transition:width .3s ease;}
+        .cv-bval{font-size:.82em;font-weight:800;font-variant-numeric:tabular-nums;min-width:58px;text-align:right;}
+        .cv-bu{font-size:.6em;font-weight:600;color:var(--secondary-text-color);}
       </style>
     </ha-card>`;
   }
@@ -6448,12 +6473,23 @@ class EvChargeStatusCard extends HTMLElement {
     };
     const num = (v, dp) => (v == null || isNaN(v) ? DASH : Number(v).toFixed(dp == null ? 0 : dp));
 
-    if (st.state === "charging" || st.state === "paused") {
-      const charging = st.state === "charging";
+    if (st.state === "charging") {
+      const charging = true;
       // Time: live duration while charging; the frozen charge time while paused.
       const durMin = st.durationMin != null ? st.durationMin : st.lastDurMin;
       const dur = durMin == null ? DASH : durMin >= 60 ? `${Math.floor(durMin / 60)}h ${Math.round(durMin % 60)}m` : `${Math.round(durMin)} min`;
-      const energy = st.energy != null ? st.energy : st.lastEnergy;
+      // current_charge_energy can be stuck at 0 (logger bug: soc_start null).
+      // While charging, estimate Added from the power curve (∫ kW dt) so it
+      // isn't blank; mark the estimate with "~".
+      const curveKwh = () => {
+        const pts = (this._pts || []).filter((p) => p.v >= 0).sort((a, b) => a.t - b.t);
+        let e = 0;
+        for (let i = 1; i < pts.length; i++) { const dt = (pts[i].t - pts[i - 1].t) / 3600000; if (dt > 0 && dt < 0.2) e += ((pts[i].v + pts[i - 1].v) / 2) * dt; }
+        return e;
+      };
+      let energy = st.energy != null && st.energy > 0 ? st.energy : (charging ? null : st.lastEnergy);
+      let energyEst = false;
+      if (charging && (energy == null || energy === 0)) { const ce = curveKwh(); if (ce > 0.02) { energy = ce; energyEst = true; } }
       const sym = cur[st.type] || "€";
       // Live AC→DC charging efficiency (logger current_charge_efficiency, fed by
       // the EVSE power sensor). Shown as a tile only once it has a real value.
@@ -6510,7 +6546,7 @@ class EvChargeStatusCard extends HTMLElement {
           ${curveSvg()}
           <div class="cs-tiles">
             ${tile("mdi:battery-charging-high", "SoC", num(st.soc, 0), "%")}
-            ${tile("mdi:lightning-bolt", "Added", num(energy, 2), "kWh")}
+            ${tile("mdi:lightning-bolt", "Added", (energyEst ? "~" : "") + num(energy, 2), "kWh")}
             ${tile("mdi:flash", "Power", num(st.power, 1), "kW")}
             ${tile("mdi:timer-outline", "Time", dur, "")}
             ${charging && !isNaN(chargeEff) && chargeEff > 0 ? tile("mdi:gauge", L("Efficiency", "Eficiencia"), chargeEff.toFixed(0), "%") : ""}
@@ -6519,30 +6555,10 @@ class EvChargeStatusCard extends HTMLElement {
       return;
     }
 
-    // idle / unplugged → last-charge summary
-    const c = this._lastCharge();
-    if (!c) { this.innerHTML = ""; return; } // nothing to show
-    const sym = cur[c.currency] || c.currency || "€";
-    let durMin = null;
-    if (c.started_at && c.ended_at) { const d = (new Date(c.ended_at) - new Date(c.started_at)) / 60000; if (!isNaN(d) && d >= 0) durMin = d; }
-    const durStr = durMin == null ? DASH : durMin >= 60 ? `${Math.floor(durMin / 60)}h ${Math.round(durMin % 60)}m` : `${Math.round(durMin)}m`;
-    const avgKw = c.kwh != null && durMin && durMin > 0 ? Number(c.kwh) / (durMin / 60) : null;
-    this.innerHTML = `
-      <ha-card>
-        <div class="cs-head">
-          <div class="cs-badge" style="background:rgba(3,155,229,.16)"><ha-icon icon="mdi:check-circle-outline" style="color:var(--info-color,#039be5)"></ha-icon></div>
-          <div>
-            <div class="cs-title">✅ Last charge</div>
-            <div class="cs-sub">${_esc(c.location || "")}${c.ended_at ? ` · ${_fmtDate(c.ended_at, true)}` : ""}</div>
-          </div>
-        </div>
-        <div class="cs-tiles">
-          ${tile("mdi:lightning-bolt", "Charged", num(c.kwh, 2), "kWh")}
-          ${tile("mdi:timer-outline", "Time", durStr, "")}
-          ${tile("mdi:flash", "Avg", avgKw == null ? DASH : avgKw.toFixed(1), "kW")}
-          ${tile("mdi:cash", "Cost", c.total_cost != null ? num(c.total_cost, 2) : DASH, sym)}
-        </div>
-      </ha-card>${styles}`;
+    // Not charging (idle or plugged-but-paused) → hide the card entirely, per
+    // user request. The last charge still lives in the charge-history list and
+    // the charger·battery·driving summary shown right below this card.
+    this.innerHTML = "";
   }
 }
 customElements.define("ev-charge-status-card", EvChargeStatusCard);
@@ -6776,7 +6792,7 @@ function drivingView(D, V, hass, cfg) {
     });
   }
 
-  // Live charge status (charging / paused-while-plugged / last-charge summary).
+  // Live charge status — self-hides unless actively charging.
   status.push({
     type: "custom:ev-charge-status-card",
     device: D,
@@ -6785,6 +6801,10 @@ function drivingView(D, V, hass, cfg) {
     powerEntity: resolveChargePower(hass, D, cfg),
     chargeTarget: cfg && cfg.charge_target, // % to charge to (default 100)
   });
+  // Right below it: the charger·battery·driving summary (rolling week/month/
+  // year/total + comparison bars). Always visible, so when the charge card is
+  // hidden (not charging) this is what shows in its place.
+  if (has(hass, `sensor.${D}_recent_charges`)) status.push({ type: "custom:ev-charge-summary-card", device: D });
 
   // (Battery · Range · Outside · Cabin · Odometer are all rendered by the
   // single ev-trip-glance-card placed near the top of the status column.)
