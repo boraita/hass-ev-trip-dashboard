@@ -4436,10 +4436,11 @@ class EvChargeSummaryCard extends HTMLElement {
         `</div>`;
     }
     this.innerHTML = `<ha-card>
-      <div class="cv-head"><ha-icon icon="mdi:transmission-tower"></ha-icon><span class="cv-title">${L("Charger · battery", "Cargador · batería")}</span><div class="cs-seg">${seg}</div></div>
+      <div class="cv-head"><ha-icon icon="mdi:transmission-tower"></ha-icon><span class="cv-title">${L("Charger · battery · driving", "Cargador · batería · conducción")}</span><div class="cs-seg">${seg}</div></div>
       <div class="cv-grid">
         ${tile("mdi:ev-station", "var(--info-color,#039be5)", L("From charger", "Del cargador"), f1(r.chg), effSub)}
         ${tile("mdi:car-battery", "var(--success-color,#43a047)", L("To battery", "A batería"), f1(r.bat), nSub)}
+        ${tile("mdi:car-electric", "var(--error-color,#e53935)", L("Driving", "Conducción"), f1(r.drv), "")}
       </div>
       ${chartHtml}
       <style>
@@ -4449,7 +4450,7 @@ class EvChargeSummaryCard extends HTMLElement {
         .cs-seg{display:inline-flex;gap:2px;background:var(--secondary-background-color,rgba(0,0,0,.06));border:1px solid var(--divider-color);border-radius:999px;padding:2px;}
         .cs-btn{cursor:pointer;border:0;background:transparent;color:var(--secondary-text-color);font-weight:700;font-size:.72em;padding:4px 10px;border-radius:999px;}
         .cs-btn.on{background:var(--primary-color);color:var(--text-primary-color,#fff);}
-        .cv-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:8px;padding:0 12px 14px;}
+        .cv-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;padding:0 12px 14px;}
         .cv-tile{display:flex;flex-direction:column;align-items:center;text-align:center;gap:3px;
                  background:var(--secondary-background-color,var(--card-background-color));
                  border:1px solid var(--divider-color);border-radius:14px;padding:12px 6px;}
