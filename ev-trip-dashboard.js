@@ -4416,6 +4416,30 @@ class EvChargeSummaryCard extends HTMLElement {
       bar(L("To battery", "A batería"), r.bat, "var(--success-color,#43a047)") +
       bar(L("Driving", "Conducción"), r.drv, "var(--error-color,#e53935)") +
       `</div>`;
+    // Inverter→battery FLOW chart: the charger (AC out of the inverter) is the
+    // full bar, split into what reached the battery (green) and what was lost
+    // while charging (amber, striped) — so the difference between inverter
+    // output and what the car got is obvious. Driving is a separate scaled bar.
+    // Falls back to the plain comparison bars when there's no charger value.
+    const canFlow = r.chg != null && r.bat != null && r.chg > 0.01;
+    let chartHtml = barsHtml;
+    if (canFlow) {
+      const batPct = Math.max(3, Math.min(100, (r.bat / r.chg) * 100));
+      const lossPct = Math.max(0, 100 - batPct);
+      const loss = Math.max(0, r.chg - r.bat);
+      const drvPct = r.drv != null && r.drv > 0 ? Math.max(3, Math.min(100, (r.drv / r.chg) * 100)) : 0;
+      const batSpan = batPct > 20 ? `<span>${f1(r.bat)}</span>` : "";
+      const lossSeg = lossPct > 0.5 ? `<div class="cf-seg cf-loss" style="width:${lossPct}%">${lossPct > 16 ? `<span>${f1(loss)}</span>` : ""}</div>` : "";
+      const drvRow = r.drv != null
+        ? `<div class="cf-drow"><span class="cf-dlbl"><ha-icon icon="mdi:car-electric"></ha-icon>${L("Driving", "Conducción")}</span><div class="cf-dtrack"><div class="cf-dfill" style="width:${drvPct}%"></div></div><span class="cf-dval">${f1(r.drv)}<span class="cv-bu"> kWh</span></span></div>`
+        : "";
+      chartHtml = `<div class="cf-wrap">` +
+        `<div class="cf-cap"><span>${L("From inverter", "Del inversor")} <b>${f1(r.chg)}</b> kWh</span><span class="cf-eff">${r.eff != null ? r.eff.toFixed(0) + "% " + L("efficiency", "eficiencia") : ""}</span></div>` +
+        `<div class="cf-bar"><div class="cf-seg cf-bat" style="width:${batPct}%">${batSpan}</div>${lossSeg}</div>` +
+        `<div class="cf-legend"><i><span class="cf-sw cf-bat"></span>${L("To battery", "A batería")} ${f1(r.bat)} kWh</i><i><span class="cf-sw cf-loss"></span>${L("Loss", "Pérdida")} ${f1(loss)} kWh</i></div>` +
+        drvRow +
+        `</div>`;
+    }
     this.innerHTML = `<ha-card>
       <div class="cv-head"><ha-icon icon="mdi:transmission-tower"></ha-icon><span class="cv-title">${L("Charger · battery · driving", "Cargador · batería · conducción")}</span><div class="cs-seg">${seg}</div></div>
       <div class="cv-grid">
@@ -4423,7 +4447,7 @@ class EvChargeSummaryCard extends HTMLElement {
         ${tile("mdi:car-battery", "var(--success-color,#43a047)", L("To battery", "A batería"), f1(r.bat), nSub)}
         ${tile("mdi:car-electric", "var(--error-color,#e53935)", L("Driving", "Conducción"), f1(r.drv), "")}
       </div>
-      ${barsHtml}
+      ${chartHtml}
       <style>
         .cv-head{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:6px;padding:14px 16px 8px;font-weight:600;font-size:1.05em;}
         .cv-head ha-icon{--mdc-icon-size:20px;color:var(--primary-color);}
@@ -4447,6 +4471,25 @@ class EvChargeSummaryCard extends HTMLElement {
         .cv-bfill{height:100%;border-radius:7px;transition:width .3s ease;}
         .cv-bval{font-size:.82em;font-weight:800;font-variant-numeric:tabular-nums;min-width:58px;text-align:right;}
         .cv-bu{font-size:.6em;font-weight:600;color:var(--secondary-text-color);}
+        .cf-wrap{display:flex;flex-direction:column;gap:8px;padding:4px 16px 16px;}
+        .cf-cap{display:flex;justify-content:space-between;align-items:baseline;font-size:.74em;color:var(--secondary-text-color);}
+        .cf-cap b{font-size:1.4em;color:var(--primary-text-color);font-weight:800;font-variant-numeric:tabular-nums;}
+        .cf-eff{font-weight:800;color:var(--success-color,#43a047);}
+        .cf-bar{display:flex;height:28px;border-radius:9px;overflow:hidden;background:var(--divider-color);}
+        .cf-seg{display:flex;align-items:center;justify-content:center;color:#fff;font-size:.8em;font-weight:800;font-variant-numeric:tabular-nums;transition:width .35s ease;overflow:hidden;}
+        .cf-bat{background:linear-gradient(90deg,#43a047,#2e7d32);}
+        .cf-loss{background:repeating-linear-gradient(45deg,#ffb74d,#ffb74d 6px,#ffa726 6px,#ffa726 12px);color:rgba(0,0,0,.55);}
+        .cf-legend{display:flex;gap:16px;flex-wrap:wrap;font-size:.72em;color:var(--secondary-text-color);}
+        .cf-legend i{font-style:normal;display:inline-flex;align-items:center;gap:5px;}
+        .cf-sw{width:15px;height:11px;border-radius:3px;flex:0 0 auto;}
+        .cf-sw.cf-bat{background:#43a047;}
+        .cf-sw.cf-loss{background:repeating-linear-gradient(45deg,#ffb74d,#ffb74d 3px,#ffa726 3px,#ffa726 6px);}
+        .cf-drow{display:grid;grid-template-columns:auto 1fr auto;align-items:center;gap:9px;margin-top:2px;}
+        .cf-dlbl{font-size:.72em;color:var(--secondary-text-color);display:inline-flex;align-items:center;gap:4px;}
+        .cf-dlbl ha-icon{--mdc-icon-size:15px;color:var(--error-color,#e53935);}
+        .cf-dtrack{background:var(--divider-color);border-radius:6px;height:12px;overflow:hidden;}
+        .cf-dfill{height:100%;border-radius:6px;background:linear-gradient(90deg,#e53935,#b71c1c);}
+        .cf-dval{font-size:.82em;font-weight:800;font-variant-numeric:tabular-nums;}
       </style>
     </ha-card>`;
   }
