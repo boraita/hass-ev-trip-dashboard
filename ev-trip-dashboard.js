@@ -6621,7 +6621,6 @@ class EvChargeStatusCard extends HTMLElement {
             ${fullToggle}
           </div>
           ${etaHtml}
-          ${curveSvg()}
           <div class="cs-tiles">
             ${tile("mdi:battery-charging-high", "SoC", num(st.soc, 0), "%")}
             ${tile("mdi:lightning-bolt", "Added", (energyEst ? "~" : "") + num(energy, 2), "kWh")}
@@ -6932,20 +6931,18 @@ function drivingView(D, V, hass, cfg) {
       (has(hass, `sensor.${V}_battery_level`) ? `sensor.${V}_battery_level` : null);
     const socSeries = socEnt ? [{ entity: socEnt, name: "SoC %", yaxis_id: "soc", stroke_width: 2, color: "#4CAF50" }] : [];
 
-    // --- Charging (6h): SoC + charge power (+ optional charge curve) -------
-    const powerEnt = resolveChargePower(hass, D, cfg);
-    const unitOf = (e) => ((hass.states[e] || {}).attributes || {}).unit_of_measurement || "";
-    const wTransform = (e) => (/^w$/i.test(unitOf(e).trim()) ? "return x / 1000;" : undefined); // only W→kW
-    const curveEnt = (cfg && cfg.charge_curve_entity) || `sensor.${V}_charge_curve`;
+    // --- Charging (6h): SoC + charging EFFICIENCY (both %, one 0-100 axis) --
+    // Power/curve removed — the live charge card's tiles already show kW, and
+    // efficiency is the more meaningful thing to track over the session.
+    const effEnt = `sensor.${D}_current_charge_efficiency`;
     const chgSeries = socSeries.slice();
-    if (powerEnt && has(hass, powerEnt)) chgSeries.push({ entity: powerEnt, name: "Power kW", yaxis_id: "power", stroke_width: 2, color: "#9C27B0", ...(wTransform(powerEnt) ? { transform: wTransform(powerEnt) } : {}) });
-    if (curveEnt !== powerEnt && has(hass, curveEnt)) chgSeries.push({ entity: curveEnt, name: "Curve kW", yaxis_id: "power", stroke_width: 1, color: "#FFC107", ...(wTransform(curveEnt) ? { transform: wTransform(curveEnt) } : {}) });
+    if (has(hass, effEnt)) chgSeries.push({ entity: effEnt, name: "Efficiency %", yaxis_id: "soc", stroke_width: 2, color: "#ff9800" });
     if (chgSeries.length >= 2) {
       chartCards.push(
         heading("Charging (6h)", "mdi:ev-station"),
         apexChart({
           title: "Charging (6h)", chartType: "line", graphSpan: "6h", headerShowStates: true,
-          yaxis: [{ id: "soc", min: 0, max: 100, decimals: 0, apex_config: { forceNiceScale: true } }, { id: "power", opposite: true, min: 0, decimals: 1, apex_config: { forceNiceScale: true } }],
+          yaxis: [{ id: "soc", min: 0, max: 100, decimals: 0, apex_config: { forceNiceScale: true } }],
           series: chgSeries,
         })
       );
