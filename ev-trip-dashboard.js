@@ -833,38 +833,8 @@ function eficienciaView(D, hass, V, cfg) {
     alignment: "start",
   });
 
-  // ---- Hero — 30-day avg consumption -----------------------------------
-  // Green gradient background; state_display appends "kWh/100km".
-  cards.push({
-    type: "custom:button-card",
-    entity: `sensor.${D}_avg_consumption_30_days`,
-    name: "Avg consumption (30 days)",
-    show_state: true,
-    show_icon: true,
-    icon: "mdi:leaf",
-    styles: {
-      card: [
-        { padding: "18px" },
-        { "border-radius": "16px" },
-        { background: "linear-gradient(135deg, rgba(46,160,67,0.18), rgba(46,160,67,0.04))" },
-      ],
-      grid: [
-        { "grid-template-areas": '"i n" "i s"' },
-        { "grid-template-columns": "64px 1fr" },
-        { "grid-template-rows": "auto auto" },
-      ],
-      icon: [{ color: "#2ea043" }, { width: "48px" }],
-      name: [{ "justify-self": "start" }, { "font-size": "14px" }, { opacity: "0.75" }],
-      state: [
-        { "justify-self": "start" },
-        { "font-size": "28px" },
-        { "font-weight": "600" },
-        { color: "#2ea043" },
-      ],
-    },
-    state_display:
-      "[[[ const n = entity && Number(entity.state); return (n==null||isNaN(n)) ? '—' : `${n.toFixed(1)} kWh/100km`; ]]]",
-  });
+  // (30-day avg-consumption hero removed — the consumption TREND chart below
+  // shows the average by date, which is more useful.)
 
   // ---- Average consumption TREND (kWh/100km) — filled line chart, the
   // "am I using more or less lately?" view (7 days / week / month) with a
@@ -3942,7 +3912,17 @@ class EvTripConsumptionCard extends HTMLElement {
       const b = ev.target && ev.target.closest && ev.target.closest(".cc-btn[data-m]");
       if (b && this.contains(b)) {
         this._period = b.getAttribute("data-m");
+        this._sel = null; // reset the picked bar when switching period
         try { localStorage.setItem("evTripConsPeriod", this._period); } catch (_e) {}
+        this._render();
+        return;
+      }
+      // Tap a bar to see exactly how much was consumed that day/week/month/year
+      // (the headline switches to that bar; tap again to clear).
+      const bar = ev.target && ev.target.closest && ev.target.closest(".cc-bar[data-i]");
+      if (bar && this.contains(bar)) {
+        const i = parseInt(bar.getAttribute("data-i"), 10);
+        this._sel = this._sel === i ? null : i;
         this._render();
       }
     });
@@ -4044,8 +4024,10 @@ class EvTripConsumptionCard extends HTMLElement {
       .cc-num{font-size:2em;font-weight:800;color:var(--primary-text-color);font-variant-numeric:tabular-nums;}
       .cc-unit{font-size:.9em;color:var(--secondary-text-color);}
       .cc-sub{padding:2px 16px 8px;font-size:.85em;color:var(--secondary-text-color);font-variant-numeric:tabular-nums;}
+      .cc-hint{opacity:.55;font-style:italic;}
       .cc-chart{display:flex;align-items:flex-end;gap:2px;height:104px;padding:0 14px 22px;position:relative;}
-      .cc-bar{flex:1 1 0;height:100%;display:flex;flex-direction:column;justify-content:flex-end;align-items:center;position:relative;}
+      .cc-bar{flex:1 1 0;height:100%;display:flex;flex-direction:column;justify-content:flex-end;align-items:center;position:relative;cursor:pointer;}
+      .cc-bar.cc-sel .cc-fill{opacity:1;background:linear-gradient(180deg,var(--warning-color,#fb8c00),var(--primary-color));box-shadow:0 0 0 2px var(--warning-color,#fb8c00);}
       .cc-fill{width:78%;min-height:1px;border-radius:3px 3px 0 0;background:linear-gradient(180deg,var(--info-color,#039be5),var(--primary-color));opacity:.85;}
       .cc-bar.cc-cur .cc-fill{opacity:1;background:linear-gradient(180deg,var(--success-color,#43a047),var(--primary-color));}
       .cc-lbl{position:absolute;bottom:-18px;font-size:.68em;white-space:nowrap;color:var(--primary-text-color);opacity:.75;font-variant-numeric:tabular-nums;}
@@ -4065,19 +4047,25 @@ class EvTripConsumptionCard extends HTMLElement {
     const barsHtml = bars.map((b, i) => {
       const pct = Math.round((b.kwh / maxV) * 100);
       const cur = i === bars.length - 1;
+      const sel = i === this._sel;
       const lbl = lblIdx.has(i) ? `<div class="cc-lbl">${_esc(b.label)}</div>` : "";
       const c = b.km > 0 ? (b.kwh / b.km) * 100 : null;
       const tip = `${_esc(b.label)} — ${f1(b.kwh)} kWh${b.km ? ` · ${f0(b.km)} km` : ""}${c != null ? ` · ${f1(c)} kWh/100km` : ""}`;
-      return `<div class="cc-bar${cur ? " cc-cur" : ""}" title="${tip}"><div class="cc-fill" style="height:${pct}%"></div>${lbl}</div>`;
+      return `<div class="cc-bar${cur ? " cc-cur" : ""}${sel ? " cc-sel" : ""}" data-i="${i}" title="${tip}"><div class="cc-fill" style="height:${pct}%"></div>${lbl}</div>`;
     }).join("");
     const avgPct = Math.round((avg / maxV) * 100);
     const avgLine = avg > 0 ? `<div class="cc-avg" style="bottom:${22 + (avgPct / 100) * (104 - 22)}px"></div><div class="cc-avglbl" style="bottom:${22 + (avgPct / 100) * (104 - 22)}px">${L("avg", "media")} ${f1(avg)}</div>` : "";
     // kWh/100km for a (kwh, km) pair — same formula as the logger's
     // avg_consumption_kwh_100km. Null when no distance (avoids /0 nonsense).
     const consLbl = (kwh, km) => (km > 0 ? ` · ${f1((kwh / km) * 100)} kWh/100km` : "");
-    // Headline: Day → window total + per-active-day; Month/Year → current bucket.
+    // Headline: a tapped bar → that exact bucket; else Day → window total,
+    // Week/Month/Year → current bucket. The hint shows the tap affordance.
     let heroNum, heroSub;
-    if (this._period === "day") {
+    if (this._sel != null && bars[this._sel]) {
+      const b = bars[this._sel];
+      heroNum = f1(b.kwh);
+      heroSub = `📍 ${_esc(b.label)}${b.km ? ` · ${f0(b.km)} km` : ""}${b.cost ? ` · ${f1(b.cost)} ${_esc(sym)}` : ""}${consLbl(b.kwh, b.km)}`;
+    } else if (this._period === "day") {
       const tot = bars.reduce((a, b) => a + b.kwh, 0);
       const totKm = bars.reduce((a, b) => a + b.km, 0);
       heroNum = f1(tot);
@@ -4091,6 +4079,7 @@ class EvTripConsumptionCard extends HTMLElement {
       heroNum = f1(cur.kwh);
       heroSub = `${_esc(cur.label)}${cur.km ? ` · ${f0(cur.km)} km` : ""}${cur.cost ? ` · ${f1(cur.cost)} ${_esc(sym)}` : ""}${consLbl(cur.kwh, cur.km)}`;
     }
+    if (this._sel == null && bars.length > 1) heroSub += ` · <span class="cc-hint">${L("tap a bar", "toca una barra")}</span>`;
     this.innerHTML = `<ha-card>
       ${head}
       <div class="cc-hero"><span class="cc-num">${heroNum}</span><span class="cc-unit">kWh</span></div>
@@ -4426,38 +4415,31 @@ class EvChargeSummaryCard extends HTMLElement {
     const barsHtml = `<div class="cv-bars">` +
       bar(L("From charger", "Del cargador"), r.chg, "var(--info-color,#039be5)") +
       bar(L("To battery", "A batería"), r.bat, "var(--success-color,#43a047)") +
-      bar(L("Driving", "Conducción"), r.drv, "var(--error-color,#e53935)") +
       `</div>`;
     // Inverter→battery FLOW chart: the charger (AC out of the inverter) is the
     // full bar, split into what reached the battery (green) and what was lost
     // while charging (amber, striped) — so the difference between inverter
-    // output and what the car got is obvious. Driving is a separate scaled bar.
-    // Falls back to the plain comparison bars when there's no charger value.
+    // output and what the car got is obvious. Falls back to the plain bars when
+    // there's no charger value. (Driving lives on the main view — not repeated.)
     const canFlow = r.chg != null && r.bat != null && r.chg > 0.01;
     let chartHtml = barsHtml;
     if (canFlow) {
       const batPct = Math.max(3, Math.min(100, (r.bat / r.chg) * 100));
       const lossPct = Math.max(0, 100 - batPct);
       const loss = Math.max(0, r.chg - r.bat);
-      const drvPct = r.drv != null && r.drv > 0 ? Math.max(3, Math.min(100, (r.drv / r.chg) * 100)) : 0;
       const batSpan = batPct > 20 ? `<span>${f1(r.bat)}</span>` : "";
       const lossSeg = lossPct > 0.5 ? `<div class="cf-seg cf-loss" style="width:${lossPct}%">${lossPct > 16 ? `<span>${f1(loss)}</span>` : ""}</div>` : "";
-      const drvRow = r.drv != null
-        ? `<div class="cf-drow"><span class="cf-dlbl"><ha-icon icon="mdi:car-electric"></ha-icon>${L("Driving", "Conducción")}</span><div class="cf-dtrack"><div class="cf-dfill" style="width:${drvPct}%"></div></div><span class="cf-dval">${f1(r.drv)}<span class="cv-bu"> kWh</span></span></div>`
-        : "";
       chartHtml = `<div class="cf-wrap">` +
         `<div class="cf-cap"><span>${L("From inverter", "Del inversor")} <b>${f1(r.chg)}</b> kWh</span><span class="cf-eff">${r.eff != null ? r.eff.toFixed(0) + "% " + L("efficiency", "eficiencia") : ""}</span></div>` +
         `<div class="cf-bar"><div class="cf-seg cf-bat" style="width:${batPct}%">${batSpan}</div>${lossSeg}</div>` +
         `<div class="cf-legend"><i><span class="cf-sw cf-bat"></span>${L("To battery", "A batería")} ${f1(r.bat)} kWh</i><i><span class="cf-sw cf-loss"></span>${L("Loss", "Pérdida")} ${f1(loss)} kWh</i></div>` +
-        drvRow +
         `</div>`;
     }
     this.innerHTML = `<ha-card>
-      <div class="cv-head"><ha-icon icon="mdi:transmission-tower"></ha-icon><span class="cv-title">${L("Charger · battery · driving", "Cargador · batería · conducción")}</span><div class="cs-seg">${seg}</div></div>
+      <div class="cv-head"><ha-icon icon="mdi:transmission-tower"></ha-icon><span class="cv-title">${L("Charger · battery", "Cargador · batería")}</span><div class="cs-seg">${seg}</div></div>
       <div class="cv-grid">
         ${tile("mdi:ev-station", "var(--info-color,#039be5)", L("From charger", "Del cargador"), f1(r.chg), effSub)}
         ${tile("mdi:car-battery", "var(--success-color,#43a047)", L("To battery", "A batería"), f1(r.bat), nSub)}
-        ${tile("mdi:car-electric", "var(--error-color,#e53935)", L("Driving", "Conducción"), f1(r.drv), "")}
       </div>
       ${chartHtml}
       <style>
@@ -4467,7 +4449,7 @@ class EvChargeSummaryCard extends HTMLElement {
         .cs-seg{display:inline-flex;gap:2px;background:var(--secondary-background-color,rgba(0,0,0,.06));border:1px solid var(--divider-color);border-radius:999px;padding:2px;}
         .cs-btn{cursor:pointer;border:0;background:transparent;color:var(--secondary-text-color);font-weight:700;font-size:.72em;padding:4px 10px;border-radius:999px;}
         .cs-btn.on{background:var(--primary-color);color:var(--text-primary-color,#fff);}
-        .cv-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;padding:0 12px 14px;}
+        .cv-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:8px;padding:0 12px 14px;}
         .cv-tile{display:flex;flex-direction:column;align-items:center;text-align:center;gap:3px;
                  background:var(--secondary-background-color,var(--card-background-color));
                  border:1px solid var(--divider-color);border-radius:14px;padding:12px 6px;}
