@@ -2412,12 +2412,24 @@ class EvTripHistoryCard extends HTMLElement {
     const cipOn = cip && String(cip.state).toLowerCase() === "charging";
     if (!cipOn) return null;
     const numOf = (id) => { const s = st(id); const v = s ? parseFloat(s.state) : NaN; return isNaN(v) ? null : v; };
-    const energy = numOf(`sensor.${D}_current_charge_energy`);
+    let energy = numOf(`sensor.${D}_current_charge_energy`);
     const durMin = numOf(`sensor.${D}_current_charge_duration`);
     const typeS = st(`sensor.${D}_current_charge_type`);
     const type = typeS && typeS.state && !["unknown", "unavailable"].includes(String(typeS.state).toLowerCase()) ? String(typeS.state).toUpperCase() : null;
     const socStart = cip.attributes && cip.attributes.soc_start != null ? Number(cip.attributes.soc_start) : null;
     const socNow = numOf(`sensor.${D}_battery_percent`);
+    // current_charge_energy is often stuck at 0 mid-charge (logger bug:
+    // soc_start null). Estimate the kWh into the battery so the live row isn't
+    // "0": prefer EVSE-metered AC × efficiency (DC), else SoC-gain × pack kWh.
+    if (energy == null || energy === 0) {
+      const evse = numOf(`sensor.${D}_current_charge_evse_kwh`);
+      const eff = numOf(`sensor.${D}_current_charge_efficiency`);
+      if (evse != null && evse > 0) energy = eff != null && eff > 20 && eff <= 100 ? evse * (eff / 100) : evse;
+      else if (socStart != null && socNow != null && socNow > socStart) {
+        const cap = (numOf(`sensor.${D}_battery_energy`) || 0) + (numOf(`sensor.${D}_energy_to_full_charge`) || 0);
+        if (cap > 0) energy = ((socNow - socStart) / 100) * cap;
+      }
+    }
     const costEnt = st(`sensor.${D}_current_charge_cost`);
     const currency = (costEnt && costEnt.attributes && costEnt.attributes.unit_of_measurement) || "EUR";
     const le = this._config.locationEntity ? st(this._config.locationEntity) : null;
@@ -6438,13 +6450,18 @@ class EvChargeStatusCard extends HTMLElement {
         this._fetchedState = st.state;
         const start = new Date(now - 4 * 3600 * 1000).toISOString();
         const end = new Date(now + 60000).toISOString();
-        Promise.resolve(this._hass.callApi("GET", `history/period/${start}?end_time=${end}&filter_entity_id=${pe}&minimal_response&no_attributes`))
+        const ee = `sensor.${D}_current_charge_efficiency`;
+        const mapSer = (ser) => (ser || []).map((p) => ({ t: new Date(p.last_changed || p.lu || p.lc).getTime(), v: parseFloat(p.state) })).filter((p) => !isNaN(p.t) && !isNaN(p.v));
+        Promise.resolve(this._hass.callApi("GET", `history/period/${start}?end_time=${end}&filter_entity_id=${pe},${ee}&minimal_response&no_attributes`))
           .then((res) => {
-            const ser = Array.isArray(res) && res[0] ? res[0] : [];
-            this._pts = ser.map((p) => ({ t: new Date(p.last_changed || p.lu || p.lc).getTime(), v: parseFloat(p.state) })).filter((p) => !isNaN(p.t) && !isNaN(p.v));
+            const arr = Array.isArray(res) ? res : [];
+            const byId = {};
+            for (const s of arr) { if (s && s[0] && s[0].entity_id) byId[s[0].entity_id] = s; }
+            this._pts = mapSer(byId[pe] || arr[0]);
+            this._effPts = mapSer(byId[ee]).filter((p) => p.v > 0 && p.v <= 100);
             this._render();
           })
-          .catch(() => { this._pts = []; this._render(); });
+          .catch(() => { this._pts = []; this._effPts = []; this._render(); });
       }
     }
     this._render();
@@ -6485,6 +6502,12 @@ class EvChargeStatusCard extends HTMLElement {
         .cs-axis{stroke:var(--divider-color);stroke-width:1;}
         .cs-area{fill:var(--info-color,#039be5);opacity:.13;}
         .cs-line{fill:none;stroke:var(--info-color,#039be5);stroke-width:2.5;stroke-linejoin:round;stroke-linecap:round;}
+        .cs-eff-line{fill:none;stroke:#ff9800;stroke-width:2;stroke-dasharray:4 3;stroke-linejoin:round;}
+        .cs-eff-lbl{fill:#ff9800;}
+        .cs-eff-now{fill:#ff9800;font-size:9px;font-weight:800;}
+        .cs-lgd{font-size:8px;font-weight:700;}
+        .cs-lgd-kw{fill:var(--info-color,#039be5);}
+        .cs-lgd-eff{fill:#ff9800;}
         .cs-lbl{fill:var(--secondary-text-color);font-size:8px;}
         .cs-tiles{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;padding:6px 12px 14px;}
         .cs-t{background:var(--secondary-background-color,var(--card-background-color));border:1px solid var(--divider-color);
@@ -6506,12 +6529,24 @@ class EvChargeStatusCard extends HTMLElement {
       const ft = (ms) => { const d = new Date(ms); const p = (n) => String(n).padStart(2, "0"); return `${p(d.getHours())}:${p(d.getMinutes())}`; };
       const line = pts.map((p, i) => `${i ? "L" : "M"}${sx(p.t).toFixed(1)},${sy(p.v).toFixed(1)}`).join(" ");
       const area = `M${sx(pts[0].t).toFixed(1)},${y1} ` + pts.map((p) => `L${sx(p.t).toFixed(1)},${sy(p.v).toFixed(1)}`).join(" ") + ` L${sx(pts[pts.length - 1].t).toFixed(1)},${y1} Z`;
+      // Efficiency overlay (0–100 %, right axis) — a second variable so you can
+      // see the AC→DC charging efficiency alongside the power curve.
+      const eff = (this._effPts || []).filter((p) => p.t >= t0 && p.t <= t1);
+      const syE = (v) => y1 - (Math.max(0, Math.min(100, v)) / 100) * (y1 - y0);
+      const effLine = eff.length >= 2
+        ? `<path d="${eff.map((p, i) => `${i ? "L" : "M"}${sx(p.t).toFixed(1)},${syE(p.v).toFixed(1)}`).join(" ")}" class="cs-eff-line"/>` +
+          `<text x="${x1 + 2}" y="${(syE(100) + 3).toFixed(1)}" text-anchor="end" class="cs-lbl cs-eff-lbl">100%</text>` +
+          `<text x="${x1 + 2}" y="${(syE(eff[eff.length - 1].v) - 3).toFixed(1)}" text-anchor="end" class="cs-eff-now">${eff[eff.length - 1].v.toFixed(0)}%</text>`
+        : "";
+      const legend = `<text x="${x0 + 6}" y="${y0 + 7}" class="cs-lgd cs-lgd-kw">■ kW</text>${eff.length >= 2 ? `<text x="${x0 + 44}" y="${y0 + 7}" class="cs-lgd cs-lgd-eff">■ ${L("efficiency", "eficiencia")}</text>` : ""}`;
       return `<svg viewBox="0 0 ${VB_W} ${VB_H}" class="cs-svg" preserveAspectRatio="none">
         <text x="${x0 - 3}" y="${(sy(maxKw) + 4).toFixed(1)}" text-anchor="end" class="cs-lbl">${maxKw.toFixed(0)}</text>
         <line x1="${x0}" y1="${sy(0).toFixed(1)}" x2="${x1}" y2="${sy(0).toFixed(1)}" class="cs-axis"/>
         <path d="${area}" class="cs-area"/><path d="${line}" class="cs-line"/>
+        ${effLine}
         <text x="${x0}" y="${VB_H - 4}" class="cs-lbl">${ft(t0)}</text>
         <text x="${x1}" y="${VB_H - 4}" text-anchor="end" class="cs-lbl">${ft(t1)}</text>
+        ${legend}
       </svg>`;
     };
     const num = (v, dp) => (v == null || isNaN(v) ? DASH : Number(v).toFixed(dp == null ? 0 : dp));
