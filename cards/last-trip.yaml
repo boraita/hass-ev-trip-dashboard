@@ -175,6 +175,60 @@ cards:
             - width: 28px
 
   # ---------------------------------------------------------------------------
+  # TRIP CHARACTER — v0.7.6 pulls a one-word label + V95 + highway%
+  # from the recent_trips attribute. Adds elevation gain/loss when
+  # the v0.7.5 elevation feature is enabled and the API returned data.
+  # Renders empty when no signal (no speed sensor wired, no trips).
+  # ---------------------------------------------------------------------------
+  - type: custom:mushroom-template-card
+    primary: >-
+      {% set t = state_attr('sensor.__DEVICE___recent_trips', 'trips')[0]
+                 if state_attr('sensor.__DEVICE___recent_trips', 'trips')
+                 else none %}
+      {% if t and t.trip_character %}
+        {% set label = {'urban': 'Ciudad', 'mixed': 'Mixto',
+                        'highway': 'Autopista'}.get(t.trip_character,
+                                                    t.trip_character) %}
+        {{ label }}
+        {%- if t.v95_speed_kmh is not none %}
+        · V95 {{ t.v95_speed_kmh | round(0) | int }} km/h
+        {%- endif %}
+        {%- if t.highway_ratio_pct is not none %}
+        · {{ t.highway_ratio_pct | round(0) | int }} % autopista
+        {%- endif %}
+      {% endif %}
+    secondary: >-
+      {% set t = state_attr('sensor.__DEVICE___recent_trips', 'trips')[0]
+                 if state_attr('sensor.__DEVICE___recent_trips', 'trips')
+                 else none %}
+      {% if t and t.elevation_gain_m is not none %}
+        ↑ {{ t.elevation_gain_m | round(0) | int }} m
+        · ↓ {{ (t.elevation_loss_m or 0) | round(0) | int }} m
+        {%- if t.elevation_variance_m2 is not none %}
+        · perfil {{ t.elevation_variance_m2 | round(0) | int }} m²
+        {%- endif %}
+      {% endif %}
+    icon: >-
+      {% set t = state_attr('sensor.__DEVICE___recent_trips', 'trips')[0]
+                 if state_attr('sensor.__DEVICE___recent_trips', 'trips')
+                 else none %}
+      {% set char = t.trip_character if t else none %}
+      {%- if char == 'highway' %}mdi:highway
+      {%- elif char == 'mixed' %}mdi:road
+      {%- elif char == 'urban' %}mdi:city-variant-outline
+      {%- else %}mdi:road-variant{% endif %}
+    icon_color: >-
+      {% set t = state_attr('sensor.__DEVICE___recent_trips', 'trips')[0]
+                 if state_attr('sensor.__DEVICE___recent_trips', 'trips')
+                 else none %}
+      {% set char = t.trip_character if t else none %}
+      {%- if char == 'highway' %}deep-purple
+      {%- elif char == 'mixed' %}blue
+      {%- else %}teal{% endif %}
+    fill_container: true
+    multiline_secondary: true
+
+  # ---------------------------------------------------------------------------
   # IDLE SPLIT — v0.7.2 surfaces "tiempo parado" + "consumo en marcha"
   # so the user can tell when a high kWh/100km headline is "waited
   # with AC on" rather than inefficient driving. Renders ONLY when

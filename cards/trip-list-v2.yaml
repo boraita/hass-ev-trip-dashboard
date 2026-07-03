@@ -166,6 +166,18 @@ cards:
       | {{ t.distance_km | default('—') }} km | {{ t.energy_kwh | default('—') }} kWh | {{ eff_display | trim }} | {{ t.cost | default('—') }} {{ t.currency | default('') }} | {% set s = t.score | float(0) %}{% if s >= 7 %}🟢{% elif s >= 4 %}🟡{% else %}🔴{% endif %} **{{ t.score | default('—') }}** |
 
       _{{ t.origin | default('—') }} → {{ t.destination | default('—') }}_
+      {#- v0.7.6 — trip character chip (urban / mixed / autopista)
+          with V95 cruise speed + elevation gain/loss when available.
+          A single compact line per trip: at a glance the user can
+          tell whether a headline consumption is city stop-and-go
+          or a highway cruise, and whether it involved climbing. -#}
+      {%- set char = t.trip_character %}
+      {%- if char %}
+      {%- set icon = {'urban': '🏙', 'mixed': '🛣', 'highway': '🛤'}[char] %}
+      {%- set label = {'urban': 'Ciudad', 'mixed': 'Mixto', 'highway': 'Autopista'}[char] %}
+
+      <small>{{ icon }} {{ label }}{% if t.v95_speed_kmh is not none %} · V95 {{ t.v95_speed_kmh | round(0) | int }} km/h{% endif %}{% if t.elevation_gain_m is not none %} · ↑{{ t.elevation_gain_m | round(0) | int }} ↓{{ (t.elevation_loss_m or 0) | round(0) | int }} m{% endif %}</small>
+      {%- endif %}
       {#- v0.7.2 — idle split chip. Only renders when the trip
           captured ≥1 min of idle time AND the ratio is meaningful
           (≥10 %). Color hints: ≥50 % = red, ≥25 % = amber, else
