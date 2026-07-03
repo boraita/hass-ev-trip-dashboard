@@ -6626,7 +6626,6 @@ class EvChargeStatusCard extends HTMLElement {
             ${tile("mdi:lightning-bolt", "Added", (energyEst ? "~" : "") + num(energy, 2), "kWh")}
             ${tile("mdi:flash", "Power", num(st.power, 1), "kW")}
             ${tile("mdi:timer-outline", "Time", dur, "")}
-            ${charging && !isNaN(chargeEff) && chargeEff > 0 ? tile("mdi:gauge", L("Efficiency", "Eficiencia"), chargeEff.toFixed(0), "%") : ""}
           </div>
         </ha-card>${styles}`;
       return;
@@ -6869,21 +6868,19 @@ function drivingView(D, V, hass, cfg) {
     });
   }
 
-  // Charge status + charger·battery·driving summary, wrapped in a vertical
-  // stack so they stay ALIGNED in the same column (a plain grid section would
-  // masonry them into separate sub-columns). The charge card self-hides unless
-  // actively charging, so when idle only the summary shows in this slot.
-  status.push(vstack([
-    {
-      type: "custom:ev-charge-status-card",
-      device: D,
-      plugEntity: (cfg && cfg.plug_entity) || pickVehicleEntity(hass, V, "plug", cfg),
-      chargingEntity: pickVehicleEntity(hass, V, "charging", cfg),
-      powerEntity: resolveChargePower(hass, D, cfg),
-      chargeTarget: cfg && cfg.charge_target, // % to charge to (default 100)
-    },
-    ...(has(hass, `sensor.${D}_recent_charges`) ? [{ type: "custom:ev-charge-summary-card", device: D }] : []),
-  ]));
+  // Left column: the charger·battery·driving summary.
+  if (has(hass, `sensor.${D}_recent_charges`)) status.push({ type: "custom:ev-charge-summary-card", device: D });
+  // The live charge card (tiles: SoC/Added/Power/Time) is placed ABOVE the
+  // Charging(6h) chart in the RIGHT column (see rightCards). It self-hides when
+  // not charging.
+  const chargeStatusCard = {
+    type: "custom:ev-charge-status-card",
+    device: D,
+    plugEntity: (cfg && cfg.plug_entity) || pickVehicleEntity(hass, V, "plug", cfg),
+    chargingEntity: pickVehicleEntity(hass, V, "charging", cfg),
+    powerEntity: resolveChargePower(hass, D, cfg),
+    chargeTarget: cfg && cfg.charge_target, // % to charge to (default 100)
+  };
 
   // (Battery · Range · Outside · Cabin · Odometer are all rendered by the
   // single ev-trip-glance-card placed near the top of the status column.)
@@ -6977,7 +6974,7 @@ function drivingView(D, V, hass, cfg) {
     heading("Today's journey", "mdi:map-marker-path"),
     { type: "custom:ev-trip-journey-card", device: D, tempEntity: jTempEntity, locationEntity: jLocationEntity, tripPowerEntity: jTripPowerEntity },
   ]);
-  const rightCards = chartCards.concat(now);
+  const rightCards = [chargeStatusCard].concat(chartCards, now);
 
   const sections = [grid(leftCards), grid(rightCards)];
 
