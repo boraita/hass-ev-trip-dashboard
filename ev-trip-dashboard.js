@@ -4826,6 +4826,40 @@ class EvTripCalendarCard extends HTMLElement {
         .map((g) => ({ key: `${g.started_at}|${g.ended_at}`, windows: g.stages.map((t) => ({ start: t.started_at, end: t.ended_at })) }))
         .concat(standalone.map((t) => ({ key: `${t.started_at}|${t.ended_at}`, windows: [{ start: t.started_at, end: t.ended_at }] })));
 
+      // Build one chronological timeline for the day: journeys, standalone
+      // trips and charges all interleaved by start time — a charge shows
+      // BEFORE or AFTER a journey depending on when it actually happened, and
+      // if it happened DURING a journey's span (e.g. a stop between stages of
+      // a road trip) it gets embedded inside that journey's card instead of
+      // floating as its own entry.
+      const within = (c, start, end) => {
+        const cs = new Date(c.started_at || c.ended_at).getTime();
+        const ce = new Date(c.ended_at || c.started_at).getTime();
+        const s = new Date(start).getTime(), en = new Date(end).getTime();
+        if (isNaN(cs) || isNaN(ce) || isNaN(s) || isNaN(en)) return false;
+        return cs <= en && ce >= s;
+      };
+      const dayEntries = groups
+        .map((g) => ({ type: "journey", at: g.started_at, data: g }))
+        .concat(standalone.map((t) => ({ type: "solo", at: t.started_at, data: t })))
+        .sort((a, b) => new Date(a.at) - new Date(b.at));
+      const chargesSorted = e.charges.slice().sort((a, b) => new Date(a.started_at || a.ended_at) - new Date(b.started_at || b.ended_at));
+      const embeddedIdx = new Set();
+      const takeEmbedded = (start, end) => {
+        const out = [];
+        chargesSorted.forEach((c, i) => {
+          if (embeddedIdx.has(i) || !within(c, start, end)) return;
+          out.push(c);
+          embeddedIdx.add(i);
+        });
+        return out;
+      };
+      for (const it of dayEntries) it.embeddedCharges = takeEmbedded(it.data.started_at, it.data.ended_at);
+      const looseCharges = chargesSorted.filter((c, i) => !embeddedIdx.has(i));
+      const allEntries = dayEntries
+        .concat(looseCharges.map((c) => ({ type: "charge", at: c.started_at || c.ended_at, data: c })))
+        .sort((a, b) => new Date(a.at) - new Date(b.at));
+
       const stage = (t) => `
         <div class="cal-stage">
           <span class="cal-stime">${_timeRange(t.started_at, t.ended_at) || _timeOfDay(t.started_at)}</span>
@@ -4833,43 +4867,56 @@ class EvTripCalendarCard extends HTMLElement {
           <span class="cal-smeta">${f0(t.distance_km)} km · ${t.consumption_kwh_100km != null && Number(t.consumption_kwh_100km) >= 0 ? _fmtEff(t.consumption_kwh_100km) : "—"}</span>
           ${t.score != null ? `<span class="cal-pill" style="background:${_scoreColor(t.score)}">${f1(t.score)}</span>` : ""}
         </div>`;
+      const chargeStage = (c) => `
+        <div class="cal-stage cal-stage--chg">
+          <span class="cal-stime">${_timeRange(c.started_at, c.ended_at) || _timeOfDay(c.started_at)}</span>
+          <span class="cal-sroute"><ha-icon class="cal-arr cal-chg-ic" icon="mdi:lightning-bolt"></ha-icon>${_esc(c.location || L("Charge", "Carga"))}${c.is_dcfc ? " · DC" : ""}</span>
+          <span class="cal-smeta">${(Number(c.kwh) || 0).toFixed(1)} kWh${c.total_cost != null ? ` · ${(Number(c.total_cost) || 0).toFixed(2)} ${_esc(sym(c.currency))}` : ""}</span>
+        </div>`;
+      const stagesAndCharges = (stages, embedded) =>
+        stages
+          .map((t) => ({ at: t.started_at, html: stage(t) }))
+          .concat((embedded || []).map((c) => ({ at: c.started_at || c.ended_at, html: chargeStage(c) })))
+          .sort((a, b) => new Date(a.at) - new Date(b.at))
+          .map((it) => it.html)
+          .join("");
+      const chgBadge = (n) => (n ? ` · <span class="cal-jchg"><ha-icon icon="mdi:lightning-bolt"></ha-icon>${n}</span>` : "");
       const mapSlot = (start, end) => {
         if (!this._config.locationEntity) return "";
         const r = this._routes[`${start}|${end}`];
         if (Array.isArray(r)) return `<div class="cal-map">${_routeSvg(r) || '<div class="cal-map-ph">No GPS for this trip</div>'}</div>`;
         return `<div class="cal-map"><div class="cal-map-ph"><ha-icon icon="mdi:map-marker-path"></ha-icon> Loading route…</div></div>`;
       };
-      const jHtml = groups
-        .map(
-          (g) => `
+      const journeyHtml = (g) => `
         <div class="cal-journey">
           <div class="cal-jhead">
             <span class="cal-jicon"><ha-icon icon="${g.roundTrip ? "mdi:home-map-marker" : "mdi:map-marker-path"}"></ha-icon></span>
             <span class="cal-jtitle">${_endpoint(g.origin)} → ${_endpoint(g.destination)}</span>
             <span class="cal-jtime">${_timeOfDay(g.started_at)}–${_timeOfDay(g.ended_at)}</span>
           </div>
-          <div class="cal-jsum"><b>${f0(g.km)}</b> km · <b>${f1(g.kwh)}</b> kWh${g.cons != null ? ` · <b>${_fmtEff(g.cons)}</b>` : ""}${g.cost ? ` · <b>${g.cost.toFixed(2)} ${_esc(sym(g.currency))}</b>` : ""} · ${g.stages.length} ${g.stages.length === 1 ? "stage" : "stages"}</div>
-          <div class="cal-stages">${g.stages.map(stage).join("")}</div>
+          <div class="cal-jsum"><b>${f0(g.km)}</b> km · <b>${f1(g.kwh)}</b> kWh${g.cons != null ? ` · <b>${_fmtEff(g.cons)}</b>` : ""}${g.cost ? ` · <b>${g.cost.toFixed(2)} ${_esc(sym(g.currency))}</b>` : ""} · ${g.stages.length} ${g.stages.length === 1 ? "stage" : "stages"}${chgBadge(g.embeddedCharges.length)}</div>
+          <div class="cal-stages">${stagesAndCharges(g.stages, g.embeddedCharges)}</div>
           ${mapSlot(g.started_at, g.ended_at)}
-        </div>`
-        )
-        .join("");
-      const soloHtml = standalone
-        .map((t) => `<div class="cal-journey cal-journey--solo"><div class="cal-stages">${stage(t)}</div>${mapSlot(t.started_at, t.ended_at)}</div>`)
-        .join("");
-      const chs = e.charges
-        .slice()
-        .sort((a, b) => String(a.started_at).localeCompare(String(b.started_at)))
-        .map(
-          (c) =>
-            `<div class="cal-row"><span class="cal-ricon cal-b-chg"><ha-icon icon="mdi:lightning-bolt"></ha-icon></span>` +
-            `<span class="cal-rtime">${_timeOfDay(c.started_at)}</span>` +
-            `<span class="cal-rmain">${_esc(c.location || "charge")}${c.is_dcfc ? " · DC" : ""}</span>` +
-            `<span class="cal-rval">${(Number(c.kwh) || 0).toFixed(1)} kWh${c.total_cost != null ? ` · ${(Number(c.total_cost) || 0).toFixed(2)} ${_esc(sym(c.currency))}` : ""}</span></div>`
-        )
-        .join("");
+        </div>`;
+      const soloHtml = (t) => `
+        <div class="cal-journey cal-journey--solo">
+          <div class="cal-stages">${stagesAndCharges([t], t.embeddedCharges)}</div>
+          ${mapSlot(t.started_at, t.ended_at)}
+        </div>`;
+      const chargeCard = (c) => `
+        <div class="cal-journey cal-journey--chg">
+          <div class="cal-jhead">
+            <span class="cal-jicon cal-jicon--chg"><ha-icon icon="mdi:lightning-bolt"></ha-icon></span>
+            <span class="cal-jtitle">${_esc(c.location || L("Charge", "Carga"))}${c.is_dcfc ? " · DC" : ""}</span>
+            <span class="cal-jtime">${_timeRange(c.started_at, c.ended_at) || _timeOfDay(c.started_at)}</span>
+          </div>
+          <div class="cal-jsum"><b>${(Number(c.kwh) || 0).toFixed(1)}</b> kWh${c.total_cost != null ? ` · <b>${(Number(c.total_cost) || 0).toFixed(2)} ${_esc(sym(c.currency))}</b>` : ""}${c.soc_start != null && c.soc_end != null ? ` · <b>${Math.round(c.soc_start)}→${Math.round(c.soc_end)}%</b>` : ""}</div>
+        </div>`;
+      const body =
+        allEntries
+          .map((it) => (it.type === "journey" ? journeyHtml(it.data) : it.type === "solo" ? soloHtml(it.data) : chargeCard(it.data)))
+          .join("") || '<div class="cal-none">No activity.</div>';
       const [yy, mm, dd] = this._openDate.split("-");
-      const body = jHtml + soloHtml + chs || '<div class="cal-none">No activity.</div>';
       detail = `<div class="cal-detail"><div class="cal-dhead">${dd}/${mm}/${yy}</div>${body}</div>`;
     }
 
@@ -4919,14 +4966,6 @@ class EvTripCalendarCard extends HTMLElement {
           .cal-detail{margin:0 12px 14px;border:1px solid var(--primary-color);border-radius:12px;
                       padding:10px 12px;display:flex;flex-direction:column;gap:6px;}
           .cal-dhead{font-weight:700;font-variant-numeric:tabular-nums;}
-          .cal-row{display:flex;align-items:center;gap:8px;font-size:.85em;}
-          .cal-ricon{flex:0 0 auto;width:24px;height:24px;border-radius:50%;
-                     display:flex;align-items:center;justify-content:center;}
-          .cal-ricon ha-icon{--mdc-icon-size:15px;}
-          .cal-rtime{flex:0 0 auto;color:var(--secondary-text-color);
-                     font-variant-numeric:tabular-nums;}
-          .cal-rmain{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
-          .cal-rval{flex:0 0 auto;font-weight:600;font-variant-numeric:tabular-nums;}
           .cal-none{color:var(--secondary-text-color);font-size:.85em;}
           /* ---- journey groups + route map ---- */
           .cal-journey{border:1px solid var(--divider-color);border-radius:12px;padding:10px;
@@ -4940,6 +4979,10 @@ class EvTripCalendarCard extends HTMLElement {
           .cal-jtime{flex:0 0 auto;color:var(--secondary-text-color);font-size:.82em;font-variant-numeric:tabular-nums;}
           .cal-jsum{font-size:.82em;color:var(--secondary-text-color);font-variant-numeric:tabular-nums;}
           .cal-jsum b{color:var(--primary-text-color);font-weight:700;}
+          .cal-jchg{display:inline-flex;align-items:center;gap:1px;color:var(--info-color,#039be5);font-weight:700;}
+          .cal-jchg ha-icon{--mdc-icon-size:12px;}
+          .cal-journey--chg{border-style:dashed;}
+          .cal-jicon--chg{background:rgba(3,155,229,.16);color:var(--info-color,#039be5);}
           .cal-stages{display:flex;flex-direction:column;gap:6px;border-left:2px solid var(--divider-color);
                       margin-left:13px;padding-left:12px;}
           .cal-stage{display:flex;align-items:center;gap:8px;font-size:.85em;flex-wrap:wrap;}
@@ -4947,6 +4990,8 @@ class EvTripCalendarCard extends HTMLElement {
           .cal-sroute{flex:1 1 auto;min-width:0;display:flex;align-items:center;gap:4px;overflow:hidden;
                       text-overflow:ellipsis;white-space:nowrap;}
           .cal-arr{--mdc-icon-size:14px;color:var(--secondary-text-color);flex:0 0 auto;}
+          .cal-stage--chg .cal-sroute{color:var(--info-color,#039be5);font-weight:600;}
+          .cal-chg-ic{color:var(--info-color,#039be5)!important;}
           .cal-smeta{flex:0 0 auto;color:var(--secondary-text-color);font-variant-numeric:tabular-nums;}
           .cal-pill{flex:0 0 auto;min-width:30px;text-align:center;padding:2px 7px;border-radius:999px;
                     color:#fff;font-weight:800;font-size:.8em;font-variant-numeric:tabular-nums;}
