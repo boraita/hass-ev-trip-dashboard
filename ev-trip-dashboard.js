@@ -2274,8 +2274,17 @@ const _miniPowerSvg = (pts) => {
   const sx = (t) => x0 + (t1 > t0 ? (t - t0) / (t1 - t0) : 0) * (x1 - x0);
   const sy = (v) => y1 - (v / maxKw) * (y1 - y0);
   const ft = (ms) => { const d = new Date(ms); const p = (n) => String(n).padStart(2, "0"); return `${p(d.getHours())}:${p(d.getMinutes())}`; };
-  const line = pts.map((p, i) => `${i ? "L" : "M"}${sx(p.t).toFixed(1)},${sy(p.v).toFixed(1)}`).join(" ");
-  const area = `M${sx(pts[0].t).toFixed(1)},${y1} ` + pts.map((p) => `L${sx(p.t).toFixed(1)},${sy(p.v).toFixed(1)}`).join(" ") + ` L${sx(pts[pts.length - 1].t).toFixed(1)},${y1} Z`;
+  // Step-after: recorder history reports state CHANGES, not fixed samples —
+  // a charge can hold the same power for hours between readings — so hold
+  // each value flat until the next reading instead of a diagonal, which would
+  // otherwise draw a fake continuous ramp between two sparse points.
+  const steps = [{ x: sx(pts[0].t), y: sy(pts[0].v) }];
+  for (let i = 1; i < pts.length; i++) {
+    steps.push({ x: sx(pts[i].t), y: sy(pts[i - 1].v) });
+    steps.push({ x: sx(pts[i].t), y: sy(pts[i].v) });
+  }
+  const line = steps.map((p, i) => `${i ? "L" : "M"}${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(" ");
+  const area = `M${steps[0].x.toFixed(1)},${y1} ` + steps.map((p) => `L${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(" ") + ` L${steps[steps.length - 1].x.toFixed(1)},${y1} Z`;
   const peak = Math.max(...pts.map((p) => p.v));
   return `<svg viewBox="0 0 ${VB_W} ${VB_H}" class="cv-svg" preserveAspectRatio="none">
     <line x1="${x0}" y1="${sy(0).toFixed(1)}" x2="${x1}" y2="${sy(0).toFixed(1)}" class="cv-axis"/>
