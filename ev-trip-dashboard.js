@@ -2266,7 +2266,13 @@ window.customCards.push({
 // markdown quirks, and consistent with the trip list.
 // ==========================================================================
 // Compact power-vs-time SVG for a single charge (used in the charge history).
-const _miniPowerSvg = (pts) => {
+// Interactive: a dot marks every real recorder-history reading (visible even
+// when readings are bunched close together, same idea as the avg-consumption
+// trend chart), and tapping anywhere on it highlights the nearest reading
+// with a time+kW callout — a hover-only <title> tooltip doesn't work on the
+// touchscreens this dashboard actually runs on, which is why the old version
+// (just a filled shape, no readout at all) was hard to read anything from.
+const _miniPowerSvg = (pts, chargeId, selIdx) => {
   const VB_W = 300, VB_H = 92, PL = 22, PR = 6, PT = 6, PB = 14;
   const x0 = PL, x1 = VB_W - PR, y0 = PT, y1 = VB_H - PB;
   const t0 = Math.min(...pts.map((p) => p.t)), t1 = Math.max(...pts.map((p) => p.t));
@@ -2286,13 +2292,31 @@ const _miniPowerSvg = (pts) => {
   const line = steps.map((p, i) => `${i ? "L" : "M"}${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(" ");
   const area = `M${steps[0].x.toFixed(1)},${y1} ` + steps.map((p) => `L${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(" ") + ` L${steps[steps.length - 1].x.toFixed(1)},${y1} Z`;
   const peak = Math.max(...pts.map((p) => p.v));
-  return `<svg viewBox="0 0 ${VB_W} ${VB_H}" class="cv-svg" preserveAspectRatio="none">
+  // Default to the most recent reading so a value is visible before any tap.
+  const idx = selIdx != null && selIdx >= 0 && selIdx < pts.length ? selIdx : pts.length - 1;
+  const dots = pts
+    .map((p, i) => `<circle cx="${sx(p.t).toFixed(1)}" cy="${sy(p.v).toFixed(1)}" r="${i === idx ? 4 : 2}" class="cv-dot${i === idx ? " cv-dot--sel" : ""}"/>`)
+    .join("");
+  const sel = pts[idx];
+  const selX = sx(sel.t);
+  const boxW = 74, boxH = 28;
+  const boxX = Math.min(Math.max(selX - boxW / 2, x0), x1 - boxW);
+  const guide = `<line x1="${selX.toFixed(1)}" y1="${y0}" x2="${selX.toFixed(1)}" y2="${y1}" class="cv-guide"/>`;
+  const callout = `
+    <g class="cv-callout">
+      <rect x="${boxX.toFixed(1)}" y="${y0 + 2}" width="${boxW}" height="${boxH}" rx="5"/>
+      <text x="${(boxX + boxW / 2).toFixed(1)}" y="${y0 + 13}" text-anchor="middle" class="cv-ct">${ft(sel.t)}</text>
+      <text x="${(boxX + boxW / 2).toFixed(1)}" y="${y0 + 25}" text-anchor="middle" class="cv-cv">${sel.v.toFixed(1)} kW</text>
+    </g>`;
+  return `<svg viewBox="0 0 ${VB_W} ${VB_H}" class="cv-svg" data-charge-id="${_esc(chargeId)}" preserveAspectRatio="none">
     <line x1="${x0}" y1="${sy(0).toFixed(1)}" x2="${x1}" y2="${sy(0).toFixed(1)}" class="cv-axis"/>
     <text x="${x0 - 3}" y="${(sy(maxKw) + 4).toFixed(1)}" text-anchor="end" class="cv-lbl">${peak.toFixed(0)}</text>
     <path d="${area}" class="cv-area"/><path d="${line}" class="cv-line"/>
+    ${guide}${dots}${callout}
     <text x="${x0}" y="${VB_H - 3}" class="cv-lbl">${ft(t0)}</text>
     <text x="${x1}" y="${VB_H - 3}" text-anchor="end" class="cv-lbl">${ft(t1)}</text>
-  </svg>`;
+  </svg>
+  <div class="cv-hint">${L("Tap the chart to inspect a reading", "Toca el gráfico para ver una lectura")}</div>`;
 };
 class EvTripHistoryCard extends HTMLElement {
   setConfig(config) {
@@ -2301,6 +2325,7 @@ class EvTripHistoryCard extends HTMLElement {
     this._kind = this._config.kind === "charges" ? "charges" : "journeys";
     this._curves = this._curves || {}; // charge_id -> points | 'loading'
     this._streets = this._streets || {}; // charge_id -> {label,lat,lon} | 'loading'
+    this._curveTap = this._curveTap || {}; // charge_id -> tapped x-fraction (0..1) in its power curve
   }
   set hass(hass) {
     this._hass = hass;
@@ -2341,6 +2366,18 @@ class EvTripHistoryCard extends HTMLElement {
       }
       // Clicks inside the editor row must not toggle the day open/closed.
       if (tgt.closest(".cp-edit")) { ev.stopPropagation(); return; }
+      // Tap the power curve: highlight whichever reading is nearest the tap.
+      const cv = tgt.closest(".cv-svg[data-charge-id]");
+      if (cv && this.contains(cv)) {
+        ev.stopPropagation();
+        const id = cv.getAttribute("data-charge-id");
+        const rect = cv.getBoundingClientRect();
+        if (id != null && rect.width > 0) {
+          this._curveTap[id] = Math.min(1, Math.max(0, (ev.clientX - rect.left) / rect.width));
+          this._render();
+        }
+        return;
+      }
       const j = tgt.closest(".journey[data-journey-id]");
       if (j && this.contains(j)) {
         const id = j.getAttribute("data-journey-id");
@@ -2540,13 +2577,20 @@ class EvTripHistoryCard extends HTMLElement {
           .session{display:flex;align-items:center;gap:10px;padding:8px 4px;}
           /* ---- per-charge power curve ---- */
           .s-curve{padding:2px 4px 8px;}
-          .cv-svg{display:block;width:100%;height:92px;}
+          .cv-svg{display:block;width:100%;height:92px;cursor:pointer;touch-action:pan-y;}
           .cv-axis{stroke:var(--divider-color);stroke-width:1;}
           .cv-area{fill:var(--info-color,#039be5);opacity:.13;}
           .cv-line{fill:none;stroke:var(--info-color,#039be5);stroke-width:2.5;
                    stroke-linejoin:round;stroke-linecap:round;}
           .cv-lbl{fill:var(--secondary-text-color);font-size:8px;}
           .cv-msg{font-size:.78em;color:var(--secondary-text-color);padding:6px 2px;text-align:center;}
+          .cv-dot{fill:var(--info-color,#039be5);fill-opacity:.5;}
+          .cv-dot--sel{fill-opacity:1;stroke:var(--card-background-color,#fff);stroke-width:1.4;}
+          .cv-guide{stroke:var(--info-color,#039be5);stroke-width:1;stroke-dasharray:3 3;opacity:.5;}
+          .cv-callout rect{fill:var(--info-color,#039be5);opacity:.95;}
+          .cv-ct{fill:#fff;font-size:8px;font-weight:600;}
+          .cv-cv{fill:#fff;font-size:9.5px;font-weight:800;}
+          .cv-hint{font-size:.66em;color:var(--secondary-text-color);text-align:center;padding:2px 0 0;}
           .session .sbody{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;gap:3px;}
           .session .sroute{display:flex;align-items:center;gap:6px;flex-wrap:wrap;font-size:.9em;}
           .session .stime{font-weight:700;color:var(--primary-text-color);
@@ -2856,7 +2900,22 @@ class EvTripHistoryCard extends HTMLElement {
         let curve;
         if (cv == null || cv === "loading") curve = `<div class="cv-msg">Loading power curve…</div>`;
         else if (!Array.isArray(cv) || cv.length < 2) curve = `<div class="cv-msg">No power history for this charge.</div>`;
-        else curve = _miniPowerSvg(cv);
+        else {
+          // Map the tapped x-fraction (if any) back to the nearest real reading.
+          const frac = this._curveTap[id];
+          let selIdx;
+          if (frac != null) {
+            const ct0 = Math.min(...cv.map((p) => p.t)), ct1 = Math.max(...cv.map((p) => p.t));
+            const targetT = ct0 + frac * (ct1 - ct0);
+            let best = 0, bestD = Infinity;
+            for (let i = 0; i < cv.length; i++) {
+              const d = Math.abs(cv[i].t - targetT);
+              if (d < bestD) { bestD = d; best = i; }
+            }
+            selIdx = best;
+          }
+          curve = _miniPowerSvg(cv, id, selIdx);
+        }
         const cid = c.charge_id != null ? c.charge_id : c.id;
         const locked = c.price_locked === true;
         // Home charges always use the default home price — only AWAY charges
