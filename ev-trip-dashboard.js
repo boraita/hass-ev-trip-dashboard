@@ -4854,7 +4854,7 @@ class EvTripCalendarCard extends HTMLElement {
         });
         return out;
       };
-      for (const it of dayEntries) it.embeddedCharges = takeEmbedded(it.data.started_at, it.data.ended_at);
+      for (const it of dayEntries) it.data.embeddedCharges = takeEmbedded(it.data.started_at, it.data.ended_at);
       const looseCharges = chargesSorted.filter((c, i) => !embeddedIdx.has(i));
       const allEntries = dayEntries
         .concat(looseCharges.map((c) => ({ type: "charge", at: c.started_at || c.ended_at, data: c })))
