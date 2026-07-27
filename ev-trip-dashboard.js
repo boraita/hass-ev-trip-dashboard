@@ -833,38 +833,8 @@ function eficienciaView(D, hass, V, cfg) {
     alignment: "start",
   });
 
-  // ---- Hero — 30-day avg consumption -----------------------------------
-  // Green gradient background; state_display appends "kWh/100km".
-  cards.push({
-    type: "custom:button-card",
-    entity: `sensor.${D}_avg_consumption_30_days`,
-    name: "Avg consumption (30 days)",
-    show_state: true,
-    show_icon: true,
-    icon: "mdi:leaf",
-    styles: {
-      card: [
-        { padding: "18px" },
-        { "border-radius": "16px" },
-        { background: "linear-gradient(135deg, rgba(46,160,67,0.18), rgba(46,160,67,0.04))" },
-      ],
-      grid: [
-        { "grid-template-areas": '"i n" "i s"' },
-        { "grid-template-columns": "64px 1fr" },
-        { "grid-template-rows": "auto auto" },
-      ],
-      icon: [{ color: "#2ea043" }, { width: "48px" }],
-      name: [{ "justify-self": "start" }, { "font-size": "14px" }, { opacity: "0.75" }],
-      state: [
-        { "justify-self": "start" },
-        { "font-size": "28px" },
-        { "font-weight": "600" },
-        { color: "#2ea043" },
-      ],
-    },
-    state_display:
-      "[[[ const n = entity && Number(entity.state); return (n==null||isNaN(n)) ? '—' : `${n.toFixed(1)} kWh/100km`; ]]]",
-  });
+  // (30-day avg-consumption hero removed — the consumption TREND chart below
+  // shows the average by date, which is more useful.)
 
   // ---- Average consumption TREND (kWh/100km) — filled line chart, the
   // "am I using more or less lately?" view (7 days / week / month) with a
@@ -2296,7 +2266,13 @@ window.customCards.push({
 // markdown quirks, and consistent with the trip list.
 // ==========================================================================
 // Compact power-vs-time SVG for a single charge (used in the charge history).
-const _miniPowerSvg = (pts) => {
+// Interactive: a dot marks every real recorder-history reading (visible even
+// when readings are bunched close together, same idea as the avg-consumption
+// trend chart), and tapping anywhere on it highlights the nearest reading
+// with a time+kW callout — a hover-only <title> tooltip doesn't work on the
+// touchscreens this dashboard actually runs on, which is why the old version
+// (just a filled shape, no readout at all) was hard to read anything from.
+const _miniPowerSvg = (pts, chargeId, selIdx) => {
   const VB_W = 300, VB_H = 92, PL = 22, PR = 6, PT = 6, PB = 14;
   const x0 = PL, x1 = VB_W - PR, y0 = PT, y1 = VB_H - PB;
   const t0 = Math.min(...pts.map((p) => p.t)), t1 = Math.max(...pts.map((p) => p.t));
@@ -2304,16 +2280,43 @@ const _miniPowerSvg = (pts) => {
   const sx = (t) => x0 + (t1 > t0 ? (t - t0) / (t1 - t0) : 0) * (x1 - x0);
   const sy = (v) => y1 - (v / maxKw) * (y1 - y0);
   const ft = (ms) => { const d = new Date(ms); const p = (n) => String(n).padStart(2, "0"); return `${p(d.getHours())}:${p(d.getMinutes())}`; };
-  const line = pts.map((p, i) => `${i ? "L" : "M"}${sx(p.t).toFixed(1)},${sy(p.v).toFixed(1)}`).join(" ");
-  const area = `M${sx(pts[0].t).toFixed(1)},${y1} ` + pts.map((p) => `L${sx(p.t).toFixed(1)},${sy(p.v).toFixed(1)}`).join(" ") + ` L${sx(pts[pts.length - 1].t).toFixed(1)},${y1} Z`;
+  // Step-after: recorder history reports state CHANGES, not fixed samples —
+  // a charge can hold the same power for hours between readings — so hold
+  // each value flat until the next reading instead of a diagonal, which would
+  // otherwise draw a fake continuous ramp between two sparse points.
+  const steps = [{ x: sx(pts[0].t), y: sy(pts[0].v) }];
+  for (let i = 1; i < pts.length; i++) {
+    steps.push({ x: sx(pts[i].t), y: sy(pts[i - 1].v) });
+    steps.push({ x: sx(pts[i].t), y: sy(pts[i].v) });
+  }
+  const line = steps.map((p, i) => `${i ? "L" : "M"}${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(" ");
+  const area = `M${steps[0].x.toFixed(1)},${y1} ` + steps.map((p) => `L${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(" ") + ` L${steps[steps.length - 1].x.toFixed(1)},${y1} Z`;
   const peak = Math.max(...pts.map((p) => p.v));
-  return `<svg viewBox="0 0 ${VB_W} ${VB_H}" class="cv-svg" preserveAspectRatio="none">
+  // Default to the most recent reading so a value is visible before any tap.
+  const idx = selIdx != null && selIdx >= 0 && selIdx < pts.length ? selIdx : pts.length - 1;
+  const dots = pts
+    .map((p, i) => `<circle cx="${sx(p.t).toFixed(1)}" cy="${sy(p.v).toFixed(1)}" r="${i === idx ? 4 : 2}" class="cv-dot${i === idx ? " cv-dot--sel" : ""}"/>`)
+    .join("");
+  const sel = pts[idx];
+  const selX = sx(sel.t);
+  const boxW = 74, boxH = 28;
+  const boxX = Math.min(Math.max(selX - boxW / 2, x0), x1 - boxW);
+  const guide = `<line x1="${selX.toFixed(1)}" y1="${y0}" x2="${selX.toFixed(1)}" y2="${y1}" class="cv-guide"/>`;
+  const callout = `
+    <g class="cv-callout">
+      <rect x="${boxX.toFixed(1)}" y="${y0 + 2}" width="${boxW}" height="${boxH}" rx="5"/>
+      <text x="${(boxX + boxW / 2).toFixed(1)}" y="${y0 + 13}" text-anchor="middle" class="cv-ct">${ft(sel.t)}</text>
+      <text x="${(boxX + boxW / 2).toFixed(1)}" y="${y0 + 25}" text-anchor="middle" class="cv-cv">${sel.v.toFixed(1)} kW</text>
+    </g>`;
+  return `<svg viewBox="0 0 ${VB_W} ${VB_H}" class="cv-svg" data-charge-id="${_esc(chargeId)}" preserveAspectRatio="none">
     <line x1="${x0}" y1="${sy(0).toFixed(1)}" x2="${x1}" y2="${sy(0).toFixed(1)}" class="cv-axis"/>
     <text x="${x0 - 3}" y="${(sy(maxKw) + 4).toFixed(1)}" text-anchor="end" class="cv-lbl">${peak.toFixed(0)}</text>
     <path d="${area}" class="cv-area"/><path d="${line}" class="cv-line"/>
+    ${guide}${dots}${callout}
     <text x="${x0}" y="${VB_H - 3}" class="cv-lbl">${ft(t0)}</text>
     <text x="${x1}" y="${VB_H - 3}" text-anchor="end" class="cv-lbl">${ft(t1)}</text>
-  </svg>`;
+  </svg>
+  <div class="cv-hint">${L("Tap the chart to inspect a reading", "Toca el gráfico para ver una lectura")}</div>`;
 };
 class EvTripHistoryCard extends HTMLElement {
   setConfig(config) {
@@ -2322,6 +2325,7 @@ class EvTripHistoryCard extends HTMLElement {
     this._kind = this._config.kind === "charges" ? "charges" : "journeys";
     this._curves = this._curves || {}; // charge_id -> points | 'loading'
     this._streets = this._streets || {}; // charge_id -> {label,lat,lon} | 'loading'
+    this._curveTap = this._curveTap || {}; // charge_id -> tapped x-fraction (0..1) in its power curve
   }
   set hass(hass) {
     this._hass = hass;
@@ -2362,6 +2366,18 @@ class EvTripHistoryCard extends HTMLElement {
       }
       // Clicks inside the editor row must not toggle the day open/closed.
       if (tgt.closest(".cp-edit")) { ev.stopPropagation(); return; }
+      // Tap the power curve: highlight whichever reading is nearest the tap.
+      const cv = tgt.closest(".cv-svg[data-charge-id]");
+      if (cv && this.contains(cv)) {
+        ev.stopPropagation();
+        const id = cv.getAttribute("data-charge-id");
+        const rect = cv.getBoundingClientRect();
+        if (id != null && rect.width > 0) {
+          this._curveTap[id] = Math.min(1, Math.max(0, (ev.clientX - rect.left) / rect.width));
+          this._render();
+        }
+        return;
+      }
       const j = tgt.closest(".journey[data-journey-id]");
       if (j && this.contains(j)) {
         const id = j.getAttribute("data-journey-id");
@@ -2412,12 +2428,24 @@ class EvTripHistoryCard extends HTMLElement {
     const cipOn = cip && String(cip.state).toLowerCase() === "charging";
     if (!cipOn) return null;
     const numOf = (id) => { const s = st(id); const v = s ? parseFloat(s.state) : NaN; return isNaN(v) ? null : v; };
-    const energy = numOf(`sensor.${D}_current_charge_energy`);
+    let energy = numOf(`sensor.${D}_current_charge_energy`);
     const durMin = numOf(`sensor.${D}_current_charge_duration`);
     const typeS = st(`sensor.${D}_current_charge_type`);
     const type = typeS && typeS.state && !["unknown", "unavailable"].includes(String(typeS.state).toLowerCase()) ? String(typeS.state).toUpperCase() : null;
     const socStart = cip.attributes && cip.attributes.soc_start != null ? Number(cip.attributes.soc_start) : null;
     const socNow = numOf(`sensor.${D}_battery_percent`);
+    // current_charge_energy is often stuck at 0 mid-charge (logger bug:
+    // soc_start null). Estimate the kWh into the battery so the live row isn't
+    // "0": prefer EVSE-metered AC × efficiency (DC), else SoC-gain × pack kWh.
+    if (energy == null || energy === 0) {
+      const evse = numOf(`sensor.${D}_current_charge_evse_kwh`);
+      const eff = numOf(`sensor.${D}_current_charge_efficiency`);
+      if (evse != null && evse > 0) energy = eff != null && eff > 20 && eff <= 100 ? evse * (eff / 100) : evse;
+      else if (socStart != null && socNow != null && socNow > socStart) {
+        const cap = (numOf(`sensor.${D}_battery_energy`) || 0) + (numOf(`sensor.${D}_energy_to_full_charge`) || 0);
+        if (cap > 0) energy = ((socNow - socStart) / 100) * cap;
+      }
+    }
     const costEnt = st(`sensor.${D}_current_charge_cost`);
     const currency = (costEnt && costEnt.attributes && costEnt.attributes.unit_of_measurement) || "EUR";
     const le = this._config.locationEntity ? st(this._config.locationEntity) : null;
@@ -2549,13 +2577,20 @@ class EvTripHistoryCard extends HTMLElement {
           .session{display:flex;align-items:center;gap:10px;padding:8px 4px;}
           /* ---- per-charge power curve ---- */
           .s-curve{padding:2px 4px 8px;}
-          .cv-svg{display:block;width:100%;height:92px;}
+          .cv-svg{display:block;width:100%;height:92px;cursor:pointer;touch-action:pan-y;}
           .cv-axis{stroke:var(--divider-color);stroke-width:1;}
           .cv-area{fill:var(--info-color,#039be5);opacity:.13;}
           .cv-line{fill:none;stroke:var(--info-color,#039be5);stroke-width:2.5;
                    stroke-linejoin:round;stroke-linecap:round;}
           .cv-lbl{fill:var(--secondary-text-color);font-size:8px;}
           .cv-msg{font-size:.78em;color:var(--secondary-text-color);padding:6px 2px;text-align:center;}
+          .cv-dot{fill:var(--info-color,#039be5);fill-opacity:.5;}
+          .cv-dot--sel{fill-opacity:1;stroke:var(--card-background-color,#fff);stroke-width:1.4;}
+          .cv-guide{stroke:var(--info-color,#039be5);stroke-width:1;stroke-dasharray:3 3;opacity:.5;}
+          .cv-callout rect{fill:var(--info-color,#039be5);opacity:.95;}
+          .cv-ct{fill:#fff;font-size:8px;font-weight:600;}
+          .cv-cv{fill:#fff;font-size:9.5px;font-weight:800;}
+          .cv-hint{font-size:.66em;color:var(--secondary-text-color);text-align:center;padding:2px 0 0;}
           .session .sbody{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;gap:3px;}
           .session .sroute{display:flex;align-items:center;gap:6px;flex-wrap:wrap;font-size:.9em;}
           .session .stime{font-weight:700;color:var(--primary-text-color);
@@ -2865,7 +2900,22 @@ class EvTripHistoryCard extends HTMLElement {
         let curve;
         if (cv == null || cv === "loading") curve = `<div class="cv-msg">Loading power curve…</div>`;
         else if (!Array.isArray(cv) || cv.length < 2) curve = `<div class="cv-msg">No power history for this charge.</div>`;
-        else curve = _miniPowerSvg(cv);
+        else {
+          // Map the tapped x-fraction (if any) back to the nearest real reading.
+          const frac = this._curveTap[id];
+          let selIdx;
+          if (frac != null) {
+            const ct0 = Math.min(...cv.map((p) => p.t)), ct1 = Math.max(...cv.map((p) => p.t));
+            const targetT = ct0 + frac * (ct1 - ct0);
+            let best = 0, bestD = Infinity;
+            for (let i = 0; i < cv.length; i++) {
+              const d = Math.abs(cv[i].t - targetT);
+              if (d < bestD) { bestD = d; best = i; }
+            }
+            selIdx = best;
+          }
+          curve = _miniPowerSvg(cv, id, selIdx);
+        }
         const cid = c.charge_id != null ? c.charge_id : c.id;
         const locked = c.price_locked === true;
         // Home charges always use the default home price — only AWAY charges
@@ -3930,7 +3980,17 @@ class EvTripConsumptionCard extends HTMLElement {
       const b = ev.target && ev.target.closest && ev.target.closest(".cc-btn[data-m]");
       if (b && this.contains(b)) {
         this._period = b.getAttribute("data-m");
+        this._sel = null; // reset the picked bar when switching period
         try { localStorage.setItem("evTripConsPeriod", this._period); } catch (_e) {}
+        this._render();
+        return;
+      }
+      // Tap a bar to see exactly how much was consumed that day/week/month/year
+      // (the headline switches to that bar; tap again to clear).
+      const bar = ev.target && ev.target.closest && ev.target.closest(".cc-bar[data-i]");
+      if (bar && this.contains(bar)) {
+        const i = parseInt(bar.getAttribute("data-i"), 10);
+        this._sel = this._sel === i ? null : i;
         this._render();
       }
     });
@@ -4032,8 +4092,10 @@ class EvTripConsumptionCard extends HTMLElement {
       .cc-num{font-size:2em;font-weight:800;color:var(--primary-text-color);font-variant-numeric:tabular-nums;}
       .cc-unit{font-size:.9em;color:var(--secondary-text-color);}
       .cc-sub{padding:2px 16px 8px;font-size:.85em;color:var(--secondary-text-color);font-variant-numeric:tabular-nums;}
+      .cc-hint{opacity:.55;font-style:italic;}
       .cc-chart{display:flex;align-items:flex-end;gap:2px;height:104px;padding:0 14px 22px;position:relative;}
-      .cc-bar{flex:1 1 0;height:100%;display:flex;flex-direction:column;justify-content:flex-end;align-items:center;position:relative;}
+      .cc-bar{flex:1 1 0;height:100%;display:flex;flex-direction:column;justify-content:flex-end;align-items:center;position:relative;cursor:pointer;}
+      .cc-bar.cc-sel .cc-fill{opacity:1;background:linear-gradient(180deg,var(--warning-color,#fb8c00),var(--primary-color));box-shadow:0 0 0 2px var(--warning-color,#fb8c00);}
       .cc-fill{width:78%;min-height:1px;border-radius:3px 3px 0 0;background:linear-gradient(180deg,var(--info-color,#039be5),var(--primary-color));opacity:.85;}
       .cc-bar.cc-cur .cc-fill{opacity:1;background:linear-gradient(180deg,var(--success-color,#43a047),var(--primary-color));}
       .cc-lbl{position:absolute;bottom:-18px;font-size:.68em;white-space:nowrap;color:var(--primary-text-color);opacity:.75;font-variant-numeric:tabular-nums;}
@@ -4053,19 +4115,25 @@ class EvTripConsumptionCard extends HTMLElement {
     const barsHtml = bars.map((b, i) => {
       const pct = Math.round((b.kwh / maxV) * 100);
       const cur = i === bars.length - 1;
+      const sel = i === this._sel;
       const lbl = lblIdx.has(i) ? `<div class="cc-lbl">${_esc(b.label)}</div>` : "";
       const c = b.km > 0 ? (b.kwh / b.km) * 100 : null;
       const tip = `${_esc(b.label)} — ${f1(b.kwh)} kWh${b.km ? ` · ${f0(b.km)} km` : ""}${c != null ? ` · ${f1(c)} kWh/100km` : ""}`;
-      return `<div class="cc-bar${cur ? " cc-cur" : ""}" title="${tip}"><div class="cc-fill" style="height:${pct}%"></div>${lbl}</div>`;
+      return `<div class="cc-bar${cur ? " cc-cur" : ""}${sel ? " cc-sel" : ""}" data-i="${i}" title="${tip}"><div class="cc-fill" style="height:${pct}%"></div>${lbl}</div>`;
     }).join("");
     const avgPct = Math.round((avg / maxV) * 100);
     const avgLine = avg > 0 ? `<div class="cc-avg" style="bottom:${22 + (avgPct / 100) * (104 - 22)}px"></div><div class="cc-avglbl" style="bottom:${22 + (avgPct / 100) * (104 - 22)}px">${L("avg", "media")} ${f1(avg)}</div>` : "";
     // kWh/100km for a (kwh, km) pair — same formula as the logger's
     // avg_consumption_kwh_100km. Null when no distance (avoids /0 nonsense).
     const consLbl = (kwh, km) => (km > 0 ? ` · ${f1((kwh / km) * 100)} kWh/100km` : "");
-    // Headline: Day → window total + per-active-day; Month/Year → current bucket.
+    // Headline: a tapped bar → that exact bucket; else Day → window total,
+    // Week/Month/Year → current bucket. The hint shows the tap affordance.
     let heroNum, heroSub;
-    if (this._period === "day") {
+    if (this._sel != null && bars[this._sel]) {
+      const b = bars[this._sel];
+      heroNum = f1(b.kwh);
+      heroSub = `📍 ${_esc(b.label)}${b.km ? ` · ${f0(b.km)} km` : ""}${b.cost ? ` · ${f1(b.cost)} ${_esc(sym)}` : ""}${consLbl(b.kwh, b.km)}`;
+    } else if (this._period === "day") {
       const tot = bars.reduce((a, b) => a + b.kwh, 0);
       const totKm = bars.reduce((a, b) => a + b.km, 0);
       heroNum = f1(tot);
@@ -4079,6 +4147,7 @@ class EvTripConsumptionCard extends HTMLElement {
       heroNum = f1(cur.kwh);
       heroSub = `${_esc(cur.label)}${cur.km ? ` · ${f0(cur.km)} km` : ""}${cur.cost ? ` · ${f1(cur.cost)} ${_esc(sym)}` : ""}${consLbl(cur.kwh, cur.km)}`;
     }
+    if (this._sel == null && bars.length > 1) heroSub += ` · <span class="cc-hint">${L("tap a bar", "toca una barra")}</span>`;
     this.innerHTML = `<ha-card>
       ${head}
       <div class="cc-hero"><span class="cc-num">${heroNum}</span><span class="cc-unit">kWh</span></div>
@@ -4292,7 +4361,7 @@ class EvChargeSummaryCard extends HTMLElement {
   setConfig(config) {
     this._config = config || {};
     this._device = this._config.device || null;
-    try { const m = localStorage.getItem("evChargeSummaryPeriod"); this._period = ["week", "month", "year"].includes(m) ? m : "week"; }
+    try { const m = localStorage.getItem("evChargeSummaryPeriod"); this._period = ["week", "month", "year", "total"].includes(m) ? m : "week"; }
     catch (_e) { this._period = "week"; }
   }
   set hass(hass) { this._hass = hass; this._render(); }
@@ -4310,11 +4379,13 @@ class EvChargeSummaryCard extends HTMLElement {
     });
   }
   _num(id) { const s = this._hass.states[id]; const v = s ? parseFloat(s.state) : NaN; return isNaN(v) ? null : v; }
-  _starts() {
-    const now = new Date();
-    const today = new Date(now); today.setHours(0, 0, 0, 0);
-    const week = new Date(today); week.setDate(today.getDate() - ((now.getDay() + 6) % 7)); // Monday
-    return { today, week, month: new Date(now.getFullYear(), now.getMonth(), 1), year: new Date(now.getFullYear(), 0, 1) };
+  // Rolling look-back cutoffs (time BACKWARD), not calendar-to-date — so the
+  // card reads as "the last 7/30/365 days" and never looks empty early in a
+  // week/month. `total` = all-time.
+  _cutoffs() {
+    const now = Date.now();
+    const back = (days) => new Date(now - days * 86400000);
+    return { week: back(7), month: back(30), year: back(365), total: new Date(0) };
   }
   // Window aggregate from recent_charges since `start`. battery = Σ kwh (DC into
   // the pack); evse = Σ evse_energy_kwh over EVSE-metered charges (AC); matchBat
@@ -4346,11 +4417,17 @@ class EvChargeSummaryCard extends HTMLElement {
     }
     return any ? kwh : null;
   }
-  _drivingYear(D) {
+  // Driving kWh from monthly_history for months at/after `cutoff` (used for the
+  // year/total rows, where the ~50-trip window would badly undercount). A month
+  // is included when its start date is >= cutoff; total passes epoch → all.
+  _drivingHist(D, cutoff) {
     const months = ((this._hass.states[`sensor.${D}_monthly_history`] || {}).attributes || {}).months;
     if (!Array.isArray(months)) return null;
-    const y = String(new Date().getFullYear()); let kwh = 0, any = false;
-    for (const m of months) { if (String(m.month || "").slice(0, 4) === y) { const e = Number(m.energy_kwh); if (!isNaN(e)) { kwh += e; any = true; } } }
+    let kwh = 0, any = false;
+    for (const m of months) {
+      const md = new Date(String(m.month || "") + "-01"); if (isNaN(md) || md < cutoff) continue;
+      const e = Number(m.energy_kwh); if (!isNaN(e)) { kwh += e; any = true; }
+    }
     return any ? kwh : null;
   }
   _render() {
@@ -4359,42 +4436,73 @@ class EvChargeSummaryCard extends HTMLElement {
     if (!this._bound && typeof this.addEventListener === "function") this.connectedCallback();
     const D = this._device || detectDevice(this._hass); this._device = D;
     const f1 = (v) => (v == null || isNaN(v) ? "—" : Number(v).toFixed(1));
-    const s = this._starts();
-    // Resolve the four tiles for one period. Month/year read the logger's
-    // authoritative period sensors (the rolling recent_charges window can't
-    // represent a whole month/year — it caps at ~28 entries). Today/week have
-    // no per-day/week logger sensor, so they use the window. From-charger (AC)
-    // is DERIVED as battery ÷ efficiency so it stays physically consistent
-    // (AC ≥ DC) — the measured grid_* value is partial while only some charges
-    // are EVSE-metered, which otherwise reads as charger << battery.
-    const resolve = (kind, start) => {
+    const cut = this._cutoffs();
+    // A plausible charging efficiency is 50–100 %. The logger can emit garbage
+    // (e.g. evse_energy_kwh < kwh → 157 %); clamp it out so the derived
+    // "From charger" (= battery ÷ efficiency) can never read charger < battery.
+    const plaus = (e) => (e != null && e >= 50 && e <= 100 ? e : null);
+    const effYear = this._num(`sensor.${D}_avg_charging_efficiency_this_year`);
+    const effMonth = this._num(`sensor.${D}_avg_charging_efficiency_this_month`);
+    // Resolve the three tiles for one ROLLING period. Battery/charger sum the
+    // recent_charges window since the cutoff (total uses the lifetime sensor);
+    // driving uses the trip window for week/month and monthly_history for
+    // year/total (where the ~50-trip window would undercount). From-charger is
+    // derived from battery ÷ a SANE efficiency (this window's, else the 30d/
+    // year logger averages) so it stays physically consistent (AC ≥ DC).
+    const resolve = (kind) => {
+      const start = cut[kind];
       const w = this._chargeAgg(D, start);
-      let bat = w.batKwh, eff = w.eff, n = w.n, drv;
-      if (kind === "month") {
-        bat = this._num(`sensor.${D}_energy_charged_this_month`) ?? bat;
-        eff = this._num(`sensor.${D}_avg_charging_efficiency_this_month`) ?? eff;
-        n = this._num(`sensor.${D}_charges_this_month`) ?? n;
-        drv = this._num(`sensor.${D}_energy_this_month`) ?? this._drivingTrips(D, start);
-      } else if (kind === "year") {
-        bat = this._num(`sensor.${D}_battery_energy_charged_this_year`) ?? this._num(`sensor.${D}_battery_energy_charged_lifetime`) ?? bat;
-        eff = this._num(`sensor.${D}_avg_charging_efficiency_this_year`) ?? eff;
-        drv = this._drivingYear(D) ?? this._drivingTrips(D, start);
-      } else {
-        drv = this._drivingTrips(D, start);
-      }
-      const chg = eff != null && eff > 0 && bat != null ? bat / (eff / 100) : null;
+      let bat = w.batKwh, n = w.n;
+      if (kind === "total") bat = this._num(`sensor.${D}_battery_energy_charged_lifetime`) ?? bat;
+      const eff = plaus(w.eff) ?? plaus(effYear) ?? plaus(effMonth);
+      const chg = eff != null && bat != null ? bat / (eff / 100) : null;
+      const drv = kind === "week" || kind === "month" ? this._drivingTrips(D, start) : (this._drivingHist(D, start) ?? this._drivingTrips(D, start));
       return { bat, chg, eff, n, drv };
     };
-    const startOf = { week: s.week, month: s.month, year: s.year };
-    const r = resolve(this._period, startOf[this._period]);
+    const r = resolve(this._period);
     const nSub = r.n ? `${r.n} ${L(r.n === 1 ? "charge" : "charges", r.n === 1 ? "carga" : "cargas")}` : L("no charges", "sin cargas");
     const effSub = r.eff != null ? `${r.eff.toFixed(0)}% eff` : (r.n ? L("needs EVSE", "falta EVSE") : "");
     const tile = (icon, clr, lbl, val, sub) =>
       `<div class="cv-tile"><ha-icon icon="${icon}" style="color:${clr}"></ha-icon><div class="cv-lbl">${lbl}</div><div class="cv-val">${val}<span class="cv-u"> kWh</span></div>${sub ? `<div class="cv-sub">${sub}</div>` : ""}</div>`;
     // Single period, switchable — keeps the card to one row of three tiles so it
     // sits cleanly in a column (no more stacked per-period grids).
-    const seg = [["week", L("Week", "Semana")], ["month", L("Month", "Mes")], ["year", L("Year", "Año")]]
+    const seg = [["week", L("Week", "Semana")], ["month", L("Month", "Mes")], ["year", L("Year", "Año")], ["total", L("Total", "Total")]]
       .map(([m, lbl]) => `<button class="cs-btn${m === this._period ? " on" : ""}" data-m="${m}">${lbl}</button>`).join("");
+    // Comparison bar chart under the tiles — the same three values on a shared
+    // scale, so the relationship is obvious at a glance (charger ≥ battery = the
+    // charging loss; driving vs battery = drove more/less than you charged).
+    const maxV = Math.max(r.chg || 0, r.bat || 0, r.drv || 0, 0.001);
+    const bar = (lbl, val, color) => {
+      const has = val != null && !isNaN(val);
+      const pct = has ? Math.max(2, Math.round((val / maxV) * 100)) : 0;
+      const valTxt = has ? `${f1(val)}<span class="cv-bu"> kWh</span>` : "—";
+      return `<div class="cv-brow"><span class="cv-blbl">${lbl}</span>` +
+        `<div class="cv-btrack">${has ? `<div class="cv-bfill" style="width:${pct}%;background:${color}"></div>` : ""}</div>` +
+        `<span class="cv-bval">${valTxt}</span></div>`;
+    };
+    const barsHtml = `<div class="cv-bars">` +
+      bar(L("From charger", "Del cargador"), r.chg, "var(--info-color,#039be5)") +
+      bar(L("To battery", "A batería"), r.bat, "var(--success-color,#43a047)") +
+      `</div>`;
+    // Inverter→battery FLOW chart: the charger (AC out of the inverter) is the
+    // full bar, split into what reached the battery (green) and what was lost
+    // while charging (amber, striped) — so the difference between inverter
+    // output and what the car got is obvious. Falls back to the plain bars when
+    // there's no charger value. (Driving lives on the main view — not repeated.)
+    const canFlow = r.chg != null && r.bat != null && r.chg > 0.01;
+    let chartHtml = barsHtml;
+    if (canFlow) {
+      const batPct = Math.max(3, Math.min(100, (r.bat / r.chg) * 100));
+      const lossPct = Math.max(0, 100 - batPct);
+      const loss = Math.max(0, r.chg - r.bat);
+      const batSpan = batPct > 20 ? `<span>${f1(r.bat)}</span>` : "";
+      const lossSeg = lossPct > 0.5 ? `<div class="cf-seg cf-loss" style="width:${lossPct}%">${lossPct > 16 ? `<span>${f1(loss)}</span>` : ""}</div>` : "";
+      chartHtml = `<div class="cf-wrap">` +
+        `<div class="cf-cap"><span>${L("From inverter", "Del inversor")} <b>${f1(r.chg)}</b> kWh</span><span class="cf-eff">${r.eff != null ? r.eff.toFixed(0) + "% " + L("efficiency", "eficiencia") : ""}</span></div>` +
+        `<div class="cf-bar"><div class="cf-seg cf-bat" style="width:${batPct}%">${batSpan}</div>${lossSeg}</div>` +
+        `<div class="cf-legend"><i><span class="cf-sw cf-bat"></span>${L("To battery", "A batería")} ${f1(r.bat)} kWh</i><i><span class="cf-sw cf-loss"></span>${L("Loss", "Pérdida")} ${f1(loss)} kWh</i></div>` +
+        `</div>`;
+    }
     this.innerHTML = `<ha-card>
       <div class="cv-head"><ha-icon icon="mdi:transmission-tower"></ha-icon><span class="cv-title">${L("Charger · battery · driving", "Cargador · batería · conducción")}</span><div class="cs-seg">${seg}</div></div>
       <div class="cv-grid">
@@ -4402,6 +4510,7 @@ class EvChargeSummaryCard extends HTMLElement {
         ${tile("mdi:car-battery", "var(--success-color,#43a047)", L("To battery", "A batería"), f1(r.bat), nSub)}
         ${tile("mdi:car-electric", "var(--error-color,#e53935)", L("Driving", "Conducción"), f1(r.drv), "")}
       </div>
+      ${chartHtml}
       <style>
         .cv-head{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:6px;padding:14px 16px 8px;font-weight:600;font-size:1.05em;}
         .cv-head ha-icon{--mdc-icon-size:20px;color:var(--primary-color);}
@@ -4418,6 +4527,32 @@ class EvChargeSummaryCard extends HTMLElement {
         .cv-val{font-size:1.25em;font-weight:800;color:var(--primary-text-color);font-variant-numeric:tabular-nums;}
         .cv-u{font-size:.5em;font-weight:600;color:var(--secondary-text-color);}
         .cv-sub{font-size:.66em;color:var(--secondary-text-color);}
+        .cv-bars{display:flex;flex-direction:column;gap:9px;padding:2px 16px 16px;}
+        .cv-brow{display:grid;grid-template-columns:76px 1fr auto;align-items:center;gap:10px;}
+        .cv-blbl{font-size:.7em;color:var(--secondary-text-color);}
+        .cv-btrack{background:var(--divider-color);border-radius:7px;height:13px;overflow:hidden;}
+        .cv-bfill{height:100%;border-radius:7px;transition:width .3s ease;}
+        .cv-bval{font-size:.82em;font-weight:800;font-variant-numeric:tabular-nums;min-width:58px;text-align:right;}
+        .cv-bu{font-size:.6em;font-weight:600;color:var(--secondary-text-color);}
+        .cf-wrap{display:flex;flex-direction:column;gap:8px;padding:4px 16px 16px;}
+        .cf-cap{display:flex;justify-content:space-between;align-items:baseline;font-size:.74em;color:var(--secondary-text-color);}
+        .cf-cap b{font-size:1.4em;color:var(--primary-text-color);font-weight:800;font-variant-numeric:tabular-nums;}
+        .cf-eff{font-weight:800;color:var(--success-color,#43a047);}
+        .cf-bar{display:flex;height:28px;border-radius:9px;overflow:hidden;background:var(--divider-color);}
+        .cf-seg{display:flex;align-items:center;justify-content:center;color:#fff;font-size:.8em;font-weight:800;font-variant-numeric:tabular-nums;transition:width .35s ease;overflow:hidden;}
+        .cf-bat{background:linear-gradient(90deg,#43a047,#2e7d32);}
+        .cf-loss{background:repeating-linear-gradient(45deg,#ffb74d,#ffb74d 6px,#ffa726 6px,#ffa726 12px);color:rgba(0,0,0,.55);}
+        .cf-legend{display:flex;gap:16px;flex-wrap:wrap;font-size:.72em;color:var(--secondary-text-color);}
+        .cf-legend i{font-style:normal;display:inline-flex;align-items:center;gap:5px;}
+        .cf-sw{width:15px;height:11px;border-radius:3px;flex:0 0 auto;}
+        .cf-sw.cf-bat{background:#43a047;}
+        .cf-sw.cf-loss{background:repeating-linear-gradient(45deg,#ffb74d,#ffb74d 3px,#ffa726 3px,#ffa726 6px);}
+        .cf-drow{display:grid;grid-template-columns:auto 1fr auto;align-items:center;gap:9px;margin-top:2px;}
+        .cf-dlbl{font-size:.72em;color:var(--secondary-text-color);display:inline-flex;align-items:center;gap:4px;}
+        .cf-dlbl ha-icon{--mdc-icon-size:15px;color:var(--error-color,#e53935);}
+        .cf-dtrack{background:var(--divider-color);border-radius:6px;height:12px;overflow:hidden;}
+        .cf-dfill{height:100%;border-radius:6px;background:linear-gradient(90deg,#e53935,#b71c1c);}
+        .cf-dval{font-size:.82em;font-weight:800;font-variant-numeric:tabular-nums;}
       </style>
     </ha-card>`;
   }
@@ -4759,6 +4894,40 @@ class EvTripCalendarCard extends HTMLElement {
         .map((g) => ({ key: `${g.started_at}|${g.ended_at}`, windows: g.stages.map((t) => ({ start: t.started_at, end: t.ended_at })) }))
         .concat(standalone.map((t) => ({ key: `${t.started_at}|${t.ended_at}`, windows: [{ start: t.started_at, end: t.ended_at }] })));
 
+      // Build one chronological timeline for the day: journeys, standalone
+      // trips and charges all interleaved by start time — a charge shows
+      // BEFORE or AFTER a journey depending on when it actually happened, and
+      // if it happened DURING a journey's span (e.g. a stop between stages of
+      // a road trip) it gets embedded inside that journey's card instead of
+      // floating as its own entry.
+      const within = (c, start, end) => {
+        const cs = new Date(c.started_at || c.ended_at).getTime();
+        const ce = new Date(c.ended_at || c.started_at).getTime();
+        const s = new Date(start).getTime(), en = new Date(end).getTime();
+        if (isNaN(cs) || isNaN(ce) || isNaN(s) || isNaN(en)) return false;
+        return cs <= en && ce >= s;
+      };
+      const dayEntries = groups
+        .map((g) => ({ type: "journey", at: g.started_at, data: g }))
+        .concat(standalone.map((t) => ({ type: "solo", at: t.started_at, data: t })))
+        .sort((a, b) => new Date(a.at) - new Date(b.at));
+      const chargesSorted = e.charges.slice().sort((a, b) => new Date(a.started_at || a.ended_at) - new Date(b.started_at || b.ended_at));
+      const embeddedIdx = new Set();
+      const takeEmbedded = (start, end) => {
+        const out = [];
+        chargesSorted.forEach((c, i) => {
+          if (embeddedIdx.has(i) || !within(c, start, end)) return;
+          out.push(c);
+          embeddedIdx.add(i);
+        });
+        return out;
+      };
+      for (const it of dayEntries) it.data.embeddedCharges = takeEmbedded(it.data.started_at, it.data.ended_at);
+      const looseCharges = chargesSorted.filter((c, i) => !embeddedIdx.has(i));
+      const allEntries = dayEntries
+        .concat(looseCharges.map((c) => ({ type: "charge", at: c.started_at || c.ended_at, data: c })))
+        .sort((a, b) => new Date(a.at) - new Date(b.at));
+
       const stage = (t) => `
         <div class="cal-stage">
           <span class="cal-stime">${_timeRange(t.started_at, t.ended_at) || _timeOfDay(t.started_at)}</span>
@@ -4766,43 +4935,56 @@ class EvTripCalendarCard extends HTMLElement {
           <span class="cal-smeta">${f0(t.distance_km)} km · ${t.consumption_kwh_100km != null && Number(t.consumption_kwh_100km) >= 0 ? _fmtEff(t.consumption_kwh_100km) : "—"}</span>
           ${t.score != null ? `<span class="cal-pill" style="background:${_scoreColor(t.score)}">${f1(t.score)}</span>` : ""}
         </div>`;
+      const chargeStage = (c) => `
+        <div class="cal-stage cal-stage--chg">
+          <span class="cal-stime">${_timeRange(c.started_at, c.ended_at) || _timeOfDay(c.started_at)}</span>
+          <span class="cal-sroute"><ha-icon class="cal-arr cal-chg-ic" icon="mdi:lightning-bolt"></ha-icon>${_esc(c.location || L("Charge", "Carga"))}${c.is_dcfc ? " · DC" : ""}</span>
+          <span class="cal-smeta">${(Number(c.kwh) || 0).toFixed(1)} kWh${c.total_cost != null ? ` · ${(Number(c.total_cost) || 0).toFixed(2)} ${_esc(sym(c.currency))}` : ""}</span>
+        </div>`;
+      const stagesAndCharges = (stages, embedded) =>
+        stages
+          .map((t) => ({ at: t.started_at, html: stage(t) }))
+          .concat((embedded || []).map((c) => ({ at: c.started_at || c.ended_at, html: chargeStage(c) })))
+          .sort((a, b) => new Date(a.at) - new Date(b.at))
+          .map((it) => it.html)
+          .join("");
+      const chgBadge = (n) => (n ? ` · <span class="cal-jchg"><ha-icon icon="mdi:lightning-bolt"></ha-icon>${n}</span>` : "");
       const mapSlot = (start, end) => {
         if (!this._config.locationEntity) return "";
         const r = this._routes[`${start}|${end}`];
         if (Array.isArray(r)) return `<div class="cal-map">${_routeSvg(r) || '<div class="cal-map-ph">No GPS for this trip</div>'}</div>`;
         return `<div class="cal-map"><div class="cal-map-ph"><ha-icon icon="mdi:map-marker-path"></ha-icon> Loading route…</div></div>`;
       };
-      const jHtml = groups
-        .map(
-          (g) => `
+      const journeyHtml = (g) => `
         <div class="cal-journey">
           <div class="cal-jhead">
             <span class="cal-jicon"><ha-icon icon="${g.roundTrip ? "mdi:home-map-marker" : "mdi:map-marker-path"}"></ha-icon></span>
             <span class="cal-jtitle">${_endpoint(g.origin)} → ${_endpoint(g.destination)}</span>
             <span class="cal-jtime">${_timeOfDay(g.started_at)}–${_timeOfDay(g.ended_at)}</span>
           </div>
-          <div class="cal-jsum"><b>${f0(g.km)}</b> km · <b>${f1(g.kwh)}</b> kWh${g.cons != null ? ` · <b>${_fmtEff(g.cons)}</b>` : ""}${g.cost ? ` · <b>${g.cost.toFixed(2)} ${_esc(sym(g.currency))}</b>` : ""} · ${g.stages.length} ${g.stages.length === 1 ? "stage" : "stages"}</div>
-          <div class="cal-stages">${g.stages.map(stage).join("")}</div>
+          <div class="cal-jsum"><b>${f0(g.km)}</b> km · <b>${f1(g.kwh)}</b> kWh${g.cons != null ? ` · <b>${_fmtEff(g.cons)}</b>` : ""}${g.cost ? ` · <b>${g.cost.toFixed(2)} ${_esc(sym(g.currency))}</b>` : ""} · ${g.stages.length} ${g.stages.length === 1 ? "stage" : "stages"}${chgBadge(g.embeddedCharges.length)}</div>
+          <div class="cal-stages">${stagesAndCharges(g.stages, g.embeddedCharges)}</div>
           ${mapSlot(g.started_at, g.ended_at)}
-        </div>`
-        )
-        .join("");
-      const soloHtml = standalone
-        .map((t) => `<div class="cal-journey cal-journey--solo"><div class="cal-stages">${stage(t)}</div>${mapSlot(t.started_at, t.ended_at)}</div>`)
-        .join("");
-      const chs = e.charges
-        .slice()
-        .sort((a, b) => String(a.started_at).localeCompare(String(b.started_at)))
-        .map(
-          (c) =>
-            `<div class="cal-row"><span class="cal-ricon cal-b-chg"><ha-icon icon="mdi:lightning-bolt"></ha-icon></span>` +
-            `<span class="cal-rtime">${_timeOfDay(c.started_at)}</span>` +
-            `<span class="cal-rmain">${_esc(c.location || "charge")}${c.is_dcfc ? " · DC" : ""}</span>` +
-            `<span class="cal-rval">${(Number(c.kwh) || 0).toFixed(1)} kWh${c.total_cost != null ? ` · ${(Number(c.total_cost) || 0).toFixed(2)} ${_esc(sym(c.currency))}` : ""}</span></div>`
-        )
-        .join("");
+        </div>`;
+      const soloHtml = (t) => `
+        <div class="cal-journey cal-journey--solo">
+          <div class="cal-stages">${stagesAndCharges([t], t.embeddedCharges)}</div>
+          ${mapSlot(t.started_at, t.ended_at)}
+        </div>`;
+      const chargeCard = (c) => `
+        <div class="cal-journey cal-journey--chg">
+          <div class="cal-jhead">
+            <span class="cal-jicon cal-jicon--chg"><ha-icon icon="mdi:lightning-bolt"></ha-icon></span>
+            <span class="cal-jtitle">${_esc(c.location || L("Charge", "Carga"))}${c.is_dcfc ? " · DC" : ""}</span>
+            <span class="cal-jtime">${_timeRange(c.started_at, c.ended_at) || _timeOfDay(c.started_at)}</span>
+          </div>
+          <div class="cal-jsum"><b>${(Number(c.kwh) || 0).toFixed(1)}</b> kWh${c.total_cost != null ? ` · <b>${(Number(c.total_cost) || 0).toFixed(2)} ${_esc(sym(c.currency))}</b>` : ""}${c.soc_start != null && c.soc_end != null ? ` · <b>${Math.round(c.soc_start)}→${Math.round(c.soc_end)}%</b>` : ""}</div>
+        </div>`;
+      const body =
+        allEntries
+          .map((it) => (it.type === "journey" ? journeyHtml(it.data) : it.type === "solo" ? soloHtml(it.data) : chargeCard(it.data)))
+          .join("") || '<div class="cal-none">No activity.</div>';
       const [yy, mm, dd] = this._openDate.split("-");
-      const body = jHtml + soloHtml + chs || '<div class="cal-none">No activity.</div>';
       detail = `<div class="cal-detail"><div class="cal-dhead">${dd}/${mm}/${yy}</div>${body}</div>`;
     }
 
@@ -4852,14 +5034,6 @@ class EvTripCalendarCard extends HTMLElement {
           .cal-detail{margin:0 12px 14px;border:1px solid var(--primary-color);border-radius:12px;
                       padding:10px 12px;display:flex;flex-direction:column;gap:6px;}
           .cal-dhead{font-weight:700;font-variant-numeric:tabular-nums;}
-          .cal-row{display:flex;align-items:center;gap:8px;font-size:.85em;}
-          .cal-ricon{flex:0 0 auto;width:24px;height:24px;border-radius:50%;
-                     display:flex;align-items:center;justify-content:center;}
-          .cal-ricon ha-icon{--mdc-icon-size:15px;}
-          .cal-rtime{flex:0 0 auto;color:var(--secondary-text-color);
-                     font-variant-numeric:tabular-nums;}
-          .cal-rmain{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
-          .cal-rval{flex:0 0 auto;font-weight:600;font-variant-numeric:tabular-nums;}
           .cal-none{color:var(--secondary-text-color);font-size:.85em;}
           /* ---- journey groups + route map ---- */
           .cal-journey{border:1px solid var(--divider-color);border-radius:12px;padding:10px;
@@ -4873,6 +5047,10 @@ class EvTripCalendarCard extends HTMLElement {
           .cal-jtime{flex:0 0 auto;color:var(--secondary-text-color);font-size:.82em;font-variant-numeric:tabular-nums;}
           .cal-jsum{font-size:.82em;color:var(--secondary-text-color);font-variant-numeric:tabular-nums;}
           .cal-jsum b{color:var(--primary-text-color);font-weight:700;}
+          .cal-jchg{display:inline-flex;align-items:center;gap:1px;color:var(--info-color,#039be5);font-weight:700;}
+          .cal-jchg ha-icon{--mdc-icon-size:12px;}
+          .cal-journey--chg{border-style:dashed;}
+          .cal-jicon--chg{background:rgba(3,155,229,.16);color:var(--info-color,#039be5);}
           .cal-stages{display:flex;flex-direction:column;gap:6px;border-left:2px solid var(--divider-color);
                       margin-left:13px;padding-left:12px;}
           .cal-stage{display:flex;align-items:center;gap:8px;font-size:.85em;flex-wrap:wrap;}
@@ -4880,6 +5058,8 @@ class EvTripCalendarCard extends HTMLElement {
           .cal-sroute{flex:1 1 auto;min-width:0;display:flex;align-items:center;gap:4px;overflow:hidden;
                       text-overflow:ellipsis;white-space:nowrap;}
           .cal-arr{--mdc-icon-size:14px;color:var(--secondary-text-color);flex:0 0 auto;}
+          .cal-stage--chg .cal-sroute{color:var(--info-color,#039be5);font-weight:600;}
+          .cal-chg-ic{color:var(--info-color,#039be5)!important;}
           .cal-smeta{flex:0 0 auto;color:var(--secondary-text-color);font-variant-numeric:tabular-nums;}
           .cal-pill{flex:0 0 auto;min-width:30px;text-align:center;padding:2px 7px;border-radius:999px;
                     color:#fff;font-weight:800;font-size:.8em;font-variant-numeric:tabular-nums;}
@@ -6366,13 +6546,18 @@ class EvChargeStatusCard extends HTMLElement {
         this._fetchedState = st.state;
         const start = new Date(now - 4 * 3600 * 1000).toISOString();
         const end = new Date(now + 60000).toISOString();
-        Promise.resolve(this._hass.callApi("GET", `history/period/${start}?end_time=${end}&filter_entity_id=${pe}&minimal_response&no_attributes`))
+        const ee = `sensor.${D}_current_charge_efficiency`;
+        const mapSer = (ser) => (ser || []).map((p) => ({ t: new Date(p.last_changed || p.lu || p.lc).getTime(), v: parseFloat(p.state) })).filter((p) => !isNaN(p.t) && !isNaN(p.v));
+        Promise.resolve(this._hass.callApi("GET", `history/period/${start}?end_time=${end}&filter_entity_id=${pe},${ee}&minimal_response&no_attributes`))
           .then((res) => {
-            const ser = Array.isArray(res) && res[0] ? res[0] : [];
-            this._pts = ser.map((p) => ({ t: new Date(p.last_changed || p.lu || p.lc).getTime(), v: parseFloat(p.state) })).filter((p) => !isNaN(p.t) && !isNaN(p.v));
+            const arr = Array.isArray(res) ? res : [];
+            const byId = {};
+            for (const s of arr) { if (s && s[0] && s[0].entity_id) byId[s[0].entity_id] = s; }
+            this._pts = mapSer(byId[pe] || arr[0]);
+            this._effPts = mapSer(byId[ee]).filter((p) => p.v > 0 && p.v <= 100);
             this._render();
           })
-          .catch(() => { this._pts = []; this._render(); });
+          .catch(() => { this._pts = []; this._effPts = []; this._render(); });
       }
     }
     this._render();
@@ -6413,6 +6598,12 @@ class EvChargeStatusCard extends HTMLElement {
         .cs-axis{stroke:var(--divider-color);stroke-width:1;}
         .cs-area{fill:var(--info-color,#039be5);opacity:.13;}
         .cs-line{fill:none;stroke:var(--info-color,#039be5);stroke-width:2.5;stroke-linejoin:round;stroke-linecap:round;}
+        .cs-eff-line{fill:none;stroke:#ff9800;stroke-width:2;stroke-dasharray:4 3;stroke-linejoin:round;}
+        .cs-eff-lbl{fill:#ff9800;}
+        .cs-eff-now{fill:#ff9800;font-size:9px;font-weight:800;}
+        .cs-lgd{font-size:8px;font-weight:700;}
+        .cs-lgd-kw{fill:var(--info-color,#039be5);}
+        .cs-lgd-eff{fill:#ff9800;}
         .cs-lbl{fill:var(--secondary-text-color);font-size:8px;}
         .cs-tiles{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;padding:6px 12px 14px;}
         .cs-t{background:var(--secondary-background-color,var(--card-background-color));border:1px solid var(--divider-color);
@@ -6434,22 +6625,45 @@ class EvChargeStatusCard extends HTMLElement {
       const ft = (ms) => { const d = new Date(ms); const p = (n) => String(n).padStart(2, "0"); return `${p(d.getHours())}:${p(d.getMinutes())}`; };
       const line = pts.map((p, i) => `${i ? "L" : "M"}${sx(p.t).toFixed(1)},${sy(p.v).toFixed(1)}`).join(" ");
       const area = `M${sx(pts[0].t).toFixed(1)},${y1} ` + pts.map((p) => `L${sx(p.t).toFixed(1)},${sy(p.v).toFixed(1)}`).join(" ") + ` L${sx(pts[pts.length - 1].t).toFixed(1)},${y1} Z`;
+      // Efficiency overlay (0–100 %, right axis) — a second variable so you can
+      // see the AC→DC charging efficiency alongside the power curve.
+      const eff = (this._effPts || []).filter((p) => p.t >= t0 && p.t <= t1);
+      const syE = (v) => y1 - (Math.max(0, Math.min(100, v)) / 100) * (y1 - y0);
+      const effLine = eff.length >= 2
+        ? `<path d="${eff.map((p, i) => `${i ? "L" : "M"}${sx(p.t).toFixed(1)},${syE(p.v).toFixed(1)}`).join(" ")}" class="cs-eff-line"/>` +
+          `<text x="${x1 + 2}" y="${(syE(100) + 3).toFixed(1)}" text-anchor="end" class="cs-lbl cs-eff-lbl">100%</text>` +
+          `<text x="${x1 + 2}" y="${(syE(eff[eff.length - 1].v) - 3).toFixed(1)}" text-anchor="end" class="cs-eff-now">${eff[eff.length - 1].v.toFixed(0)}%</text>`
+        : "";
+      const legend = `<text x="${x0 + 6}" y="${y0 + 7}" class="cs-lgd cs-lgd-kw">■ kW</text>${eff.length >= 2 ? `<text x="${x0 + 44}" y="${y0 + 7}" class="cs-lgd cs-lgd-eff">■ ${L("efficiency", "eficiencia")}</text>` : ""}`;
       return `<svg viewBox="0 0 ${VB_W} ${VB_H}" class="cs-svg" preserveAspectRatio="none">
         <text x="${x0 - 3}" y="${(sy(maxKw) + 4).toFixed(1)}" text-anchor="end" class="cs-lbl">${maxKw.toFixed(0)}</text>
         <line x1="${x0}" y1="${sy(0).toFixed(1)}" x2="${x1}" y2="${sy(0).toFixed(1)}" class="cs-axis"/>
         <path d="${area}" class="cs-area"/><path d="${line}" class="cs-line"/>
+        ${effLine}
         <text x="${x0}" y="${VB_H - 4}" class="cs-lbl">${ft(t0)}</text>
         <text x="${x1}" y="${VB_H - 4}" text-anchor="end" class="cs-lbl">${ft(t1)}</text>
+        ${legend}
       </svg>`;
     };
     const num = (v, dp) => (v == null || isNaN(v) ? DASH : Number(v).toFixed(dp == null ? 0 : dp));
 
-    if (st.state === "charging" || st.state === "paused") {
-      const charging = st.state === "charging";
+    if (st.state === "charging") {
+      const charging = true;
       // Time: live duration while charging; the frozen charge time while paused.
       const durMin = st.durationMin != null ? st.durationMin : st.lastDurMin;
       const dur = durMin == null ? DASH : durMin >= 60 ? `${Math.floor(durMin / 60)}h ${Math.round(durMin % 60)}m` : `${Math.round(durMin)} min`;
-      const energy = st.energy != null ? st.energy : st.lastEnergy;
+      // current_charge_energy can be stuck at 0 (logger bug: soc_start null).
+      // While charging, estimate Added from the power curve (∫ kW dt) so it
+      // isn't blank; mark the estimate with "~".
+      const curveKwh = () => {
+        const pts = (this._pts || []).filter((p) => p.v >= 0).sort((a, b) => a.t - b.t);
+        let e = 0;
+        for (let i = 1; i < pts.length; i++) { const dt = (pts[i].t - pts[i - 1].t) / 3600000; if (dt > 0 && dt < 0.2) e += ((pts[i].v + pts[i - 1].v) / 2) * dt; }
+        return e;
+      };
+      let energy = st.energy != null && st.energy > 0 ? st.energy : (charging ? null : st.lastEnergy);
+      let energyEst = false;
+      if (charging && (energy == null || energy === 0)) { const ce = curveKwh(); if (ce > 0.02) { energy = ce; energyEst = true; } }
       const sym = cur[st.type] || "€";
       // Live AC→DC charging efficiency (logger current_charge_efficiency, fed by
       // the EVSE power sensor). Shown as a tile only once it has a real value.
@@ -6503,42 +6717,20 @@ class EvChargeStatusCard extends HTMLElement {
             ${fullToggle}
           </div>
           ${etaHtml}
-          ${curveSvg()}
           <div class="cs-tiles">
             ${tile("mdi:battery-charging-high", "SoC", num(st.soc, 0), "%")}
-            ${tile("mdi:lightning-bolt", "Added", num(energy, 2), "kWh")}
+            ${tile("mdi:lightning-bolt", "Added", (energyEst ? "~" : "") + num(energy, 2), "kWh")}
             ${tile("mdi:flash", "Power", num(st.power, 1), "kW")}
             ${tile("mdi:timer-outline", "Time", dur, "")}
-            ${charging && !isNaN(chargeEff) && chargeEff > 0 ? tile("mdi:gauge", L("Efficiency", "Eficiencia"), chargeEff.toFixed(0), "%") : ""}
           </div>
         </ha-card>${styles}`;
       return;
     }
 
-    // idle / unplugged → last-charge summary
-    const c = this._lastCharge();
-    if (!c) { this.innerHTML = ""; return; } // nothing to show
-    const sym = cur[c.currency] || c.currency || "€";
-    let durMin = null;
-    if (c.started_at && c.ended_at) { const d = (new Date(c.ended_at) - new Date(c.started_at)) / 60000; if (!isNaN(d) && d >= 0) durMin = d; }
-    const durStr = durMin == null ? DASH : durMin >= 60 ? `${Math.floor(durMin / 60)}h ${Math.round(durMin % 60)}m` : `${Math.round(durMin)}m`;
-    const avgKw = c.kwh != null && durMin && durMin > 0 ? Number(c.kwh) / (durMin / 60) : null;
-    this.innerHTML = `
-      <ha-card>
-        <div class="cs-head">
-          <div class="cs-badge" style="background:rgba(3,155,229,.16)"><ha-icon icon="mdi:check-circle-outline" style="color:var(--info-color,#039be5)"></ha-icon></div>
-          <div>
-            <div class="cs-title">✅ Last charge</div>
-            <div class="cs-sub">${_esc(c.location || "")}${c.ended_at ? ` · ${_fmtDate(c.ended_at, true)}` : ""}</div>
-          </div>
-        </div>
-        <div class="cs-tiles">
-          ${tile("mdi:lightning-bolt", "Charged", num(c.kwh, 2), "kWh")}
-          ${tile("mdi:timer-outline", "Time", durStr, "")}
-          ${tile("mdi:flash", "Avg", avgKw == null ? DASH : avgKw.toFixed(1), "kW")}
-          ${tile("mdi:cash", "Cost", c.total_cost != null ? num(c.total_cost, 2) : DASH, sym)}
-        </div>
-      </ha-card>${styles}`;
+    // Not charging (idle or plugged-but-paused) → hide the card entirely, per
+    // user request. The last charge still lives in the charge-history list and
+    // the charger·battery·driving summary shown right below this card.
+    this.innerHTML = "";
   }
 }
 customElements.define("ev-charge-status-card", EvChargeStatusCard);
@@ -6772,15 +6964,19 @@ function drivingView(D, V, hass, cfg) {
     });
   }
 
-  // Live charge status (charging / paused-while-plugged / last-charge summary).
-  status.push({
+  // Left column: the charger·battery·driving summary.
+  if (has(hass, `sensor.${D}_recent_charges`)) status.push({ type: "custom:ev-charge-summary-card", device: D });
+  // The live charge card (tiles: SoC/Added/Power/Time) is placed ABOVE the
+  // Charging(6h) chart in the RIGHT column (see rightCards). It self-hides when
+  // not charging.
+  const chargeStatusCard = {
     type: "custom:ev-charge-status-card",
     device: D,
     plugEntity: (cfg && cfg.plug_entity) || pickVehicleEntity(hass, V, "plug", cfg),
     chargingEntity: pickVehicleEntity(hass, V, "charging", cfg),
     powerEntity: resolveChargePower(hass, D, cfg),
     chargeTarget: cfg && cfg.charge_target, // % to charge to (default 100)
-  });
+  };
 
   // (Battery · Range · Outside · Cabin · Odometer are all rendered by the
   // single ev-trip-glance-card placed near the top of the status column.)
@@ -6828,14 +7024,16 @@ function drivingView(D, V, hass, cfg) {
       (has(hass, `sensor.${V}_battery_level`) ? `sensor.${V}_battery_level` : null);
     const socSeries = socEnt ? [{ entity: socEnt, name: "SoC %", yaxis_id: "soc", stroke_width: 2, color: "#4CAF50" }] : [];
 
-    // --- Charging (6h): SoC + charge power (+ optional charge curve) -------
+    // --- Charging (6h): SoC + Power kW + charging efficiency --------------
+    // SoC and efficiency (both %) share the left 0-100 axis; power (kW) on the
+    // right axis. Only the redundant "Curve kW" series was dropped — kW stays.
     const powerEnt = resolveChargePower(hass, D, cfg);
     const unitOf = (e) => ((hass.states[e] || {}).attributes || {}).unit_of_measurement || "";
-    const wTransform = (e) => (/^w$/i.test(unitOf(e).trim()) ? "return x / 1000;" : undefined); // only W→kW
-    const curveEnt = (cfg && cfg.charge_curve_entity) || `sensor.${V}_charge_curve`;
+    const wTransform = (e) => (/^w$/i.test(unitOf(e).trim()) ? "return x / 1000;" : undefined);
+    const effEnt = `sensor.${D}_current_charge_efficiency`;
     const chgSeries = socSeries.slice();
     if (powerEnt && has(hass, powerEnt)) chgSeries.push({ entity: powerEnt, name: "Power kW", yaxis_id: "power", stroke_width: 2, color: "#9C27B0", ...(wTransform(powerEnt) ? { transform: wTransform(powerEnt) } : {}) });
-    if (curveEnt !== powerEnt && has(hass, curveEnt)) chgSeries.push({ entity: curveEnt, name: "Curve kW", yaxis_id: "power", stroke_width: 1, color: "#FFC107", ...(wTransform(curveEnt) ? { transform: wTransform(curveEnt) } : {}) });
+    if (has(hass, effEnt)) chgSeries.push({ entity: effEnt, name: "Efficiency %", yaxis_id: "soc", stroke_width: 2, color: "#ff9800" });
     if (chgSeries.length >= 2) {
       chartCards.push(
         heading("Charging (6h)", "mdi:ev-station"),
@@ -6872,7 +7070,7 @@ function drivingView(D, V, hass, cfg) {
     heading("Today's journey", "mdi:map-marker-path"),
     { type: "custom:ev-trip-journey-card", device: D, tempEntity: jTempEntity, locationEntity: jLocationEntity, tripPowerEntity: jTripPowerEntity },
   ]);
-  const rightCards = chartCards.concat(now);
+  const rightCards = [chargeStatusCard].concat(chartCards, now);
 
   const sections = [grid(leftCards), grid(rightCards)];
 
