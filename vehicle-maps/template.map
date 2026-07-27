@@ -1,0 +1,16 @@
+# Starting point for a new brand. Uncomment + set the right-hand suffix
+# to your car integration's real entity suffix. Leave a line as
+# "<token> <token>" (no-op) if your car uses the same name. Delete lines
+# for entities your car does not expose (those cards degrade on their own).
+#
+# canonical (BYD)          your car's suffix
+#front_left_tire_pressure   front_left_tire_pressure
+#front_right_tire_pressure  front_right_tire_pressure
+#rear_left_tire_pressure    rear_left_tire_pressure
+#rear_right_tire_pressure   rear_right_tire_pressure
+#location                   location
+#power_system               power_system
+#state_of_health            state_of_health
+#exterior_temperature       exterior_temperature
+#odometer                   odometer
+#cabin_temperature          cabin_temperature

@@ -1,0 +1,12 @@
+# BYD is the canonical naming scheme the cards ship with — identity map.
+# Every Group A token maps to itself (no rewriting needed for BYD).
+front_left_tire_pressure   front_left_tire_pressure
+front_right_tire_pressure  front_right_tire_pressure
+rear_left_tire_pressure    rear_left_tire_pressure
+rear_right_tire_pressure   rear_right_tire_pressure
+location                   location
+power_system               power_system
+state_of_health            state_of_health
+exterior_temperature       exterior_temperature
+odometer                   odometer
+cabin_temperature          cabin_temperature
