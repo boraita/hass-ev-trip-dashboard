@@ -41,20 +41,20 @@ cards:
       {% for d in (state_attr('sensor.__DEVICE___daily_km_60d', 'days') or []) %}
         {% if d.day is string and d.day.startswith('%04d-%02d'|format(y, m))
               and (d.distance_km | float(0)) > 0 %}
-          {% set _ = trips_set.s.append(d.day[-2:] | int) %}
+          {% set trips_set.s = trips_set.s + [d.day[-2:] | int] %}
         {% endif %}
       {% endfor %}
 
       {% set charges_set = namespace(s=[]) %}
       {% for c in (state_attr('sensor.__DEVICE___recent_charges', 'charges') or []) %}
         {% if c.ended_at and c.ended_at.startswith('%04d-%02d'|format(y, m)) %}
-          {% set _ = charges_set.s.append(c.ended_at[8:10] | int) %}
+          {% set charges_set.s = charges_set.s + [c.ended_at[8:10] | int] %}
         {% endif %}
       {% endfor %}
 
       {% set cells = namespace(list=[]) %}
       {% for _ in range(first_wd) %}
-        {% set _ = cells.list.append('    ') %}
+        {% set cells.list = cells.list + ['    '] %}
       {% endfor %}
       {% for day in range(1, dim + 1) %}
         {% set has_t = day in trips_set.s %}
@@ -69,11 +69,11 @@ cards:
         {% else %}
           {% set txt = ' %2d '|format(day) %}
         {% endif %}
-        {% set _ = cells.list.append(txt ~ ind) %}
+        {% set cells.list = cells.list + [txt ~ ind] %}
       {% endfor %}
       {% set total = cells.list | length %}
       {% set pad = (7 - (total % 7)) % 7 %}
-      {% for _ in range(pad) %}{% set _ = cells.list.append('    ') %}{% endfor %}
+      {% for _ in range(pad) %}{% set cells.list = cells.list + ['    '] %}{% endfor %}
 
       ```
         L     M     X     J     V     S     D

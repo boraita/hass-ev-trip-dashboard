@@ -340,24 +340,19 @@ cards:
       {%- set c_lat = (lats | sum) / (lats | length) %}
       {%- set c_lon = (lons | sum) / (lons | length) %}
       {%- if api_key != '__' ~ 'GEOAPIFY_KEY__' %}
-      {%- set geom_pairs = [] %}
-      {%- for p in pts %}{%- set _ = geom_pairs.append(p.lon ~ ',' ~ p.lat) %}{%- endfor %}
-      {%- set route = geom_pairs | join('%7C') %}
+      {%- set ns = namespace(route='') %}
+      {%- for p in pts %}{%- set ns.route = ns.route ~ (',' if not loop.first else '') ~ p.lon ~ ',' ~ p.lat %}{%- endfor %}
+      {%- set route = ns.route %}
       {%- set marker_start = pts[0].lon ~ ',' ~ pts[0].lat ~ ';type:awesome;color:green;size:medium' %}
       {%- set marker_end = pts[-1].lon ~ ',' ~ pts[-1].lat ~ ';type:awesome;color:red;size:medium' %}
       ![map](https://maps.geoapify.com/v1/staticmap?style=osm-bright&width=640&height=360&geometry=polyline:{{ route }};linecolor:%2300bfff;linewidth:5&marker=lonlat:{{ marker_start }}|lonlat:{{ marker_end }}&apiKey={{ api_key }})
       {%- else %}
-      {%- set markers = [] %}
+      {%- set ns = namespace(markers='') %}
       {%- for p in pts %}
-      {%-   if loop.first %}
-      {%-     set _ = markers.append(p.lat ~ ',' ~ p.lon ~ ',lightgreen') %}
-      {%-   elif loop.last %}
-      {%-     set _ = markers.append(p.lat ~ ',' ~ p.lon ~ ',red') %}
-      {%-   else %}
-      {%-     set _ = markers.append(p.lat ~ ',' ~ p.lon ~ ',lightblue') %}
-      {%-   endif %}
+      {%-   set color = 'lightgreen' if loop.first else ('red' if loop.last else 'lightblue') %}
+      {%-   set ns.markers = ns.markers ~ ('|' if not loop.first else '') ~ p.lat ~ ',' ~ p.lon ~ ',' ~ color %}
       {%- endfor %}
-      ![map](https://staticmap.openstreetmap.de/staticmap.php?center={{ c_lat }},{{ c_lon }}&zoom=12&size=640x360&markers={{ markers | join('|') }})
+      ![map](https://staticmap.openstreetmap.de/staticmap.php?center={{ c_lat }},{{ c_lon }}&zoom=12&size=640x360&markers={{ ns.markers }})
       {%- endif %}
 
       **Recorrido — {{ pts | length }} puntos GPS{% if gps_km is not none %} · {{ gps_km }} km{% endif %}**
@@ -366,7 +361,7 @@ cards:
       {%- if loop.first -%}🟢{%- elif loop.last -%}🔴{%- else -%}🔵{%- endif %} **{{ p.index }}.** [{{ '%.5f, %.5f'|format(p.lat, p.lon) }}](https://www.google.com/maps?q={{ p.lat }},{{ p.lon }})
       {% endfor %}
 
-      [🗺 Ver ruta completa en Google Maps](https://www.google.com/maps/dir/?api=1&origin={{ pts[0].lat }},{{ pts[0].lon }}&destination={{ pts[-1].lat }},{{ pts[-1].lon }}{% if pts | length > 2 %}&waypoints={{ pts[1:-1][:9] | map(attribute='lat') | list | zip(pts[1:-1][:9] | map(attribute='lon') | list) | map('join', ',') | list | join('|') }}{% endif %}&travelmode=driving)
+      [🗺 Ver ruta completa en Google Maps](https://www.google.com/maps/dir/?api=1&origin={{ pts[0].lat }},{{ pts[0].lon }}&destination={{ pts[-1].lat }},{{ pts[-1].lon }}{% if pts | length > 2 %}&waypoints={{ zip(pts[1:-1][:9] | map(attribute='lat') | list, pts[1:-1][:9] | map(attribute='lon') | list) | map('join', ',') | join('|') }}{% endif %}&travelmode=driving)
 
       {% elif t and t.start_lat is not none and t.end_lat is not none %}
       {%- set s_lat = t.start_lat | float %}
