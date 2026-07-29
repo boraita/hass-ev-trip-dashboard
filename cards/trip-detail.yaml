@@ -102,19 +102,11 @@ cards:
             - font-weight: bold
 
       - type: custom:button-card
-        # avg_speed lives on the `last_trip` sensor attributes, not as its
-        # own entity — surface it via a template button.
-        template: ""
+        entity: sensor.__DEVICE___last_trip_average_speed
         name: Velocidad media
         show_state: true
         show_icon: true
         icon: mdi:gauge
-        label: >-
-          [[[
-            const v = states['sensor.__DEVICE___last_trip'].attributes.avg_speed_kmh;
-            return (v == null) ? '—' : v.toFixed(1) + ' km/h';
-          ]]]
-        show_label: true
         styles:
           card:
             - padding: 12px
@@ -122,18 +114,16 @@ cards:
           name:
             - font-size: 12px
             - opacity: "0.7"
-          label:
+          state:
             - font-size: 22px
             - font-weight: bold
-          state:
-            - display: none
 
   # ── Comparison vs personal 30-day average ─────────────────────────
   - type: custom:mushroom-template-card
     primary: Frente a tu media
     secondary: >-
       {% set trip = states('sensor.__DEVICE___last_trip_consumption') | float(0) %}
-      {% set avg  = states('sensor.__DEVICE___total_30d_avg_consumption') | float(0) %}
+      {% set avg  = states('sensor.__DEVICE___avg_consumption_30_days') | float(0) %}
       {% if avg > 0 and trip > 0 %}
         {% set delta = ((trip - avg) / avg) * 100 %}
         {% if delta < 0 %}
@@ -147,7 +137,7 @@ cards:
     icon: mdi:chart-line-variant
     icon_color: >-
       {% set trip = states('sensor.__DEVICE___last_trip_consumption') | float(0) %}
-      {% set avg  = states('sensor.__DEVICE___total_30d_avg_consumption') | float(0) %}
+      {% set avg  = states('sensor.__DEVICE___avg_consumption_30_days') | float(0) %}
       {% if avg > 0 and trip > 0 %}
         {{ 'green' if trip <= avg else 'red' }}
       {% else %}
@@ -387,7 +377,7 @@ cards:
     title: Histórico device tracker
     default_zoom: 13
     hours_to_show: >-
-      {% set d = state_attr('sensor.__DEVICE___last_trip', 'duration_min') | float(0) %}
+      {% set d = states('sensor.__DEVICE___last_trip_duration') | float(0) %}
       {{ ((d / 60) + 0.5) | round(0) if d > 0 else 1 }}
     entities:
       - entity: device_tracker.__VEHICLE___location
