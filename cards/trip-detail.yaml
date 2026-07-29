@@ -376,8 +376,8 @@ cards:
   - type: map
     title: Histórico device tracker
     default_zoom: 13
-    hours_to_show: >-
-      {% set d = states('sensor.__DEVICE___last_trip_duration') | float(0) %}
-      {{ ((d / 60) + 0.5) | round(0) if d > 0 else 1 }}
+    # hours_to_show is NOT a templated option. Handing the map card a rendered
+    # string makes it fail with "Invalid time value".
+    hours_to_show: 2
     entities:
       - entity: device_tracker.__VEHICLE___location
