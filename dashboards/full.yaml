@@ -37,7 +37,7 @@ views:
     sections:
       - type: grid
         cards:
-          !include ../cards/resumen-vehicle.yaml
+          - !include ../cards/resumen-vehicle.yaml
 
   # ============================================================
   # VIEW 2 — Calendario
@@ -50,7 +50,7 @@ views:
     sections:
       - type: grid
         cards:
-          !include ../cards/calendar.yaml
+          - !include ../cards/calendar.yaml
 
   # ============================================================
   # VIEW 3 — Tendencias
@@ -63,7 +63,7 @@ views:
     sections:
       - type: grid
         cards:
-          !include ../cards/trends.yaml
+          - !include ../cards/trends.yaml
 
   # ============================================================
   # VIEW 4 — Patrones
@@ -76,7 +76,7 @@ views:
     sections:
       - type: grid
         cards:
-          !include ../cards/patterns.yaml
+          - !include ../cards/patterns.yaml
 
   # ============================================================
   # VIEW 5 — Eficiencia
@@ -89,7 +89,7 @@ views:
     sections:
       - type: grid
         cards:
-          !include ../cards/efficiency-charts.yaml
+          - !include ../cards/efficiency-charts.yaml
 
   # ============================================================
   # VIEW 6 — Detalle del último viaje
@@ -102,7 +102,7 @@ views:
     sections:
       - type: grid
         cards:
-          !include ../cards/trip-detail.yaml
+          - !include ../cards/trip-detail.yaml
 
   # ============================================================
   # VIEW 8 — Viajes (lista)
@@ -115,7 +115,7 @@ views:
     sections:
       - type: grid
         cards:
-          !include ../cards/trip-list-v2.yaml
+          - !include ../cards/trip-list-v2.yaml
 
   # ============================================================
   # VIEW 9 — Cargas (lista)
@@ -128,4 +128,4 @@ views:
     sections:
       - type: grid
         cards:
-          !include ../cards/charges-v2.yaml
+          - !include ../cards/charges-v2.yaml
