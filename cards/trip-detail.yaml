@@ -199,10 +199,9 @@ cards:
   # detail view stays clean for highway trips with no recovery.
   - type: conditional
     conditions:
-      - condition: template
-        value_template: >-
-          {% set t = state_attr('sensor.__DEVICE___recent_trips', 'trips')[0] %}
-          {{ t and (t.regen_kwh | float(0)) > 0 }}
+      - condition: numeric_state
+        entity: sensor.__DEVICE___last_trip_regen_energy
+        above: 0
     card:
       type: custom:mushroom-template-card
       primary: >-
@@ -232,10 +231,9 @@ cards:
   # the numbers. Hidden when no charging happened in either window.
   - type: conditional
     conditions:
-      - condition: template
-        value_template: >-
-          {% set t = state_attr('sensor.__DEVICE___recent_trips', 'trips')[0] %}
-          {{ t and ((t.kwh_charged_before or 0) > 0 or (t.kwh_charged_during or 0) > 0) }}
+      - condition: numeric_state
+        entity: sensor.__DEVICE___recent_trips
+        above: 0
     card:
       type: custom:mushroom-template-card
       primary: Carga relacionada
