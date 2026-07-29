@@ -96,6 +96,11 @@ cards:
       show_states: false
     chart_type: bar
     graph_span: 1d
+    # Anchor the window to today 00:00-24:00 so the 24 hourly buckets all
+    # land inside it (the default window is now-1d..now, which straddles
+    # midnight and drops half the bars).
+    span:
+      start: day
     apex_config:
       chart:
         height: 240
@@ -108,11 +113,14 @@ cards:
       dataLabels:
         enabled: false
       xaxis:
+        type: datetime
         labels:
           style:
             fontSize: 10px
           rotate: 0
           hideOverlappingLabels: true
+          datetimeUTC: false
+          format: HH
         tickAmount: 12
       yaxis:
         labels:
@@ -124,21 +132,27 @@ cards:
       tooltip:
         x:
           formatter: |
-            EVAL:function(val) { return val + ":00"; }
+            EVAL:function(val) { return new Date(val).getHours() + ":00"; }
       colors:
         - "#f59e0b"
     series:
       - entity: sensor.__DEVICE___trip_patterns
         name: Viajes
         type: column
-        # Build [{x: hourLabel, y: count}, ...] for hours 0..23.
+        # Build [[timestamp, count], ...] for hours 0..23 of today.
+        # x MUST be epoch ms: apexcharts-card always injects a datetime
+        # xaxis.min/max derived from graph_span, so a string label like
+        # "07h" makes ApexCharts throw "You have provided invalid Date
+        # format" and the chart renders with zero bars.
         # The hour keys in by_hour are STRINGS ("0".."23"), so cast index to String.
         data_generator: |
           const by = entity.attributes.by_hour || {};
+          const base = new Date();
+          base.setHours(0, 0, 0, 0);
           const out = [];
           for (let i = 0; i < 24; i++) {
             const k = String(i);
-            out.push({ x: (i < 10 ? "0" + i : "" + i) + "h", y: Number(by[k] || 0) });
+            out.push([base.getTime() + i * 3600000, Number(by[k] || 0)]);
           }
           return out;
 
