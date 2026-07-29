@@ -53,9 +53,9 @@ cards:
   # compute kWh/100km = energy_kwh / distance_km * 100 (guard /0).
   - type: conditional
     conditions:
-      - condition: template
-        value_template: >-
-          {{ (state_attr('sensor.__DEVICE___monthly_history', 'months') | default([]) | list | length) > 0 }}
+      - condition: numeric_state
+        entity: sensor.__DEVICE___monthly_history
+        above: 0
     card:
       type: custom:apexcharts-card
       header:
@@ -118,9 +118,9 @@ cards:
             }).filter((p) => p !== null);
   - type: conditional
     conditions:
-      - condition: template
-        value_template: >-
-          {{ (state_attr('sensor.__DEVICE___monthly_history', 'months') | default([]) | list | length) == 0 }}
+      - condition: numeric_state
+        entity: sensor.__DEVICE___monthly_history
+        below: 1
     card:
       type: custom:mushroom-template-card
       primary: Avg consumption per month
@@ -137,9 +137,9 @@ cards:
   # and filtered out).
   - type: conditional
     conditions:
-      - condition: template
-        value_template: >-
-          {{ (state_attr('sensor.__DEVICE___recent_trips', 'trips') | default([]) | list | length) > 0 }}
+      - condition: numeric_state
+        entity: sensor.__DEVICE___recent_trips
+        above: 0
     card:
       type: custom:apexcharts-card
       header:
@@ -232,9 +232,9 @@ cards:
               .map((t) => [Number(t.distance_km), Number(t.consumption_kwh_100km)]);
   - type: conditional
     conditions:
-      - condition: template
-        value_template: >-
-          {{ (state_attr('sensor.__DEVICE___recent_trips', 'trips') | default([]) | list | length) == 0 }}
+      - condition: numeric_state
+        entity: sensor.__DEVICE___recent_trips
+        below: 1
     card:
       type: custom:mushroom-template-card
       primary: Efficiency vs Distance
@@ -251,9 +251,9 @@ cards:
   # NOTE: graph_span huge to bypass time-window filtering on category x-axis.
   - type: conditional
     conditions:
-      - condition: template
-        value_template: >-
-          {{ (state_attr('sensor.__DEVICE___consumption_by_temperature', 'by_bucket') | default({}) | dictsort | length) > 0 }}
+      - condition: numeric_state
+        entity: sensor.__DEVICE___consumption_by_temperature
+        above: 0
     card:
       type: custom:apexcharts-card
       header:
@@ -302,9 +302,9 @@ cards:
               .map(([k, v]) => [`${k}°C`, Math.round(v * 10) / 10]);
   - type: conditional
     conditions:
-      - condition: template
-        value_template: >-
-          {{ (state_attr('sensor.__DEVICE___consumption_by_temperature', 'by_bucket') | default({}) | dictsort | length) == 0 }}
+      - condition: numeric_state
+        entity: sensor.__DEVICE___consumption_by_temperature
+        below: 1
     card:
       type: custom:mushroom-template-card
       primary: Consumption by temperature
