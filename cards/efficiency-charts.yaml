@@ -260,12 +260,11 @@ cards:
         show: true
         title: Consumption by temperature (kWh/100km)
         show_states: false
-      chart_type: bar
       graph_span: 30000d
       apex_config:
         chart:
           height: 240
-          type: bar
+          type: column
         plotOptions:
           bar:
             borderRadius: 4
@@ -292,7 +291,7 @@ cards:
       series:
         - entity: sensor.__DEVICE___consumption_by_temperature
           name: Consumo
-          type: bar
+          type: column
           data_generator: |
             const buckets = (entity.attributes && entity.attributes.by_bucket) || {};
             return Object.keys(buckets)

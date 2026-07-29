@@ -94,7 +94,6 @@ cards:
       show: true
       title: Por hora
       show_states: false
-    chart_type: bar
     graph_span: 1d
     apex_config:
       chart:
