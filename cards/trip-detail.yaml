@@ -270,12 +270,15 @@ cards:
     show_state: true
     show_icon: true
     icon: mdi:cash-multiple
-    label: >-
-      {% set t = (state_attr('sensor.__DEVICE___recent_trips', 'trips') or []) | first %}
-      {% set basis = t.cost_basis_per_kwh if t else None %}
-      {% if basis is not none %}
-        {{ '%.3f' | format(basis) }} €/kWh efectivos
-      {% endif %}
+    # button-card evaluates JS in [[[ ]]], not Jinja — a {% %} template here is
+    # printed verbatim on the card face.
+    label: |
+      [[[
+        const s = states['sensor.__DEVICE___recent_trips'];
+        const trips = (s && s.attributes && s.attributes.trips) || [];
+        const basis = trips[0] && trips[0].cost_basis_per_kwh;
+        return (basis == null) ? '' : basis.toFixed(3) + ' €/kWh efectivos';
+      ]]]
     show_label: true
     styles:
       card:
