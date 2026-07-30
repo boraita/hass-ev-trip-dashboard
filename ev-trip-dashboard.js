@@ -470,14 +470,24 @@ function resumenView(D, V, hass) {
       icon_color: "teal",
     },
   ];
-  if (has(hass, `sensor.${V}_state_of_health`)) {
+  // Prefer the logger's own calculated SOH (sensor.<D>_battery_soh — a
+  // calibrated estimate, present regardless of car brand) over a
+  // car-reported one, since `pickVehicleEntity`'s vehicle-slug-scoped
+  // search can never find a <D>-prefixed entity.
+  const sohEntity = has(hass, `sensor.${D}_battery_soh`)
+    ? `sensor.${D}_battery_soh`
+    : pickVehicleEntity(hass, V, "soh", cfg);
+  if (sohEntity) {
     chips.push({
       type: "conditional",
-      conditions: [{ condition: "state", entity: `sensor.${V}_state_of_health`, state_not: "unavailable" }],
+      conditions: [
+        { condition: "state", entity: sohEntity, state_not: "unavailable" },
+        { condition: "state", entity: sohEntity, state_not: "unknown" },
+      ],
       chip: {
         type: "template",
         icon: "mdi:heart-pulse",
-        content: `SOH {{ states('sensor.${V}_state_of_health') }}%`,
+        content: `SOH {{ states('${sohEntity}') }}%`,
         icon_color: "pink",
       },
     });
@@ -994,16 +1004,16 @@ function detalleView(D, V, hass) {
       kpiBtn(`sensor.${D}_last_trip_consumption`, "Efficiency", "mdi:speedometer"),
       {
         type: "custom:button-card",
-        // avg_speed_kmh is an attribute, not an entity — use a label template
-        // and hide the (empty) state row.
+        // avg_speed_kmh lives on recent_trips.trips[0], not on a
+        // sensor.<D>_last_trip entity — that entity doesn't exist.
         name: "Avg speed",
         show_state: false,
         show_icon: true,
         icon: "mdi:gauge",
         label:
-          "[[[\n  const s = states['sensor." +
+          "[[[\n  const rt = states['sensor." +
           D +
-          "_last_trip'];\n  const v = s && s.attributes ? s.attributes.avg_speed_kmh : null;\n  return (v == null) ? '—' : Number(v).toFixed(1) + ' km/h';\n]]]",
+          "_recent_trips'];\n  const trips = (rt && rt.attributes && rt.attributes.trips) || [];\n  const v = trips[0] ? trips[0].avg_speed_kmh : null;\n  return (v == null) ? '—' : Number(v).toFixed(1) + ' km/h';\n]]]",
         show_label: true,
         styles: {
           card: [{ padding: "12px" }, { "border-radius": "16px" }],
@@ -1021,7 +1031,7 @@ function detalleView(D, V, hass) {
       primary: "vs your average",
       secondary:
         `{% set trip = states('sensor.${D}_last_trip_consumption') | float(0) %}` +
-        `{% set avg  = states('sensor.${D}_total_30d_avg_consumption') | float(0) %}` +
+        `{% set avg  = states('sensor.${D}_avg_consumption_30_days') | float(0) %}` +
         `{% if avg > 0 and trip > 0 %}{% set delta = ((trip - avg) / avg) * 100 %}` +
         `{% if delta < 0 %}{{ delta | round(1) }}% better than your average (≈ {{ avg | round(1) }} kWh/100km)` +
         `{% else %}+{{ delta | round(1) }}% worse than your average (≈ {{ avg | round(1) }} kWh/100km){% endif %}` +
@@ -1029,7 +1039,7 @@ function detalleView(D, V, hass) {
       icon: "mdi:chart-line-variant",
       iconColor:
         `{% set trip = states('sensor.${D}_last_trip_consumption') | float(0) %}` +
-        `{% set avg  = states('sensor.${D}_total_30d_avg_consumption') | float(0) %}` +
+        `{% set avg  = states('sensor.${D}_avg_consumption_30_days') | float(0) %}` +
         `{% if avg > 0 and trip > 0 %}{{ 'green' if trip <= avg else 'red' }}{% else %}grey{% endif %}`,
     })
   );
