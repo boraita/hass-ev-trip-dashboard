@@ -15,7 +15,7 @@ template:
         unique_id: ev_dashboard_contract_check
         state: >-
           {% set required = [
-            'sensor.__DEVICE___battery_level',
+            'sensor.__DEVICE___battery_percent',
             'sensor.__DEVICE___battery_energy',
             'sensor.__DEVICE___energy_to_full_charge',
             'sensor.__DEVICE___current_trip_distance',

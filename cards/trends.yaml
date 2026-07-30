@@ -24,7 +24,7 @@ cards:
     square: false
     cards:
       # --- Tile 1: days since the longest trip ever ---
-      # `trip_records` exposes attrs.totals with the lifetime records (longest_trip_date, etc.).
+      # `trip_records` exposes attrs.longest.ended_at for the lifetime record trip.
       - type: custom:button-card
         name: Long trip
         icon: mdi:trophy-outline
@@ -33,7 +33,7 @@ cards:
           - operator: template
             value: |
               [[[
-                const d = entity.attributes?.totals?.longest_trip_date;
+                const d = entity.attributes?.longest?.ended_at;
                 if (!d) return false;
                 const days = Math.floor((Date.now() - new Date(d).getTime()) / 86400000);
                 return days <= 30;
@@ -44,7 +44,7 @@ cards:
         entity: sensor.__DEVICE___trip_records
         label: |
           [[[
-            const d = entity.attributes?.totals?.longest_trip_date;
+            const d = entity.attributes?.longest?.ended_at;
             if (!d) return 'sin datos';
             const days = Math.floor((Date.now() - new Date(d).getTime()) / 86400000);
             return `hace ${days} día${days === 1 ? '' : 's'}`;

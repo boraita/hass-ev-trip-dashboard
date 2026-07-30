@@ -179,22 +179,21 @@ cards:
 
   # ---------------------------------------------------------------------------
   # INLINE PRICE EDITOR — quick "I paid €X at this public charger" fix.
-  # Needs packages/charge-price-helper.yaml dropped in (defines the input_number
-  # helpers below). Without that package this card silently no-ops on click.
+  # Needs packages/charge-price-helper.yaml dropped in (defines the
+  # input_number + script below). Always edits the MOST RECENT charge —
+  # ev_trip_logger.set_last_charge_price defaults to the last charge when
+  # charge_id is omitted, so there's no per-charge id to manage here.
   # ---------------------------------------------------------------------------
   - type: custom:mushroom-title-card
     title: Ajustar precio
-    subtitle: Cambia el €/kWh de una carga (0 = la última)
+    subtitle: Cambia el €/kWh de la última carga
     icon: mdi:cash-edit
 
   - type: entities
     entities:
-      - entity: input_number.__DEVICE___charge_price_override
+      - entity: input_number.__DEVICE___charge_price_edit
         name: Precio €/kWh
         icon: mdi:cash
-      - entity: input_number.__DEVICE___charge_id_to_edit
-        name: ID a editar (0 = última)
-        icon: mdi:database-edit
 
   - type: custom:button-card
     name: Aplicar precio
@@ -202,14 +201,7 @@ cards:
     show_state: false
     tap_action:
       action: perform-action
-      perform_action: ev_trip_logger.set_last_charge_price
-      data:
-        price_per_kwh: "[[[ return states['input_number.__DEVICE___charge_price_override'].state; ]]]"
-        charge_id: |
-          [[[
-            const id = parseInt(states['input_number.__DEVICE___charge_id_to_edit'].state, 10);
-            return id > 0 ? id : undefined;
-          ]]]
+      perform_action: script.__DEVICE___apply_charge_price
     styles:
       card:
         - padding: 12px
@@ -223,8 +215,10 @@ cards:
         - color: white
 
   # ---------------------------------------------------------------------------
-  # FLOATING "+" BUTTON — bottom-right, fixed. Calls ev_trip_logger.log_charge
-  # via more-info on the recent_charges sensor (user can wire a custom popup).
+  # FLOATING "+" BUTTON — bottom-right, fixed. ev_trip_logger.log_charge
+  # requires `kwh`, so tapping can't call the service directly with no data
+  # (that failed validation on every tap). Opens the recent_charges sensor's
+  # more-info instead, until a proper capture popup exists to collect kWh.
   # ---------------------------------------------------------------------------
   - type: custom:button-card
     name: ""
@@ -232,10 +226,6 @@ cards:
     show_name: false
     show_icon: true
     tap_action:
-      action: call-service
-      service: ev_trip_logger.log_charge
-      service_data: {}
-    hold_action:
       action: more-info
       entity: sensor.__DEVICE___recent_charges
     styles:

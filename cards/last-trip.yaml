@@ -42,12 +42,16 @@ cards:
       {% set o = state_attr('sensor.__DEVICE___last_trip_distance', 'origin') %}
       {% set d = state_attr('sensor.__DEVICE___last_trip_distance', 'destination') %}
       {{ (o or '—') ~ '  →  ' ~ (d or '—') }}
+    # low_confidence and the consumption band live on recent_trips.trips[0],
+    # NOT on last_trip_distance/last_trip_consumption — those sensors only
+    # expose started_at/ended_at/origin/destination/driver.
     secondary: >-
       {% set st = state_attr('sensor.__DEVICE___last_trip_distance', 'started_at') %}
       {% set en = state_attr('sensor.__DEVICE___last_trip_distance', 'ended_at') %}
-      {% set low = state_attr('sensor.__DEVICE___last_trip_distance', 'low_confidence') %}
-      {% set lo = state_attr('sensor.__DEVICE___last_trip_consumption', 'consumption_lower_kwh_100km') %}
-      {% set hi = state_attr('sensor.__DEVICE___last_trip_consumption', 'consumption_upper_kwh_100km') %}
+      {% set t = (state_attr('sensor.__DEVICE___recent_trips', 'trips') or [None])[0] %}
+      {% set low = t.low_confidence if t else none %}
+      {% set lo = t.consumption_lower_kwh_100km if t else none %}
+      {% set hi = t.consumption_upper_kwh_100km if t else none %}
       {% if st and en %}
         {{ as_timestamp(st) | timestamp_custom('%H:%M', true) }} → {{ as_timestamp(en) | timestamp_custom('%H:%M', true) }}{% if low %}  ·  ⚠ baja confianza{% if lo is not none and hi is not none %} (banda {{ lo }}–{{ hi }} kWh/100km){% endif %}{% endif %}
       {% else %}—{% endif %}
@@ -55,11 +59,11 @@ cards:
     # low_confidence so the user notices the caveat at a glance
     # without having to scan the secondary text.
     icon: >-
-      {% set low = state_attr('sensor.__DEVICE___last_trip_distance', 'low_confidence') %}
-      {{ 'mdi:alert-circle-outline' if low else 'mdi:map-marker-path' }}
+      {% set t = (state_attr('sensor.__DEVICE___recent_trips', 'trips') or [None])[0] %}
+      {{ 'mdi:alert-circle-outline' if (t and t.low_confidence) else 'mdi:map-marker-path' }}
     icon_color: >-
-      {% set low = state_attr('sensor.__DEVICE___last_trip_distance', 'low_confidence') %}
-      {{ 'orange' if low else 'blue' }}
+      {% set t = (state_attr('sensor.__DEVICE___recent_trips', 'trips') or [None])[0] %}
+      {{ 'orange' if (t and t.low_confidence) else 'blue' }}
     fill_container: true
     multiline_secondary: true
 
@@ -308,21 +312,22 @@ cards:
         - margin-top: 4px
 
   # ---------------------------------------------------------------------------
-  # SCORE — colored badge. <50 red · <75 amber · ≥75 green.
+  # SCORE — colored badge. Sensor scale is 0-10 (not 0-100).
+  # <5.0 red · <7.5 amber · ≥7.5 green.
   # ---------------------------------------------------------------------------
   - type: custom:mushroom-template-card
     primary: >-
       Score · {{ states('sensor.__DEVICE___last_trip_score') }}
     secondary: >-
       {% set s = states('sensor.__DEVICE___last_trip_score') | float(0) %}
-      {% if s >= 90 %}Conducción excelente
-      {% elif s >= 75 %}Buena conducción
-      {% elif s >= 50 %}Conducción aceptable
+      {% if s >= 9.0 %}Conducción excelente
+      {% elif s >= 7.5 %}Buena conducción
+      {% elif s >= 5.0 %}Conducción aceptable
       {% else %}Margen de mejora{% endif %}
     icon: mdi:trophy-variant
     icon_color: >-
       {% set s = states('sensor.__DEVICE___last_trip_score') | float(0) %}
-      {% if s >= 75 %}green{% elif s >= 50 %}amber{% else %}red{% endif %}
+      {% if s >= 7.5 %}green{% elif s >= 5.0 %}amber{% else %}red{% endif %}
     fill_container: true
     multiline_secondary: false
 

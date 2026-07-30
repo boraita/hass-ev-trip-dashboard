@@ -8,7 +8,8 @@
 #
 # Calendar entity: `calendar.__DEVICE___activity` is exposed by the
 # hass-ev-trip-logger integration. Each day with activity becomes one all-day
-# event whose summary looks like: "2 viajes · 23 km · 1 carga".
+# event whose summary looks like: "2 trips · 23.0 km · 1 charge" (always
+# generated in English by the integration, regardless of dashboard language).
 # Replace __DEVICE__ with your device slug.
 
 type: vertical-stack
@@ -20,18 +21,20 @@ cards:
 
   - type: custom:calendar-card-pro
     entities:
-      # Match "carga" → blue lightning, "viaje" → green car.
-      # calendar-card-pro applies the first matching rule per event.
+      # Match "charge" → blue lightning, "trip" → green car. The integration
+      # always generates the summary in English ("N trip(s) · M charge(s)"),
+      # regardless of dashboard language — calendar-card-pro applies the
+      # first matching rule per event.
       - entity: calendar.__DEVICE___activity
         color: "#1976d2"
         icon: mdi:lightning-bolt
         accumulate_by: day
-        label: "carga"
+        label: "charge"
       - entity: calendar.__DEVICE___activity
         color: "#2e7d32"
         icon: mdi:car
         accumulate_by: day
-        label: "viaje"
+        label: "trip"
     # Monthly grid view with built-in navigation arrows.
     view: month
     show_navigation: true
@@ -43,26 +46,31 @@ cards:
     compact_events_to_show: 2
     show_empty_days: true
     # Click a day → browser_mod popup if available, else native event details.
+    # The calendar entity has no `all_events` attribute (calendar.py never
+    # defines extra_state_attributes) and `sensor.date` doesn't exist on
+    # this instance, so neither can be read via state_attr(). The
+    # coordinator's own `event` property is already scoped to TODAY only
+    # (see calendar.py: async_update builds [today, today+1)), and HA's
+    # base CalendarEntity exposes that as the `message`/`description`
+    # attributes — no extra plumbing needed. This popup can only ever show
+    # today's activity, never an arbitrary tapped day.
     tap_action:
       action: fire-dom-event
       browser_mod:
         service: browser_mod.popup
         data:
-          title: Actividad del día
+          title: Actividad de hoy
           size: normal
           content:
             type: markdown
             content: |
-              {% set events = state_attr('calendar.__DEVICE___activity', 'all_events') or [] %}
-              {% set today = states('sensor.date') %}
-              {% set todays = events | selectattr('start', 'search', today) | list %}
-              {% if todays | length == 0 %}
+              {% set msg = state_attr('calendar.__DEVICE___activity', 'message') %}
+              {% set desc = state_attr('calendar.__DEVICE___activity', 'description') %}
+              {% if not msg %}
               _Sin actividad registrada para hoy._
               {% else %}
-              {% for ev in todays %}
-              **{{ ev.summary }}**
-              {{ ev.description or '' }}
-              {% endfor %}
+              **{{ msg }}**
+              {{ desc or '' }}
               {% endif %}
 
 # -----------------------------------------------------------------------------

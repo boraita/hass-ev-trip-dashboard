@@ -35,6 +35,6 @@ cards:
       {%- for c in charges %}
 
       **{{ as_timestamp(c.ended_at) | timestamp_custom('%d/%m %H:%M') if c.ended_at else '—' }}** — {{ c.location or "—" }}
-      {{ c.kwh | default('—', true) }} kWh × {{ c.price_per_kwh | default('—', true) }} {{ CUR.get(c.currency, c.currency or '€') }}/kWh = **{{ c.total_cost | default('—', true) }} {{ CUR.get(c.currency, c.currency or '€') }}**
+      {{ c.kwh if c.kwh is not none else '—' }} kWh × {{ c.price_per_kwh if c.price_per_kwh is not none else '—' }} {{ CUR.get(c.currency, c.currency or '€') }}/kWh = **{{ c.total_cost if c.total_cost is not none else '—' }} {{ CUR.get(c.currency, c.currency or '€') }}**
       {%- endfor %}
       {%- endif %}

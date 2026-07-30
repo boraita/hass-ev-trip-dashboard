@@ -102,8 +102,8 @@ cards:
             - font-weight: bold
 
       - type: custom:button-card
-        # avg_speed lives on the `last_trip` sensor attributes, not as its
-        # own entity — surface it via a template button.
+        # avg_speed_kmh lives on recent_trips.trips[0], not on a
+        # sensor.__DEVICE___last_trip entity (that entity doesn't exist).
         template: ""
         name: Velocidad media
         show_state: true
@@ -111,7 +111,10 @@ cards:
         icon: mdi:gauge
         label: >-
           [[[
-            const v = states['sensor.__DEVICE___last_trip'].attributes.avg_speed_kmh;
+            const trips = (states['sensor.__DEVICE___recent_trips']
+                          && states['sensor.__DEVICE___recent_trips'].attributes
+                          && states['sensor.__DEVICE___recent_trips'].attributes.trips) || [];
+            const v = trips[0] && trips[0].avg_speed_kmh;
             return (v == null) ? '—' : v.toFixed(1) + ' km/h';
           ]]]
         show_label: true
@@ -133,7 +136,7 @@ cards:
     primary: Frente a tu media
     secondary: >-
       {% set trip = states('sensor.__DEVICE___last_trip_consumption') | float(0) %}
-      {% set avg  = states('sensor.__DEVICE___total_30d_avg_consumption') | float(0) %}
+      {% set avg  = states('sensor.__DEVICE___avg_consumption_30_days') | float(0) %}
       {% if avg > 0 and trip > 0 %}
         {% set delta = ((trip - avg) / avg) * 100 %}
         {% if delta < 0 %}
@@ -147,7 +150,7 @@ cards:
     icon: mdi:chart-line-variant
     icon_color: >-
       {% set trip = states('sensor.__DEVICE___last_trip_consumption') | float(0) %}
-      {% set avg  = states('sensor.__DEVICE___total_30d_avg_consumption') | float(0) %}
+      {% set avg  = states('sensor.__DEVICE___avg_consumption_30_days') | float(0) %}
       {% if avg > 0 and trip > 0 %}
         {{ 'green' if trip <= avg else 'red' }}
       {% else %}
@@ -201,16 +204,17 @@ cards:
     conditions:
       - condition: template
         value_template: >-
-          {% set t = state_attr('sensor.__DEVICE___recent_trips', 'trips')[0] %}
+          {% set t = (state_attr('sensor.__DEVICE___recent_trips', 'trips') or []) | first %}
           {{ t and (t.regen_kwh | float(0)) > 0 }}
     card:
       type: custom:mushroom-template-card
       primary: >-
-        {% set r = state_attr('sensor.__DEVICE___recent_trips', 'trips')[0].regen_kwh | float(0) %}
+        {% set t = (state_attr('sensor.__DEVICE___recent_trips', 'trips') or []) | first %}
+        {% set r = (t.regen_kwh if t else 0) | float(0) %}
         ✅ Cargó {{ r | round(2) }} kWh durante el trip
       secondary: >-
-        {% set t = state_attr('sensor.__DEVICE___recent_trips', 'trips')[0] %}
-        {% set r = t.regen_kwh | float(0) %}
+        {% set t = (state_attr('sensor.__DEVICE___recent_trips', 'trips') or []) | first %}
+        {% set r = (t.regen_kwh if t else 0) | float(0) %}
         {% set e = t.energy_kwh | float(0) %}
         {% set gross = e + r %}
         {% if gross > 0 %}
@@ -234,15 +238,15 @@ cards:
     conditions:
       - condition: template
         value_template: >-
-          {% set t = state_attr('sensor.__DEVICE___recent_trips', 'trips')[0] %}
+          {% set t = (state_attr('sensor.__DEVICE___recent_trips', 'trips') or []) | first %}
           {{ t and ((t.kwh_charged_before or 0) > 0 or (t.kwh_charged_during or 0) > 0) }}
     card:
       type: custom:mushroom-template-card
       primary: Carga relacionada
       secondary: >-
-        {% set t = state_attr('sensor.__DEVICE___recent_trips', 'trips')[0] %}
-        {% set b = t.kwh_charged_before or 0 %}
-        {% set d = t.kwh_charged_during or 0 %}
+        {% set t = (state_attr('sensor.__DEVICE___recent_trips', 'trips') or []) | first %}
+        {% set b = (t.kwh_charged_before if t else 0) or 0 %}
+        {% set d = (t.kwh_charged_during if t else 0) or 0 %}
         {% if b > 0 and d > 0 %}
           ↩ Antes: {{ b }} kWh · 🛑 Durante: {{ d }} kWh
         {% elif b > 0 %}
@@ -267,7 +271,7 @@ cards:
     show_icon: true
     icon: mdi:cash-multiple
     label: >-
-      {% set t = state_attr('sensor.__DEVICE___recent_trips', 'trips')[0] %}
+      {% set t = (state_attr('sensor.__DEVICE___recent_trips', 'trips') or []) | first %}
       {% set basis = t.cost_basis_per_kwh if t else None %}
       {% if basis is not none %}
         {{ '%.3f' | format(basis) }} €/kWh efectivos
@@ -296,31 +300,29 @@ cards:
   # at the endpoints.
   - type: custom:mushroom-template-card
     primary: >-
-      🟢 {{ state_attr('sensor.__DEVICE___recent_trips', 'trips')[0].start_address
-            or state_attr('sensor.__DEVICE___recent_trips', 'trips')[0].origin
-            or '—' }}
+      {% set t = (state_attr('sensor.__DEVICE___recent_trips', 'trips') or []) | first %}
+      🟢 {{ (t.start_address if t else none) or (t.origin if t else none) or '—' }}
     secondary: Origen
     icon: mdi:map-marker-outline
     icon_color: green
     tap_action:
       action: url
       url_path: >-
-        {% set t = state_attr('sensor.__DEVICE___recent_trips', 'trips')[0] %}
-        https://www.google.com/maps?q={{ t.start_lat }},{{ t.start_lon }}
+        {% set t = (state_attr('sensor.__DEVICE___recent_trips', 'trips') or []) | first %}
+        https://www.google.com/maps?q={{ t.start_lat if t else '' }},{{ t.start_lon if t else '' }}
 
   - type: custom:mushroom-template-card
     primary: >-
-      🔴 {{ state_attr('sensor.__DEVICE___recent_trips', 'trips')[0].end_address
-            or state_attr('sensor.__DEVICE___recent_trips', 'trips')[0].destination
-            or '—' }}
+      {% set t = (state_attr('sensor.__DEVICE___recent_trips', 'trips') or []) | first %}
+      🔴 {{ (t.end_address if t else none) or (t.destination if t else none) or '—' }}
     secondary: Destino
     icon: mdi:map-marker-check
     icon_color: red
     tap_action:
       action: url
       url_path: >-
-        {% set t = state_attr('sensor.__DEVICE___recent_trips', 'trips')[0] %}
-        https://www.google.com/maps?q={{ t.end_lat }},{{ t.end_lon }}
+        {% set t = (state_attr('sensor.__DEVICE___recent_trips', 'trips') or []) | first %}
+        https://www.google.com/maps?q={{ t.end_lat if t else '' }},{{ t.end_lon if t else '' }}
 
   # v0.5.25 — route map with NUMBERED waypoints from
   # sensor.<device>_last_trip_route.points (populated for both live and
@@ -331,7 +333,7 @@ cards:
   - type: markdown
     content: >-
       {% set pts = state_attr('sensor.__DEVICE___last_trip_route', 'points') or [] %}
-      {% set t = state_attr('sensor.__DEVICE___recent_trips', 'trips')[0] %}
+      {% set t = (state_attr('sensor.__DEVICE___recent_trips', 'trips') or []) | first %}
       {% set api_key = '__GEOAPIFY_KEY__' %}
       {% set gps_km = t.gps_distance_km if t and t.gps_distance_km is not none else None %}
       {% if pts | length >= 2 %}
@@ -387,7 +389,8 @@ cards:
     title: Histórico device tracker
     default_zoom: 13
     hours_to_show: >-
-      {% set d = state_attr('sensor.__DEVICE___last_trip', 'duration_min') | float(0) %}
+      {% set t = (state_attr('sensor.__DEVICE___recent_trips', 'trips') or []) | first %}
+      {% set d = (t.duration_min if t else 0) | float(0) %}
       {{ ((d / 60) + 0.5) | round(0) if d > 0 else 1 }}
     entities:
       - entity: device_tracker.__VEHICLE___location

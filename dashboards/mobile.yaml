@@ -1,5 +1,5 @@
 # EV Trip Dashboard — mobile-first compact layout.
-# Same backend as full.yaml but only the 4 most-used views, single column.
+# Same backend as full.yaml but only the 3 most-used views, single column.
 #
 # Placeholders:
 #   __DEVICE__   the trip-LOGGER slug (e.g. sealion_7)

@@ -1,4 +1,4 @@
-# EV Trip Dashboard v2 — 9-view BYD-inspired layout.
+# EV Trip Dashboard v2 — 8-view BYD-inspired layout.
 #
 # Views (matching the BYD mobile app pantallas):
 #   1. Resumen      — vehicle hero + tire pressures + map + live charge popup
@@ -6,10 +6,13 @@
 #   3. Tendencias   — KPI tiles + dual-axis monthly bars + 60-day line
 #   4. Patrones     — by-hour bar + by-weekday radar + weekday km strip
 #   5. Eficiencia   — monthly consumption line + scatter + temp buckets
-#   6. Récords      — top-9 lists per criterion + KPI tiles
-#   7. Detalle      — single-trip drilldown with KPIs + percentile + map
-#   8. Viajes       — trip list with 30d averages header
-#   9. Cargas       — charge list with 4 KPI tiles + add (+) button
+#   6. Detalle      — single-trip drilldown with KPIs + percentile + map
+#   7. Viajes       — trip list with 30d averages header
+#   8. Cargas       — charge list with 4 KPI tiles + add (+) button
+#
+# A "Récords" view (top-9 lists per criterion) existed earlier but was
+# deliberately dropped (see git history) once trip-detail absorbed the
+# per-trip percentile — not re-added here.
 #
 # Placeholders:
 #   __DEVICE__   the trip-LOGGER slug (e.g. sealion_7) — trip / charge / journey / stats sensors
@@ -92,7 +95,7 @@ views:
           !include ../cards/efficiency-charts.yaml
 
   # ============================================================
-  # VIEW 6 — Detalle del último viaje
+  # VIEW 6 — Detalle
   # ============================================================
   - title: Detalle
     path: trip-detail
@@ -105,7 +108,7 @@ views:
           !include ../cards/trip-detail.yaml
 
   # ============================================================
-  # VIEW 8 — Viajes (lista)
+  # VIEW 7 — Viajes (lista)
   # ============================================================
   - title: Viajes
     path: trips
@@ -118,7 +121,7 @@ views:
           !include ../cards/trip-list-v2.yaml
 
   # ============================================================
-  # VIEW 9 — Cargas (lista)
+  # VIEW 8 — Cargas (lista)
   # ============================================================
   - title: Cargas
     path: charges

@@ -59,16 +59,22 @@ cards:
         icon: mdi:battery-charging-medium
         content: "{{ states('sensor.__DEVICE___battery_energy') }} kWh"
         icon_color: teal
-      # SOH — only renders if the state_of_health entity exists.
+      # SOH — lives on the trip-logger device (__DEVICE__ prefix), not the
+      # vehicle integration (__VEHICLE__) — sensor.__VEHICLE___state_of_health
+      # doesn't exist. A nonexistent entity's state is 'unknown', not
+      # 'unavailable', so both are excluded here to actually guard the chip.
       - type: conditional
         conditions:
           - condition: state
-            entity: sensor.__VEHICLE___state_of_health
+            entity: sensor.__DEVICE___battery_soh
             state_not: unavailable
+          - condition: state
+            entity: sensor.__DEVICE___battery_soh
+            state_not: unknown
         chip:
           type: template
           icon: mdi:heart-pulse
-          content: "SOH {{ states('sensor.__VEHICLE___state_of_health') }}%"
+          content: "SOH {{ states('sensor.__DEVICE___battery_soh') }}%"
           icon_color: pink
       # SYSTEM — power system status; same guard pattern.
       - type: conditional
@@ -175,7 +181,7 @@ cards:
       secondary: >-
         {{ states('sensor.__DEVICE___current_charge_power') }} kW ·
         SoC {{ states('sensor.__DEVICE___battery_percent') }}% ·
-        +{{ states('sensor.__DEVICE___current_charge_kwh') }} kWh ·
+        +{{ states('sensor.__DEVICE___current_charge_energy') }} kWh ·
         {{ states('sensor.__DEVICE___current_charge_duration') }} ·
         ETA
         {% set kwh = states('sensor.__DEVICE___energy_to_full_charge') | float(0) %}

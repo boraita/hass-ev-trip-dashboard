@@ -1,11 +1,48 @@
-# Trip + charge events as a logbook timeline.
-# Uses HA's logbook card to render every trip_ended / charge_logged event
-# as a row in the timeline.
+# Trip + charge events as a timeline.
+#
+# The native `logbook` card depends on the recorder actually keeping
+# history for last_trip_distance / last_charge_energy — on this instance
+# recorder returned 0 entries for both over 2 and 7 day windows despite
+# real trips/charges in that window (recorder config issue, root cause
+# not determinable from the dashboard side). Instead of depending on
+# recorder at all, this builds the timeline directly from the
+# recent_trips / recent_charges sensor attributes ev_trip_logger already
+# maintains — robust to any recorder retention policy.
 # Replace __DEVICE__ with your device slug.
 
-type: logbook
-title: Activity
-hours_to_show: 168   # last 7 days
-entities:
-  - sensor.__DEVICE___last_trip_distance
-  - sensor.__DEVICE___last_charge_energy
+type: vertical-stack
+cards:
+  - type: markdown
+    content: |
+      {%- set trips = state_attr('sensor.__DEVICE___recent_trips', 'trips') or [] %}
+      {%- set charges = state_attr('sensor.__DEVICE___recent_charges', 'charges') or [] %}
+      {%- set ns = namespace(rows=[]) %}
+      {%- for t in trips %}
+        {%- set ns.rows = ns.rows + [{
+          'ts': t.ended_at, 'kind': 'trip',
+          'label': (t.origin or '—') ~ ' → ' ~ (t.destination or '—'),
+          'detail': (t.distance_km ~ ' km' if t.distance_km is not none else '—')
+            ~ (' · ' ~ (t.consumption_kwh_100km | round(1)) ~ ' kWh/100km' if t.consumption_kwh_100km is not none else ''),
+        }] %}
+      {%- endfor %}
+      {%- for c in charges %}
+        {%- set ns.rows = ns.rows + [{
+          'ts': c.ended_at or c.started_at, 'kind': 'charge',
+          'label': c.location or 'Carga',
+          'detail': (c.kwh | float(0) | round(2)) ~ ' kWh'
+            ~ (' · ' ~ (c.total_cost | float(0) | round(2)) ~ ' ' ~ (c.currency or '€') if c.total_cost is not none else ''),
+        }] %}
+      {%- endfor %}
+      {%- set rows = ns.rows | rejectattr('ts', 'none') | sort(attribute='ts', reverse=true) | list %}
+      ### Actividad reciente
+      {%- if rows | length == 0 %}
+
+      _Sin trips ni cargas registrados aún._
+      {%- else %}
+      {%- for r in rows[:30] %}
+      {%- set dt = as_datetime(r.ts) %}
+      {{ '🚗' if r.kind == 'trip' else '🔌' }} **{{ dt.strftime('%d/%m %H:%M') if dt else '—' }}** — {{ r.label }}
+      {{ r.detail }}
+
+      {%- endfor %}
+      {%- endif %}

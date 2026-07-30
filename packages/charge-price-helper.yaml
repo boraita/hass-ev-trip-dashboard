@@ -4,13 +4,15 @@
 # device slug (the same one you use everywhere else). Restart HA.
 #
 # The Cargas card shows an input_number tied to this helper plus a button
-# that calls `ev_trip_logger.set_last_charge_price` with the helper's
-# value — letting you change the €/kWh of the most-recent charge (or any
-# charge by id) from the dashboard without opening Developer Tools.
+# that runs the script below, which calls
+# `ev_trip_logger.set_last_charge_price` with the helper's value — letting
+# you change the €/kWh of the MOST RECENT charge from the dashboard
+# without opening Developer Tools. `set_last_charge_price` always targets
+# the last charge when `charge_id` is omitted, so there's no id to manage.
 
 input_number:
-  __DEVICE___charge_price_override:
-    name: Override charge price
+  __DEVICE___charge_price_edit:
+    name: Charge price to apply
     icon: mdi:cash-edit
     min: 0
     max: 5
@@ -19,11 +21,10 @@ input_number:
     unit_of_measurement: "€/kWh"
     initial: 0.07
 
-  __DEVICE___charge_id_to_edit:
-    name: Charge id to edit (0 = last)
-    icon: mdi:database-edit
-    min: 0
-    max: 100000
-    step: 1
-    mode: box
-    initial: 0
+script:
+  __DEVICE___apply_charge_price:
+    alias: "__DEVICE__ apply charge price"
+    sequence:
+      - action: ev_trip_logger.set_last_charge_price
+        data:
+          price_per_kwh: "{{ states('input_number.__DEVICE___charge_price_edit') | float(0) }}"

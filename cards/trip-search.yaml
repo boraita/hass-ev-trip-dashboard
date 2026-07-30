@@ -8,6 +8,23 @@
 
 type: vertical-stack
 cards:
+  # When packages/trip-list-helpers.yaml isn't installed, every filter/sort
+  # control below reads as 'unknown' and the card silently falls back to
+  # "newest first, no filter" — indistinguishable from the user's actual
+  # choice. Surface that explicitly instead of degrading in silence.
+  - type: conditional
+    conditions:
+      - condition: template
+        value_template: >-
+          {{ states('input_text.__DEVICE___trip_search') in ['unknown', 'unavailable'] }}
+    card:
+      type: markdown
+      content: >-
+        ⚠ **Faltan los helpers de `packages/trip-list-helpers.yaml`.**
+        Instala ese paquete para habilitar la búsqueda, el orden y los
+        filtros de esta tarjeta — sin él, los controles de abajo no
+        tienen ningún efecto.
+
   - type: entities
     title: Trips — search & filter
     show_header_toggle: false
