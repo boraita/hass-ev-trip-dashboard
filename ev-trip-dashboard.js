@@ -4654,6 +4654,14 @@ const _fmtDur = (min) => {
   if (min == null || isNaN(n) || n < 0) return null;
   return n >= 60 ? `${Math.floor(n / 60)}h ${Math.round(n % 60)}m` : `${Math.round(n)} min`;
 };
+// v0.8.13 — total minutes actually spent charging across a set of charges
+// (used to build "driving + charging" trip time, as opposed to the
+// wall-clock total which also counts non-charging stops as leisure time).
+const _chargeMinutesSum = (charges) =>
+  (charges || []).reduce((a, c) => {
+    if (!c.started_at || !c.ended_at) return a;
+    return a + (new Date(c.ended_at) - new Date(c.started_at)) / 60000;
+  }, 0);
 // v0.8.12 — shared "sum + average over an arbitrary set of trips" used by
 // journey grouping, the date-range tool, and the tap-a-range-of-stages
 // tool: same aggregation, three different ways to pick which trips go in.
@@ -4687,11 +4695,14 @@ function _aggregateTrips(trips) {
   };
 }
 // Render an _aggregateTrips() result as the same pill/chip row used for
-// journey summaries. `sym` maps a currency code to its symbol. Pass
-// `{showTotal: true}` to also show the wall-clock total (driving + any
-// charging/stop time in between) whenever it differs from the summed
-// driving duration — only meaningful for a single contiguous journey or
-// stage range, not a multi-day date-range pick.
+// journey summaries. `sym` maps a currency code to its symbol.
+// `opts.chargeMinutes` (minutes actually spent charging in this range) adds
+// a "trip time" chip = driving + charging, i.e. the real travel time minus
+// any leisure/rest stop. `opts.showTotal` additionally shows the raw
+// wall-clock total (first departure to last arrival, so it also counts
+// leisure stops) whenever it differs from the driving duration — only
+// meaningful for a single contiguous journey or stage range, not a
+// multi-day date-range pick.
 function _metricsChipsHtml(agg, sym, opts) {
   if (!agg) return "";
   opts = opts || {};
@@ -4702,10 +4713,14 @@ function _metricsChipsHtml(agg, sym, opts) {
     ? `${f0(agg.socStart)}→${f0(agg.socEnd)}%${agg.socUsed != null ? ` (${f0(agg.socUsed)})` : ""}`
     : null;
   const tempRange = agg.tempStart != null && agg.tempEnd != null ? `${f0(agg.tempStart)}→${f0(agg.tempEnd)}°C` : null;
+  const chargeMin = opts.chargeMinutes || 0;
+  const showTrip = chargeMin > 0.5;
+  const tripMin = agg.duration + chargeMin;
   const showTotal = opts.showTotal && agg.elapsed != null && agg.elapsed > agg.duration + 1;
   return (
     jchip("mdi:map-marker-distance", agg.km ? `${f0(agg.km)} km` : null) +
     jchip("mdi:timer-outline", _fmtDur(agg.duration)) +
+    (showTrip ? jchip("mdi:clock-check-outline", _fmtDur(tripMin)) : "") +
     (showTotal ? jchip("mdi:progress-clock", _fmtDur(agg.elapsed)) : "") +
     jchip("mdi:lightning-bolt", agg.kwh ? `${f1(agg.kwh)} kWh` : null) +
     jchip("mdi:chart-line", agg.cons != null ? _fmtEff(agg.cons) : null) +
@@ -5161,16 +5176,18 @@ class EvTripCalendarCard extends HTMLElement {
           .join("");
       // Selection summary: only rendered once BOTH ends of a range are
       // picked (sel.b != null), for the group currently selected.
-      const selSummary = (stages, groupKey) => {
+      const selSummary = (stages, groupKey, embeddedCharges) => {
         if (!sel || sel.groupKey !== groupKey || sel.b == null) return "";
         const lo = Math.min(sel.a, sel.b), hi = Math.max(sel.a, sel.b);
         const picked = stages.slice(lo, hi + 1);
         const agg = _aggregateTrips(picked);
         if (!agg) return "";
+        const rangeCharges = (embeddedCharges || []).filter((c) =>
+          within(c, picked[0].started_at, picked[picked.length - 1].ended_at));
         return `<div class="cal-jsel">
           <div class="cal-jsel-head"><ha-icon icon="mdi:map-marker-path"></ha-icon>${_endpoint(picked[0].start_address, picked[0].origin)} → ${_endpoint(picked[picked.length - 1].end_address, picked[picked.length - 1].destination)}
             <span class="cal-jsel-clear" data-clear-group="${_esc(groupKey)}">✕</span></div>
-          <div class="cal-jmetrics">${_metricsChipsHtml(agg, sym, { showTotal: true })}</div>
+          <div class="cal-jmetrics">${_metricsChipsHtml(agg, sym, { showTotal: true, chargeMinutes: _chargeMinutesSum(rangeCharges) })}</div>
         </div>`;
       };
       const chgBadge = (n) => (n ? ` · <span class="cal-jchg"><ha-icon icon="mdi:lightning-bolt"></ha-icon>${n}</span>` : "");
@@ -5192,8 +5209,8 @@ class EvTripCalendarCard extends HTMLElement {
             <span class="cal-jtime">${_timeOfDay(g.started_at)}–${_timeOfDay(g.ended_at)}</span>
           </div>
           <div class="cal-jsum">${g.stages.length} ${g.stages.length === 1 ? "stage" : "stages"}${chgBadge(g.embeddedCharges.length)} · <span class="cal-jhint">${L("tap a stage, then another, to sum a stretch", "toca una etapa y luego otra para sumar un tramo")}</span></div>
-          <div class="cal-jmetrics">${_metricsChipsHtml(g, sym, { showTotal: true })}</div>
-          ${selSummary(g.stages, `${g.started_at}|${g.ended_at}`)}
+          <div class="cal-jmetrics">${_metricsChipsHtml(g, sym, { showTotal: true, chargeMinutes: _chargeMinutesSum(g.embeddedCharges) })}</div>
+          ${selSummary(g.stages, `${g.started_at}|${g.ended_at}`, g.embeddedCharges)}
           <div class="cal-stages">${stagesAndCharges(g.stages, g.embeddedCharges, `${g.started_at}|${g.ended_at}`)}</div>
           ${mapSlot(g.started_at, g.ended_at)}
         </div>`;
