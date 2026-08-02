@@ -4993,7 +4993,13 @@ class EvTripCalendarCard extends HTMLElement {
         const id = c.charge_id != null ? c.charge_id : c.id;
         const ss = id != null ? this._streets[id] : undefined;
         if (ss === "loading" || ss === undefined) return L("locating…", "localizando…");
-        return ss && ss.label ? _esc(ss.label) : L("Charge", "Carga");
+        const label = ss && ss.label ? _esc(ss.label) : L("Charge", "Carga");
+        // v0.8.11 — tap the resolved location to open the exact geocoded
+        // point (not just the place name) in Google Maps.
+        if (ss && ss.lat != null && ss.lon != null) {
+          return `<a href="https://www.google.com/maps/search/?api=1&query=${ss.lat},${ss.lon}" target="_blank" rel="noopener">${label}</a>`;
+        }
+        return label;
       };
       const chargeStage = (c) => `
         <div class="cal-stage cal-stage--chg">
@@ -5148,6 +5154,8 @@ class EvTripCalendarCard extends HTMLElement {
           .cal-arr{--mdc-icon-size:14px;color:var(--secondary-text-color);flex:0 0 auto;}
           .cal-stage--chg .cal-sroute{color:var(--info-color,#039be5);font-weight:600;}
           .cal-chg-ic{color:var(--info-color,#039be5)!important;}
+          .cal-sroute a,.cal-jtitle a{color:var(--info-color,#039be5);text-decoration:none;font-weight:600;}
+          .cal-sroute a:hover,.cal-jtitle a:hover{text-decoration:underline;}
           .cal-smeta{flex:0 0 auto;color:var(--secondary-text-color);font-variant-numeric:tabular-nums;}
           .cal-pill{flex:0 0 auto;min-width:30px;text-align:center;padding:2px 7px;border-radius:999px;
                     color:#fff;font-weight:800;font-size:.8em;font-variant-numeric:tabular-nums;}
