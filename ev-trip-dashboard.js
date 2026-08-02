@@ -3391,7 +3391,7 @@ class EvTripJourneyCard extends HTMLElement {
           : rg && rg.kwh != null ? `~${f1(rg.kwh)} kWh`
           : null;
         const metrics =
-          chip("mdi:timer-outline", "", t.duration_min != null ? `${f0(t.duration_min)} min` : null) +
+          chip("mdi:timer-outline", "", _fmtDur(t.duration_min)) +
           chip("mdi:speedometer", "", t.avg_speed_kmh != null ? `${f0(t.avg_speed_kmh)} km/h` : null) +
           chip("mdi:lightning-bolt", "", t.energy_kwh != null ? `${f1(t.energy_kwh)} kWh` : null) +
           chip("mdi:chart-line", "", cons) +
@@ -4645,6 +4645,15 @@ const _fmtEffVal = (v100) => {
 };
 // One-shot "12.3 kWh/100km" style string in the active unit.
 const _fmtEff = (v100) => { const e = _fmtEffVal(v100); return e.value === "—" ? "—" : `${e.value} ${e.unit}`; };
+// v0.8.11 — shared duration formatter: "362 min" reads fine, but past an
+// hour "134 min" doesn't parse at a glance the way "2h 14m" does. Several
+// call sites already had their own copy of this exact ternary (charge
+// duration displays); this is the one place going forward.
+const _fmtDur = (min) => {
+  const n = Number(min);
+  if (min == null || isNaN(n) || n < 0) return null;
+  return n >= 60 ? `${Math.floor(n / 60)}h ${Math.round(n % 60)}m` : `${Math.round(n)} min`;
+};
 // ---- UI language (follows the installed HA language; English by default) ----
 // Most of the dashboard is English; these helpers let the newer custom cards
 // render in the HA language when it's Spanish, and English otherwise.
@@ -4794,6 +4803,17 @@ class EvTripCalendarCard extends HTMLElement {
       g.currency = (s.find((t) => t.currency) || {}).currency || null;
       g.cons = g.km > 0 ? (g.kwh / g.km) * 100 : null;
       g.roundTrip = g.origin && g.destination && g.origin.trim().toLowerCase() === g.destination.trim().toLowerCase();
+      // v0.8.11 — the full metric row (duration, SoC delta, regen, temp
+      // range), summed/spanned across every stage, not just km/kWh/cost.
+      g.duration = s.reduce((a, t) => a + (Number(t.duration_min) || 0), 0);
+      g.socStart = s[0].soc_start != null ? Number(s[0].soc_start) : null;
+      g.socEnd = s[s.length - 1].soc_end != null ? Number(s[s.length - 1].soc_end) : null;
+      g.socUsed = s.some((t) => t.soc_used_pct != null)
+        ? s.reduce((a, t) => a + (Number(t.soc_used_pct) || 0), 0) : null;
+      g.regen = s.some((t) => t.regen_kwh != null)
+        ? s.reduce((a, t) => a + (Number(t.regen_kwh) || 0), 0) : null;
+      g.tempStart = s[0].avg_temp_c != null ? Number(s[0].avg_temp_c) : null;
+      g.tempEnd = s[s.length - 1].avg_temp_c != null ? Number(s[s.length - 1].avg_temp_c) : null;
     }
     return { groups, standalone };
   }
@@ -4955,11 +4975,15 @@ class EvTripCalendarCard extends HTMLElement {
           <span class="cal-smeta">${f0(t.distance_km)} km · ${t.consumption_kwh_100km != null && Number(t.consumption_kwh_100km) >= 0 ? _fmtEff(t.consumption_kwh_100km) : "—"}</span>
           ${t.score != null ? `<span class="cal-pill" style="background:${_scoreColor(t.score)}">${f1(t.score)}</span>` : ""}
         </div>`;
+      // v0.8.11 — duration alongside the date/time: a clock range like
+      // "19:55–20:08" doesn't read as "13 min" the way an explicit
+      // duration does.
+      const chgDur = (c) => (c.started_at && c.ended_at ? _fmtDur((new Date(c.ended_at) - new Date(c.started_at)) / 60000) : null);
       const chargeStage = (c) => `
         <div class="cal-stage cal-stage--chg">
           <span class="cal-stime">${_timeRange(c.started_at, c.ended_at) || _timeOfDay(c.started_at)}</span>
           <span class="cal-sroute"><ha-icon class="cal-arr cal-chg-ic" icon="mdi:lightning-bolt"></ha-icon>${_esc(c.location || L("Charge", "Carga"))}${c.is_dcfc ? " · DC" : ""}</span>
-          <span class="cal-smeta">${(Number(c.kwh) || 0).toFixed(1)} kWh${c.total_cost != null ? ` · ${(Number(c.total_cost) || 0).toFixed(2)} ${_esc(sym(c.currency))}` : ""}</span>
+          <span class="cal-smeta">${(Number(c.kwh) || 0).toFixed(1)} kWh${chgDur(c) ? ` · ${chgDur(c)}` : ""}${c.total_cost != null ? ` · ${(Number(c.total_cost) || 0).toFixed(2)} ${_esc(sym(c.currency))}` : ""}</span>
         </div>`;
       const stagesAndCharges = (stages, embedded) =>
         stages
@@ -4975,17 +4999,37 @@ class EvTripCalendarCard extends HTMLElement {
         if (Array.isArray(r)) return `<div class="cal-map">${_routeSvg(r) || '<div class="cal-map-ph">No GPS for this trip</div>'}</div>`;
         return `<div class="cal-map"><div class="cal-map-ph"><ha-icon icon="mdi:map-marker-path"></ha-icon> Loading route…</div></div>`;
       };
-      const journeyHtml = (g) => `
+      // v0.8.11 — full metric row (duration/energy/consumption/SoC/cost/
+      // regen/temp), summed or spanned across every stage — the same set
+      // shown per-stage in the journey detail view, but totalled for the
+      // whole day's journey instead of read stage-by-stage.
+      const jchip = (icon, value) => (value == null || value === "" ? "" : `<span class="cal-jchip"><ha-icon icon="${icon}"></ha-icon><b>${value}</b></span>`);
+      const journeyHtml = (g) => {
+        const socRange = g.socStart != null && g.socEnd != null
+          ? `${f0(g.socStart)}→${f0(g.socEnd)}%${g.socUsed != null ? ` (${f0(g.socUsed)})` : ""}`
+          : null;
+        const tempRange = g.tempStart != null && g.tempEnd != null ? `${f0(g.tempStart)}→${f0(g.tempEnd)}°C` : null;
+        const jmetrics =
+          jchip("mdi:timer-outline", _fmtDur(g.duration)) +
+          jchip("mdi:lightning-bolt", g.kwh ? `${f1(g.kwh)} kWh` : null) +
+          jchip("mdi:chart-line", g.cons != null ? _fmtEff(g.cons) : null) +
+          jchip("mdi:battery", socRange) +
+          jchip("mdi:cash", g.cost ? `${g.cost.toFixed(2)} ${_esc(sym(g.currency))}` : null) +
+          jchip("mdi:sync", g.regen ? `${f1(g.regen)} kWh` : null) +
+          jchip("mdi:thermometer", tempRange);
+        return `
         <div class="cal-journey">
           <div class="cal-jhead">
             <span class="cal-jicon"><ha-icon icon="${g.roundTrip ? "mdi:home-map-marker" : "mdi:map-marker-path"}"></ha-icon></span>
             <span class="cal-jtitle">${_endpoint(g.origin)} → ${_endpoint(g.destination)}</span>
             <span class="cal-jtime">${_timeOfDay(g.started_at)}–${_timeOfDay(g.ended_at)}</span>
           </div>
-          <div class="cal-jsum"><b>${f0(g.km)}</b> km · <b>${f1(g.kwh)}</b> kWh${g.cons != null ? ` · <b>${_fmtEff(g.cons)}</b>` : ""}${g.cost ? ` · <b>${g.cost.toFixed(2)} ${_esc(sym(g.currency))}</b>` : ""} · ${g.stages.length} ${g.stages.length === 1 ? "stage" : "stages"}${chgBadge(g.embeddedCharges.length)}</div>
+          <div class="cal-jsum"><b>${f0(g.km)}</b> km · ${g.stages.length} ${g.stages.length === 1 ? "stage" : "stages"}${chgBadge(g.embeddedCharges.length)}</div>
+          <div class="cal-jmetrics">${jmetrics}</div>
           <div class="cal-stages">${stagesAndCharges(g.stages, g.embeddedCharges)}</div>
           ${mapSlot(g.started_at, g.ended_at)}
         </div>`;
+      };
       const soloHtml = (t) => `
         <div class="cal-journey cal-journey--solo">
           <div class="cal-stages">${stagesAndCharges([t], t.embeddedCharges)}</div>
@@ -4998,7 +5042,7 @@ class EvTripCalendarCard extends HTMLElement {
             <span class="cal-jtitle">${_esc(c.location || L("Charge", "Carga"))}${c.is_dcfc ? " · DC" : ""}</span>
             <span class="cal-jtime">${_timeRange(c.started_at, c.ended_at) || _timeOfDay(c.started_at)}</span>
           </div>
-          <div class="cal-jsum"><b>${(Number(c.kwh) || 0).toFixed(1)}</b> kWh${c.total_cost != null ? ` · <b>${(Number(c.total_cost) || 0).toFixed(2)} ${_esc(sym(c.currency))}</b>` : ""}${c.soc_start != null && c.soc_end != null ? ` · <b>${Math.round(c.soc_start)}→${Math.round(c.soc_end)}%</b>` : ""}</div>
+          <div class="cal-jsum"><b>${(Number(c.kwh) || 0).toFixed(1)}</b> kWh${chgDur(c) ? ` · <b>${chgDur(c)}</b>` : ""}${c.total_cost != null ? ` · <b>${(Number(c.total_cost) || 0).toFixed(2)} ${_esc(sym(c.currency))}</b>` : ""}${c.soc_start != null && c.soc_end != null ? ` · <b>${Math.round(c.soc_start)}→${Math.round(c.soc_end)}%</b>` : ""}</div>
         </div>`;
       const body =
         allEntries
@@ -5067,6 +5111,14 @@ class EvTripCalendarCard extends HTMLElement {
           .cal-jtime{flex:0 0 auto;color:var(--secondary-text-color);font-size:.82em;font-variant-numeric:tabular-nums;}
           .cal-jsum{font-size:.82em;color:var(--secondary-text-color);font-variant-numeric:tabular-nums;}
           .cal-jsum b{color:var(--primary-text-color);font-weight:700;}
+          /* v0.8.11 — full metric row (duration/SoC/regen/temp), summed
+             across the journey's stages, alongside the km/kWh/cost line. */
+          .cal-jmetrics{display:flex;flex-wrap:wrap;gap:6px;}
+          .cal-jchip{display:inline-flex;align-items:center;gap:4px;padding:3px 8px;border-radius:999px;
+                     background:var(--secondary-background-color);font-size:.78em;
+                     color:var(--secondary-text-color);font-variant-numeric:tabular-nums;}
+          .cal-jchip ha-icon{--mdc-icon-size:13px;}
+          .cal-jchip b{color:var(--primary-text-color);font-weight:700;}
           .cal-jchg{display:inline-flex;align-items:center;gap:1px;color:var(--info-color,#039be5);font-weight:700;}
           .cal-jchg ha-icon{--mdc-icon-size:12px;}
           .cal-journey--chg{border-style:dashed;}
