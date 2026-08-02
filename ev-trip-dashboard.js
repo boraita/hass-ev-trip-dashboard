@@ -4771,6 +4771,7 @@ class EvTripCalendarCard extends HTMLElement {
     this._offset = 0; // months relative to current
     this._openDate = null;
     this._routes = this._routes || {}; // window key -> [{lat,lon}] | 'loading'
+    this._streets = this._streets || {}; // charge_id -> {label,lat,lon} | 'loading', for not_home charges
   }
   set hass(hass) {
     this._hass = hass;
@@ -4933,6 +4934,9 @@ class EvTripCalendarCard extends HTMLElement {
       this._openGroups = groups
         .map((g) => ({ key: `${g.started_at}|${g.ended_at}`, windows: g.stages.map((t) => ({ start: t.started_at, end: t.ended_at })) }))
         .concat(standalone.map((t) => ({ key: `${t.started_at}|${t.ended_at}`, windows: [{ start: t.started_at, end: t.ended_at }] })));
+      // For _fetchOpenDayChargeStreets after render (charges store no
+      // coordinates of their own — resolved from tracker history instead).
+      this._openCharges = e.charges;
 
       // Build one chronological timeline for the day: journeys, standalone
       // trips and charges all interleaved by start time — a charge shows
@@ -4972,17 +4976,29 @@ class EvTripCalendarCard extends HTMLElement {
         <div class="cal-stage">
           <span class="cal-stime">${_timeRange(t.started_at, t.ended_at) || _timeOfDay(t.started_at)}</span>
           <span class="cal-sroute">${_endpoint(t.start_address, t.origin)}<ha-icon class="cal-arr" icon="mdi:arrow-right"></ha-icon>${_endpoint(t.end_address, t.destination)}</span>
-          <span class="cal-smeta">${f0(t.distance_km)} km · ${t.consumption_kwh_100km != null && Number(t.consumption_kwh_100km) >= 0 ? _fmtEff(t.consumption_kwh_100km) : "—"}</span>
+          <span class="cal-smeta">${f0(t.distance_km)} km${_fmtDur(t.duration_min) ? ` · ${_fmtDur(t.duration_min)}` : ""} · ${t.consumption_kwh_100km != null && Number(t.consumption_kwh_100km) >= 0 ? _fmtEff(t.consumption_kwh_100km) : "—"}</span>
           ${t.score != null ? `<span class="cal-pill" style="background:${_scoreColor(t.score)}">${f1(t.score)}</span>` : ""}
         </div>`;
       // v0.8.11 — duration alongside the date/time: a clock range like
       // "19:55–20:08" doesn't read as "13 min" the way an explicit
       // duration does.
       const chgDur = (c) => (c.started_at && c.ended_at ? _fmtDur((new Date(c.ended_at) - new Date(c.started_at)) / 60000) : null);
+      // v0.8.11 — charges carry no address of their own; resolve "not_home"
+      // (or a blank location) to the reverse-geocoded street/town fetched by
+      // _fetchOpenDayChargeStreets, exactly like trips already show a real
+      // address instead of the raw zone state.
+      const chgLoc = (c) => {
+        const isAway = !c.location || String(c.location).toLowerCase() === "not_home";
+        if (!isAway) return _esc(c.location);
+        const id = c.charge_id != null ? c.charge_id : c.id;
+        const ss = id != null ? this._streets[id] : undefined;
+        if (ss === "loading" || ss === undefined) return L("locating…", "localizando…");
+        return ss && ss.label ? _esc(ss.label) : L("Charge", "Carga");
+      };
       const chargeStage = (c) => `
         <div class="cal-stage cal-stage--chg">
           <span class="cal-stime">${_timeRange(c.started_at, c.ended_at) || _timeOfDay(c.started_at)}</span>
-          <span class="cal-sroute"><ha-icon class="cal-arr cal-chg-ic" icon="mdi:lightning-bolt"></ha-icon>${_esc(c.location || L("Charge", "Carga"))}${c.is_dcfc ? " · DC" : ""}</span>
+          <span class="cal-sroute"><ha-icon class="cal-arr cal-chg-ic" icon="mdi:lightning-bolt"></ha-icon>${chgLoc(c)}${c.is_dcfc ? " · DC" : ""}</span>
           <span class="cal-smeta">${(Number(c.kwh) || 0).toFixed(1)} kWh${chgDur(c) ? ` · ${chgDur(c)}` : ""}${c.total_cost != null ? ` · ${(Number(c.total_cost) || 0).toFixed(2)} ${_esc(sym(c.currency))}` : ""}</span>
         </div>`;
       const stagesAndCharges = (stages, embedded) =>
@@ -5039,7 +5055,7 @@ class EvTripCalendarCard extends HTMLElement {
         <div class="cal-journey cal-journey--chg">
           <div class="cal-jhead">
             <span class="cal-jicon cal-jicon--chg"><ha-icon icon="mdi:lightning-bolt"></ha-icon></span>
-            <span class="cal-jtitle">${_esc(c.location || L("Charge", "Carga"))}${c.is_dcfc ? " · DC" : ""}</span>
+            <span class="cal-jtitle">${chgLoc(c)}${c.is_dcfc ? " · DC" : ""}</span>
             <span class="cal-jtime">${_timeRange(c.started_at, c.ended_at) || _timeOfDay(c.started_at)}</span>
           </div>
           <div class="cal-jsum"><b>${(Number(c.kwh) || 0).toFixed(1)}</b> kWh${chgDur(c) ? ` · <b>${chgDur(c)}</b>` : ""}${c.total_cost != null ? ` · <b>${(Number(c.total_cost) || 0).toFixed(2)} ${_esc(sym(c.currency))}</b>` : ""}${c.soc_start != null && c.soc_end != null ? ` · <b>${Math.round(c.soc_start)}→${Math.round(c.soc_end)}%</b>` : ""}</div>
@@ -5153,6 +5169,40 @@ class EvTripCalendarCard extends HTMLElement {
     // After render, lazily fetch each open journey's GPS route from the
     // device_tracker recorder history and re-render the SVG into its slot.
     this._fetchOpenDayRoutes();
+    this._fetchOpenDayChargeStreets();
+  }
+  // v0.8.11 — charges carry a bare "not_home" (or nothing) for their
+  // location, unlike trips which already have a reverse-geocoded
+  // start/end address. Resolve it the same way the main Cargas view
+  // does: pull the device_tracker position during the charge window
+  // and reverse-geocode it (cached per charge_id).
+  _fetchOpenDayChargeStreets() {
+    const ent = this._config.locationEntity;
+    if (!ent || !this._openCharges || !this._openCharges.length || !this._hass) return;
+    for (const c of this._openCharges) {
+      const id = c.charge_id != null ? c.charge_id : c.id;
+      const isAway = !c.location || String(c.location).toLowerCase() === "not_home";
+      if (id == null || !isAway || this._streets[id] !== undefined) continue;
+      this._streets[id] = "loading";
+      let start, end;
+      try {
+        start = new Date(new Date(c.started_at).getTime() - 120000).toISOString();
+        end = new Date(new Date(c.ended_at || c.started_at).getTime() + 120000).toISOString();
+      } catch (_e) { this._streets[id] = {}; continue; }
+      Promise.resolve(this._hass.callApi("GET", `history/period/${start}?end_time=${end}&filter_entity_id=${ent}&significant_changes_only=0`))
+        .then((res) => {
+          const ser = Array.isArray(res) && res[0] ? res[0] : [];
+          let lat = null, lon = null;
+          for (const x of ser) {
+            const a = x.attributes || {};
+            const la = parseFloat(a.latitude), lo = parseFloat(a.longitude);
+            if (!isNaN(la) && !isNaN(lo)) { lat = la; lon = lo; break; }
+          }
+          if (lat == null) { this._streets[id] = {}; this._render(); return; }
+          _reverseGeocode(lat, lon).then((label) => { this._streets[id] = { label: label || null, lat, lon }; this._render(); });
+        })
+        .catch(() => { this._streets[id] = {}; this._render(); });
+    }
   }
   _fetchOpenDayRoutes() {
     const ent = this._config.locationEntity;
