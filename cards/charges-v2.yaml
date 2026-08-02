@@ -183,16 +183,29 @@ cards:
   # input_number + script below). Always edits the MOST RECENT charge —
   # ev_trip_logger.set_last_charge_price defaults to the last charge when
   # charge_id is omitted, so there's no per-charge id to manage here.
+  #
+  # v0.8.10 — takes the TOTAL amount paid (what's on the receipt), not
+  # €/kWh: asking for €/kWh directly caused a real mistake (a €9.49 total
+  # typed as €/kWh priced an 18.7 kWh charge at €177.44). The subtitle
+  # shows the last charge's own kWh so the total-to-rate split is easy
+  # to sanity-check before applying.
   # ---------------------------------------------------------------------------
   - type: custom:mushroom-title-card
     title: Ajustar precio
-    subtitle: Cambia el €/kWh de la última carga
+    subtitle: >-
+      {% set chs = state_attr('sensor.__DEVICE___recent_charges', 'charges') or [] %}
+      {% set c = (chs | sort(attribute='ended_at', reverse=True) | first) %}
+      {% if c %}
+        Precio total pagado por la última carga ({{ c.kwh }} kWh)
+      {% else %}
+        Precio total pagado por la última carga
+      {% endif %}
     icon: mdi:cash-edit
 
   - type: entities
     entities:
-      - entity: input_number.__DEVICE___charge_price_edit
-        name: Precio €/kWh
+      - entity: input_number.__DEVICE___charge_total_edit
+        name: Total pagado (€)
         icon: mdi:cash
 
   - type: custom:button-card

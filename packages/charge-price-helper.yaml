@@ -6,20 +6,27 @@
 # The Cargas card shows an input_number tied to this helper plus a button
 # that runs the script below, which calls
 # `ev_trip_logger.set_last_charge_price` with the helper's value — letting
-# you change the €/kWh of the MOST RECENT charge from the dashboard
+# you change the price of the MOST RECENT charge from the dashboard
 # without opening Developer Tools. `set_last_charge_price` always targets
 # the last charge when `charge_id` is omitted, so there's no id to manage.
+#
+# v0.8.10 — takes the TOTAL amount paid (what's on the receipt), not
+# €/kWh: asking for €/kWh directly caused a real mistake — a €9.49 total
+# typed into a €/kWh field priced an 18.7 kWh charge at €177.44.
+# `set_last_charge_price` already supports `total_cost` and divides by
+# the charge's own kWh itself, so the helper just passes the total
+# straight through.
 
 input_number:
-  __DEVICE___charge_price_edit:
-    name: Charge price to apply
+  __DEVICE___charge_total_edit:
+    name: Total paid to apply
     icon: mdi:cash-edit
     min: 0
-    max: 5
-    step: 0.001
+    max: 500
+    step: 0.01
     mode: box
-    unit_of_measurement: "€/kWh"
-    initial: 0.07
+    unit_of_measurement: "€"
+    initial: 0
 
 script:
   __DEVICE___apply_charge_price:
@@ -27,4 +34,4 @@ script:
     sequence:
       - action: ev_trip_logger.set_last_charge_price
         data:
-          price_per_kwh: "{{ states('input_number.__DEVICE___charge_price_edit') | float(0) }}"
+          total_cost: "{{ states('input_number.__DEVICE___charge_total_edit') | float(0) }}"

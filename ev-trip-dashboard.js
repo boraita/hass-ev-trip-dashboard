@@ -2417,10 +2417,15 @@ class EvTripHistoryCard extends HTMLElement {
     if (isNaN(id)) return;
     const input = this.querySelector(`.cp-input[data-charge-id="${chargeId}"]`);
     if (!input) return;
-    const price = parseFloat(String(input.value).replace(",", "."));
-    if (isNaN(price) || price < 0) { input.focus(); return; }
+    const total = parseFloat(String(input.value).replace(",", "."));
+    if (isNaN(total) || total < 0) { input.focus(); return; }
     this._editing = false;
-    const data = { charge_id: id, price_per_kwh: price };
+    // v0.8.10 — the user knows what they PAID (a receipt total), not the
+    // €/kWh rate; asking for €/kWh directly produced real mistakes (a
+    // total of 9.49€ typed into a €/kWh field priced an 18.7 kWh charge
+    // at 177.44€). Send total_cost and let the backend divide by the
+    // charge's own kWh — set_last_charge_price already supports this.
+    const data = { charge_id: id, total_cost: total };
     if (this._config.entry_id) data.entry_id = this._config.entry_id;
     // ev_trip_logger.set_last_charge_price targets a specific charge when
     // charge_id is given, and sets price_locked=1 (so the editor then hides).
@@ -2943,16 +2948,21 @@ class EvTripHistoryCard extends HTMLElement {
             locHtml = `<div class="s-loc"><ha-icon icon="mdi:map-marker"></ha-icon><a href="https://www.google.com/maps/search/?api=1&query=${q}" target="_blank" rel="noopener">${_esc(ss.label || "View on map")}</a></div>`;
           }
         }
-        // Inline €/kWh editor — only for AWAY charges (home uses the default
-        // price). Sets THIS charge by charge_id; hides once price_locked=1.
+        // Inline total-price editor — only for AWAY charges (home uses the
+        // default price). Sets THIS charge by charge_id; hides once
+        // price_locked=1. v0.8.10 — takes the TOTAL amount paid (what's on
+        // the receipt), not €/kWh: asking for €/kWh directly caused real
+        // mistakes (a 9.49€ total typed as €/kWh priced 18.7 kWh at
+        // 177.44€). The kWh for this charge is shown right above (in
+        // .smetrics) so the total-to-rate split is easy to sanity-check.
         let priceHtml = "";
         if (locked) {
-          priceHtml = `<div class="cp-locked"><ha-icon icon="mdi:lock-check"></ha-icon>${fmtNum(c.price_per_kwh, 3)} ${_esc(sym(c.currency))}/kWh · set</div>`;
+          priceHtml = `<div class="cp-locked"><ha-icon icon="mdi:lock-check"></ha-icon>${fmtNum(c.total_cost, 2)} ${_esc(sym(c.currency))} · ${fmtNum(c.price_per_kwh, 3)} ${_esc(sym(c.currency))}/kWh · ${L("set", "fijado")}</div>`;
         } else if (!isHome) {
           priceHtml = `<div class="cp-edit">
-               <span class="cp-lbl">Set €/kWh</span>
-               <input class="cp-input" data-charge-id="${_esc(cid)}" type="number" inputmode="decimal" step="0.001" min="0" placeholder="${fmtNum(c.price_per_kwh, 3)}" />
-               <button class="cp-apply" data-charge-id="${_esc(cid)}"><ha-icon icon="mdi:check"></ha-icon>Set</button>
+               <span class="cp-lbl">${L(`Set total paid for ${fmtNum(c.kwh)} kWh`, `Precio total pagado (${fmtNum(c.kwh)} kWh)`)}</span>
+               <input class="cp-input" data-charge-id="${_esc(cid)}" type="number" inputmode="decimal" step="0.01" min="0" placeholder="${fmtNum(c.total_cost, 2)}" />
+               <button class="cp-apply" data-charge-id="${_esc(cid)}"><ha-icon icon="mdi:check"></ha-icon>${L("Set", "Fijar")}</button>
              </div>`;
         }
         // SoC reached by this charge (start→end %); end is always recorded,
