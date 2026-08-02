@@ -4654,6 +4654,54 @@ const _fmtDur = (min) => {
   if (min == null || isNaN(n) || n < 0) return null;
   return n >= 60 ? `${Math.floor(n / 60)}h ${Math.round(n % 60)}m` : `${Math.round(n)} min`;
 };
+// v0.8.12 — shared "sum + average over an arbitrary set of trips" used by
+// journey grouping, the date-range tool, and the tap-a-range-of-stages
+// tool: same aggregation, three different ways to pick which trips go in.
+function _aggregateTrips(trips) {
+  if (!trips || !trips.length) return null;
+  const s = trips.slice().sort((a, b) => new Date(a.started_at) - new Date(b.started_at));
+  const km = s.reduce((a, t) => a + (Number(t.distance_km) || 0), 0);
+  const kwh = s.reduce((a, t) => a + (Number(t.energy_kwh) || 0), 0);
+  const cost = s.reduce((a, t) => a + (Number(t.cost) || 0), 0);
+  const currency = (s.find((t) => t.currency) || {}).currency || null;
+  const cons = km > 0 ? (kwh / km) * 100 : null;
+  const duration = s.reduce((a, t) => a + (Number(t.duration_min) || 0), 0);
+  const socStart = s[0].soc_start != null ? Number(s[0].soc_start) : null;
+  const socEnd = s[s.length - 1].soc_end != null ? Number(s[s.length - 1].soc_end) : null;
+  const socUsed = s.some((t) => t.soc_used_pct != null)
+    ? s.reduce((a, t) => a + (Number(t.soc_used_pct) || 0), 0) : null;
+  const regen = s.some((t) => t.regen_kwh != null)
+    ? s.reduce((a, t) => a + (Number(t.regen_kwh) || 0), 0) : null;
+  const tempStart = s[0].avg_temp_c != null ? Number(s[0].avg_temp_c) : null;
+  const tempEnd = s[s.length - 1].avg_temp_c != null ? Number(s[s.length - 1].avg_temp_c) : null;
+  return {
+    count: s.length, km, kwh, cost, currency, cons, duration,
+    socStart, socEnd, socUsed, regen, tempStart, tempEnd,
+    started_at: s[0].started_at, ended_at: s[s.length - 1].ended_at,
+  };
+}
+// Render an _aggregateTrips() result as the same pill/chip row used for
+// journey summaries. `sym` maps a currency code to its symbol.
+function _metricsChipsHtml(agg, sym) {
+  if (!agg) return "";
+  const f0 = (v) => (v == null || isNaN(v) ? null : Number(v).toFixed(0));
+  const f1 = (v) => (v == null || isNaN(v) ? null : Number(v).toFixed(1));
+  const jchip = (icon, value) => (value == null || value === "" ? "" : `<span class="cal-jchip"><ha-icon icon="${icon}"></ha-icon><b>${value}</b></span>`);
+  const socRange = agg.socStart != null && agg.socEnd != null
+    ? `${f0(agg.socStart)}→${f0(agg.socEnd)}%${agg.socUsed != null ? ` (${f0(agg.socUsed)})` : ""}`
+    : null;
+  const tempRange = agg.tempStart != null && agg.tempEnd != null ? `${f0(agg.tempStart)}→${f0(agg.tempEnd)}°C` : null;
+  return (
+    jchip("mdi:map-marker-distance", agg.km ? `${f0(agg.km)} km` : null) +
+    jchip("mdi:timer-outline", _fmtDur(agg.duration)) +
+    jchip("mdi:lightning-bolt", agg.kwh ? `${f1(agg.kwh)} kWh` : null) +
+    jchip("mdi:chart-line", agg.cons != null ? _fmtEff(agg.cons) : null) +
+    jchip("mdi:battery", socRange) +
+    jchip("mdi:cash", agg.cost ? `${agg.cost.toFixed(2)} ${_esc(sym(agg.currency))}` : null) +
+    jchip("mdi:sync", agg.regen ? `${f1(agg.regen)} kWh` : null) +
+    jchip("mdi:thermometer", tempRange)
+  );
+}
 // ---- UI language (follows the installed HA language; English by default) ----
 // Most of the dashboard is English; these helpers let the newer custom cards
 // render in the HA language when it's Spanish, and English otherwise.
@@ -4772,6 +4820,19 @@ class EvTripCalendarCard extends HTMLElement {
     this._openDate = null;
     this._routes = this._routes || {}; // window key -> [{lat,lon}] | 'loading'
     this._streets = this._streets || {}; // charge_id -> {label,lat,lon} | 'loading', for not_home charges
+    // v0.8.12 — tap-a-range-of-stages tool: { groupKey, a, b } while
+    // picking (b is null until the 2nd tap), or null when nothing's
+    // selected. groupKey scopes it to one journey/solo entry so it can't
+    // leak across different groups or re-renders of a different day.
+    this._stageSel = this._stageSel || null;
+    // v0.8.12 — custom date-range tool: sum + average over every trip
+    // whose started_at falls in [rangeFrom, rangeTo], independent of the
+    // day currently open. Limited to whatever recent_trips still holds
+    // (last 50 by default) — fine for "this week"/"this month", not for
+    // wide historical ranges.
+    this._rangeOpen = this._rangeOpen || false;
+    this._rangeFrom = this._rangeFrom || null;
+    this._rangeTo = this._rangeTo || null;
   }
   set hass(hass) {
     this._hass = hass;
@@ -4794,27 +4855,13 @@ class EvTripCalendarCard extends HTMLElement {
     }
     for (const g of groups) {
       const s = g.stages;
-      g.started_at = s[0].started_at;
-      g.ended_at = s[s.length - 1].ended_at;
       g.origin = s[0].start_address || s[0].origin || "?";
       g.destination = s[s.length - 1].end_address || s[s.length - 1].destination || "?";
-      g.km = s.reduce((a, t) => a + (Number(t.distance_km) || 0), 0);
-      g.kwh = s.reduce((a, t) => a + (Number(t.energy_kwh) || 0), 0);
-      g.cost = s.reduce((a, t) => a + (Number(t.cost) || 0), 0);
-      g.currency = (s.find((t) => t.currency) || {}).currency || null;
-      g.cons = g.km > 0 ? (g.kwh / g.km) * 100 : null;
       g.roundTrip = g.origin && g.destination && g.origin.trim().toLowerCase() === g.destination.trim().toLowerCase();
-      // v0.8.11 — the full metric row (duration, SoC delta, regen, temp
-      // range), summed/spanned across every stage, not just km/kWh/cost.
-      g.duration = s.reduce((a, t) => a + (Number(t.duration_min) || 0), 0);
-      g.socStart = s[0].soc_start != null ? Number(s[0].soc_start) : null;
-      g.socEnd = s[s.length - 1].soc_end != null ? Number(s[s.length - 1].soc_end) : null;
-      g.socUsed = s.some((t) => t.soc_used_pct != null)
-        ? s.reduce((a, t) => a + (Number(t.soc_used_pct) || 0), 0) : null;
-      g.regen = s.some((t) => t.regen_kwh != null)
-        ? s.reduce((a, t) => a + (Number(t.regen_kwh) || 0), 0) : null;
-      g.tempStart = s[0].avg_temp_c != null ? Number(s[0].avg_temp_c) : null;
-      g.tempEnd = s[s.length - 1].avg_temp_c != null ? Number(s[s.length - 1].avg_temp_c) : null;
+      // v0.8.11/v0.8.12 — the full metric row (duration, SoC delta, regen,
+      // temp range), summed/spanned across every stage, not just km/kWh/
+      // cost — via the same aggregator the range tools use.
+      Object.assign(g, _aggregateTrips(s));
     }
     return { groups, standalone };
   }
@@ -4838,10 +4885,56 @@ class EvTripCalendarCard extends HTMLElement {
         this._render();
         return;
       }
+      // v0.8.13 — toggle the custom date-range summary tool.
+      const rangeToggle = t.closest("[data-toggle-range]");
+      if (rangeToggle && this.contains(rangeToggle)) {
+        this._rangeOpen = !this._rangeOpen;
+        this._render();
+        return;
+      }
+      // v0.8.12 — "×" on the stage-range selection summary clears it.
+      const clearBtn = t.closest(".cal-jsel-clear[data-clear-group]");
+      if (clearBtn && this.contains(clearBtn)) {
+        ev.stopPropagation();
+        this._stageSel = null;
+        this._render();
+        return;
+      }
+      // v0.8.12 — tap the first stage of a range, then the last, to sum
+      // just that stretch. Charge rows aren't part of this (only
+      // .cal-stage without --chg carries data-stage-idx).
+      const stageEl = t.closest(".cal-stage[data-stage-idx]");
+      if (stageEl && this.contains(stageEl) && !stageEl.classList.contains("cal-stage--chg")) {
+        ev.stopPropagation();
+        const groupKey = stageEl.getAttribute("data-group-key");
+        const idx = parseInt(stageEl.getAttribute("data-stage-idx"), 10);
+        const sel = this._stageSel;
+        if (!sel || sel.groupKey !== groupKey || sel.b != null) {
+          this._stageSel = { groupKey, a: idx, b: null };
+        } else if (sel.a === idx) {
+          this._stageSel = null; // tapped the same stage again -> clear
+        } else {
+          this._stageSel = { groupKey, a: sel.a, b: idx };
+        }
+        this._render();
+        return;
+      }
       const cell = t.closest(".cal-day[data-date]");
       if (cell && this.contains(cell)) {
         const date = cell.getAttribute("data-date");
         this._openDate = this._openDate === date ? null : date;
+        this._stageSel = null; // opening/closing a different day drops any selection
+        this._render();
+      }
+    });
+    this.addEventListener("change", (ev) => {
+      const t = ev.target;
+      if (!t || !t.closest) return;
+      const input = t.closest("input.cal-range-input[data-range]");
+      if (input && this.contains(input)) {
+        const which = input.getAttribute("data-range");
+        if (which === "from") this._rangeFrom = input.value || null;
+        else this._rangeTo = input.value || null;
         this._render();
       }
     });
@@ -4885,7 +4978,36 @@ class EvTripCalendarCard extends HTMLElement {
     const D = this._device || detectDevice(this._hass);
     this._device = D;
     const cur = { EUR: "€", USD: "$", GBP: "£" };
+    const symTop = (c) => cur[c] || c || "€";
     const map = this._index();
+
+    // v0.8.12 — custom date-range tool (independent of the day currently
+    // open): sum + average over every trip started within [from, to].
+    let rangeHtml = "";
+    if (this._rangeOpen) {
+      let rangeResult = "";
+      if (this._rangeFrom && this._rangeTo) {
+        const tArr = ((this._hass.states[`sensor.${D}_recent_trips`] || {}).attributes || {}).trips || [];
+        const from = this._rangeFrom, to = this._rangeTo;
+        const picked = tArr.filter((t) => {
+          const k = _localDateKey(t.started_at || t.ended_at);
+          return k && k >= from && k <= to;
+        });
+        const agg = _aggregateTrips(picked);
+        rangeResult = agg
+          ? `<div class="cal-jsum">${agg.count} ${agg.count === 1 ? "trip" : "trips"}</div><div class="cal-jmetrics">${_metricsChipsHtml(agg, symTop)}</div>`
+          : `<div class="cal-none">${L("No trips in this range.", "Sin trips en ese rango.")}</div>`;
+      }
+      rangeHtml = `
+        <div class="cal-range">
+          <div class="cal-range-inputs">
+            <input type="date" class="cal-range-input" data-range="from" value="${this._rangeFrom || ""}" />
+            <span>–</span>
+            <input type="date" class="cal-range-input" data-range="to" value="${this._rangeTo || ""}" />
+          </div>
+          ${rangeResult}
+        </div>`;
+    }
 
     const base = new Date();
     base.setDate(1);
@@ -4972,8 +5094,18 @@ class EvTripCalendarCard extends HTMLElement {
         .concat(looseCharges.map((c) => ({ type: "charge", at: c.started_at || c.ended_at, data: c })))
         .sort((a, b) => new Date(a.at) - new Date(b.at));
 
-      const stage = (t) => `
-        <div class="cal-stage">
+      // v0.8.12 — tap the first stage of a range, then the last, to see
+      // sum + average for just that stretch (e.g. "Alhendín to Zafra"
+      // within a longer day) without it touching the journey's own total.
+      const sel = this._stageSel;
+      const inSel = (groupKey, idx) => {
+        if (!sel || sel.groupKey !== groupKey) return false;
+        const lo = Math.min(sel.a, sel.b != null ? sel.b : sel.a);
+        const hi = Math.max(sel.a, sel.b != null ? sel.b : sel.a);
+        return idx >= lo && idx <= hi;
+      };
+      const stage = (t, idx, groupKey) => `
+        <div class="cal-stage${idx != null && inSel(groupKey, idx) ? " cal-stage--sel" : ""}"${idx != null ? ` data-stage-idx="${idx}" data-group-key="${_esc(groupKey)}"` : ""}>
           <span class="cal-stime">${_timeRange(t.started_at, t.ended_at) || _timeOfDay(t.started_at)}</span>
           <span class="cal-sroute">${_endpoint(t.start_address, t.origin)}<ha-icon class="cal-arr" icon="mdi:arrow-right"></ha-icon>${_endpoint(t.end_address, t.destination)}</span>
           <span class="cal-smeta">${f0(t.distance_km)} km${_fmtDur(t.duration_min) ? ` · ${_fmtDur(t.duration_min)}` : ""} · ${t.consumption_kwh_100km != null && Number(t.consumption_kwh_100km) >= 0 ? _fmtEff(t.consumption_kwh_100km) : "—"}</span>
@@ -5007,13 +5139,27 @@ class EvTripCalendarCard extends HTMLElement {
           <span class="cal-sroute"><ha-icon class="cal-arr cal-chg-ic" icon="mdi:lightning-bolt"></ha-icon>${chgLoc(c)}${c.is_dcfc ? " · DC" : ""}</span>
           <span class="cal-smeta">${(Number(c.kwh) || 0).toFixed(1)} kWh${chgDur(c) ? ` · ${chgDur(c)}` : ""}${c.total_cost != null ? ` · ${(Number(c.total_cost) || 0).toFixed(2)} ${_esc(sym(c.currency))}` : ""}</span>
         </div>`;
-      const stagesAndCharges = (stages, embedded) =>
+      const stagesAndCharges = (stages, embedded, groupKey) =>
         stages
-          .map((t) => ({ at: t.started_at, html: stage(t) }))
+          .map((t, idx) => ({ at: t.started_at, html: stage(t, idx, groupKey) }))
           .concat((embedded || []).map((c) => ({ at: c.started_at || c.ended_at, html: chargeStage(c) })))
           .sort((a, b) => new Date(a.at) - new Date(b.at))
           .map((it) => it.html)
           .join("");
+      // Selection summary: only rendered once BOTH ends of a range are
+      // picked (sel.b != null), for the group currently selected.
+      const selSummary = (stages, groupKey) => {
+        if (!sel || sel.groupKey !== groupKey || sel.b == null) return "";
+        const lo = Math.min(sel.a, sel.b), hi = Math.max(sel.a, sel.b);
+        const picked = stages.slice(lo, hi + 1);
+        const agg = _aggregateTrips(picked);
+        if (!agg) return "";
+        return `<div class="cal-jsel">
+          <div class="cal-jsel-head"><ha-icon icon="mdi:map-marker-path"></ha-icon>${_endpoint(picked[0].start_address, picked[0].origin)} → ${_endpoint(picked[picked.length - 1].end_address, picked[picked.length - 1].destination)}
+            <span class="cal-jsel-clear" data-clear-group="${_esc(groupKey)}">✕</span></div>
+          <div class="cal-jmetrics">${_metricsChipsHtml(agg, sym)}</div>
+        </div>`;
+      };
       const chgBadge = (n) => (n ? ` · <span class="cal-jchg"><ha-icon icon="mdi:lightning-bolt"></ha-icon>${n}</span>` : "");
       const mapSlot = (start, end) => {
         if (!this._config.locationEntity) return "";
@@ -5021,40 +5167,26 @@ class EvTripCalendarCard extends HTMLElement {
         if (Array.isArray(r)) return `<div class="cal-map">${_routeSvg(r) || '<div class="cal-map-ph">No GPS for this trip</div>'}</div>`;
         return `<div class="cal-map"><div class="cal-map-ph"><ha-icon icon="mdi:map-marker-path"></ha-icon> Loading route…</div></div>`;
       };
-      // v0.8.11 — full metric row (duration/energy/consumption/SoC/cost/
-      // regen/temp), summed or spanned across every stage — the same set
-      // shown per-stage in the journey detail view, but totalled for the
-      // whole day's journey instead of read stage-by-stage.
-      const jchip = (icon, value) => (value == null || value === "" ? "" : `<span class="cal-jchip"><ha-icon icon="${icon}"></ha-icon><b>${value}</b></span>`);
-      const journeyHtml = (g) => {
-        const socRange = g.socStart != null && g.socEnd != null
-          ? `${f0(g.socStart)}→${f0(g.socEnd)}%${g.socUsed != null ? ` (${f0(g.socUsed)})` : ""}`
-          : null;
-        const tempRange = g.tempStart != null && g.tempEnd != null ? `${f0(g.tempStart)}→${f0(g.tempEnd)}°C` : null;
-        const jmetrics =
-          jchip("mdi:timer-outline", _fmtDur(g.duration)) +
-          jchip("mdi:lightning-bolt", g.kwh ? `${f1(g.kwh)} kWh` : null) +
-          jchip("mdi:chart-line", g.cons != null ? _fmtEff(g.cons) : null) +
-          jchip("mdi:battery", socRange) +
-          jchip("mdi:cash", g.cost ? `${g.cost.toFixed(2)} ${_esc(sym(g.currency))}` : null) +
-          jchip("mdi:sync", g.regen ? `${f1(g.regen)} kWh` : null) +
-          jchip("mdi:thermometer", tempRange);
-        return `
+      // v0.8.11/v0.8.12 — full metric row (duration/energy/consumption/
+      // SoC/cost/regen/temp), summed or spanned across every stage — via
+      // the shared aggregator/renderer also used by the date-range and
+      // stage-range tools below.
+      const journeyHtml = (g) => `
         <div class="cal-journey">
           <div class="cal-jhead">
             <span class="cal-jicon"><ha-icon icon="${g.roundTrip ? "mdi:home-map-marker" : "mdi:map-marker-path"}"></ha-icon></span>
             <span class="cal-jtitle">${_endpoint(g.origin)} → ${_endpoint(g.destination)}</span>
             <span class="cal-jtime">${_timeOfDay(g.started_at)}–${_timeOfDay(g.ended_at)}</span>
           </div>
-          <div class="cal-jsum"><b>${f0(g.km)}</b> km · ${g.stages.length} ${g.stages.length === 1 ? "stage" : "stages"}${chgBadge(g.embeddedCharges.length)}</div>
-          <div class="cal-jmetrics">${jmetrics}</div>
-          <div class="cal-stages">${stagesAndCharges(g.stages, g.embeddedCharges)}</div>
+          <div class="cal-jsum">${g.stages.length} ${g.stages.length === 1 ? "stage" : "stages"}${chgBadge(g.embeddedCharges.length)} · <span class="cal-jhint">${L("tap a stage, then another, to sum a stretch", "toca una etapa y luego otra para sumar un tramo")}</span></div>
+          <div class="cal-jmetrics">${_metricsChipsHtml(g, sym)}</div>
+          ${selSummary(g.stages, `${g.started_at}|${g.ended_at}`)}
+          <div class="cal-stages">${stagesAndCharges(g.stages, g.embeddedCharges, `${g.started_at}|${g.ended_at}`)}</div>
           ${mapSlot(g.started_at, g.ended_at)}
         </div>`;
-      };
       const soloHtml = (t) => `
         <div class="cal-journey cal-journey--solo">
-          <div class="cal-stages">${stagesAndCharges([t], t.embeddedCharges)}</div>
+          <div class="cal-stages">${stagesAndCharges([t], t.embeddedCharges, `${t.started_at}|${t.ended_at}`)}</div>
           ${mapSlot(t.started_at, t.ended_at)}
         </div>`;
       const chargeCard = (c) => `
@@ -5079,11 +5211,13 @@ class EvTripCalendarCard extends HTMLElement {
         <div class="cal-top">
           <div class="cal-month">${monthName}</div>
           <div class="cal-navs">
+            <span class="cal-nav${this._rangeOpen ? " cal-nav--active" : ""}" data-toggle-range="1" title="${L("Custom date range", "Rango de fechas")}"><ha-icon icon="mdi:calendar-range"></ha-icon></span>
             <span class="cal-nav" data-dir="prev"><ha-icon icon="mdi:chevron-left"></ha-icon></span>
             <span class="cal-nav cal-dot" data-dir="today"><ha-icon icon="mdi:circle-medium"></ha-icon></span>
             <span class="cal-nav" data-dir="next"><ha-icon icon="mdi:chevron-right"></ha-icon></span>
           </div>
         </div>
+        ${rangeHtml}
         <div class="cal-grid cal-dows">${dows}</div>
         <div class="cal-grid cal-cells">${cells}</div>
         ${detail}
@@ -5094,6 +5228,15 @@ class EvTripCalendarCard extends HTMLElement {
           .cal-nav{cursor:pointer;border-radius:8px;padding:2px;color:var(--secondary-text-color);
                    display:inline-flex;}
           .cal-nav:hover{background:var(--divider-color);color:var(--primary-text-color);}
+          .cal-nav--active{background:var(--primary-color);color:var(--text-primary-color,#fff);}
+          .cal-range{margin:0 12px 12px;padding:8px 10px;border-radius:10px;
+                     border:1px solid var(--divider-color);
+                     background:var(--secondary-background-color,var(--card-background-color));}
+          .cal-range-inputs{display:flex;align-items:center;gap:8px;font-size:.85em;
+                             color:var(--secondary-text-color);}
+          .cal-range-input{font:inherit;color:var(--primary-text-color);
+                            background:var(--card-background-color);
+                            border:1px solid var(--divider-color);border-radius:6px;padding:3px 6px;}
           .cal-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:4px;padding:0 12px;}
           .cal-dows{padding-bottom:4px;}
           .cal-dow{text-align:center;font-size:.68em;font-weight:700;text-transform:uppercase;
@@ -5148,6 +5291,16 @@ class EvTripCalendarCard extends HTMLElement {
           .cal-stages{display:flex;flex-direction:column;gap:6px;border-left:2px solid var(--divider-color);
                       margin-left:13px;padding-left:12px;}
           .cal-stage{display:flex;align-items:center;gap:8px;font-size:.85em;flex-wrap:wrap;}
+          .cal-stage[data-stage-idx]{cursor:pointer;border-radius:8px;margin:-4px -6px;padding:4px 6px;transition:background .1s;}
+          .cal-stage[data-stage-idx]:hover{background:var(--secondary-background-color);}
+          .cal-stage--sel{background:rgba(3,155,229,.14);}
+          .cal-jhint{font-style:italic;opacity:.75;}
+          .cal-jsel{border:1px dashed var(--info-color,#039be5);border-radius:10px;padding:8px;
+                    display:flex;flex-direction:column;gap:6px;background:rgba(3,155,229,.06);}
+          .cal-jsel-head{display:flex;align-items:center;gap:6px;font-size:.85em;font-weight:600;}
+          .cal-jsel-head ha-icon{--mdc-icon-size:15px;color:var(--info-color,#039be5);}
+          .cal-jsel-clear{margin-left:auto;cursor:pointer;opacity:.7;padding:0 4px;}
+          .cal-jsel-clear:hover{opacity:1;}
           .cal-stime{flex:0 0 auto;color:var(--secondary-text-color);font-variant-numeric:tabular-nums;}
           .cal-sroute{flex:1 1 auto;min-width:0;display:flex;align-items:center;gap:4px;overflow:hidden;
                       text-overflow:ellipsis;white-space:nowrap;}
