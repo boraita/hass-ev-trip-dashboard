@@ -125,9 +125,12 @@ cards:
             {% endif %}
           {% endfor %}
         {% endif %}
+        {# La carga trae 'home', el nombre de una zona, o el token crudo
+           'not_home' — nunca mostrar el token. #}
+        {% macro place(v) %}{{ 'Fuera' if v | lower in ['not_home','unknown','outside known zones'] else ('Casa' if v | lower == 'home' else v) }}{% endmacro %}
         {% if ns.count > 0 %}
           {{ ns.count }}× · {{ ns.kwh | round(2) }} kWh ·
-          {{ ns.cost | round(2) }} €{% if ns.loc %} · {{ ns.loc }}{% endif %}
+          {{ ns.cost | round(2) }} €{% if ns.loc %} · {{ place(ns.loc) | trim }}{% endif %}
         {% else %}
           Aún no se ha cargado en este trayecto
         {% endif %}

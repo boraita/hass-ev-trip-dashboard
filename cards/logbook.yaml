@@ -17,10 +17,13 @@ cards:
       {%- set trips = state_attr('sensor.__DEVICE___recent_trips', 'trips') or [] %}
       {%- set charges = state_attr('sensor.__DEVICE___recent_charges', 'charges') or [] %}
       {%- set ns = namespace(rows=[]) %}
+      {#- Trip endpoints and charge locations arrive as 'home', a zone name, or
+          the raw 'not_home' token — never show the token. -#}
+      {%- macro place(v, dflt='—') %}{{ dflt if not v else ('Fuera' if v | lower in ['not_home','unknown','outside known zones'] else ('Casa' if v | lower == 'home' else v)) }}{%- endmacro %}
       {%- for t in trips %}
         {%- set ns.rows = ns.rows + [{
           'ts': t.ended_at, 'kind': 'trip',
-          'label': (t.origin or '—') ~ ' → ' ~ (t.destination or '—'),
+          'label': (place(t.origin) | trim) ~ ' → ' ~ (place(t.destination) | trim),
           'detail': (t.distance_km ~ ' km' if t.distance_km is not none else '—')
             ~ (' · ' ~ (t.consumption_kwh_100km | round(1)) ~ ' kWh/100km' if t.consumption_kwh_100km is not none else ''),
         }] %}
@@ -28,7 +31,7 @@ cards:
       {%- for c in charges %}
         {%- set ns.rows = ns.rows + [{
           'ts': c.ended_at or c.started_at, 'kind': 'charge',
-          'label': c.location or 'Carga',
+          'label': place(c.location, 'Carga') | trim,
           'detail': (c.kwh | float(0) | round(2)) ~ ' kWh'
             ~ (' · ' ~ (c.total_cost | float(0) | round(2)) ~ ' ' ~ (c.currency or '€') if c.total_cost is not none else ''),
         }] %}
