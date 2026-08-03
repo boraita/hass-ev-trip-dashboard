@@ -1395,15 +1395,18 @@ function cargasView(D, hass, V, cfg) {
     ],
   });
 
+  // locationEntity → the cards that show WHERE a charge happened can geocode the
+  // street of an away charge (charges carry no coordinates of their own).
+  const locationEntity = (cfg && cfg.location_entity) || (hass ? pickVehicleEntity(hass, V, "location", cfg) : null);
+
   // ---- Charging insights (AC/DC split, prices, cheapest, avg session) --
-  cards.push({ type: "custom:ev-trip-charge-insights-card", device: D });
+  cards.push({ type: "custom:ev-trip-charge-insights-card", device: D, locationEntity });
 
   // ---- Reactive charges history (custom element from this plugin) ------
   // Groups sessions by calendar day with expandable detail panels. Each charge
   // detail has an inline €/kWh editor (sets that specific charge by charge_id)
   // and, for not_home charges, the geocoded street + a Google Maps link. This
   // replaces the old "fix last charge" helper+script editor entirely.
-  const locationEntity = (cfg && cfg.location_entity) || (hass ? pickVehicleEntity(hass, V, "location", cfg) : null);
   cards.push({ type: "custom:ev-trip-history-card", device: D, kind: "charges", title: "Charge history", locationEntity, scrollRows: 5 });
 
   // ---- Charged vs driving summary (LEFT column) -------------------------
@@ -1491,6 +1494,7 @@ const _deviceCurrency = (hass, D) => {
 // the device_tracker recorder history first. Results are cached per ~11 m cell
 // and requests are throttled to ~1/s to respect Nominatim's usage policy.
 const _geoCache = {};
+const _geoInflight = {};
 const _geoQueue = [];
 let _geoBusy = false;
 function _geoPump() {
@@ -1518,7 +1522,14 @@ function _reverseGeocode(lat, lon) {
   if (lat == null || lon == null || isNaN(lat) || isNaN(lon)) return Promise.resolve("");
   const key = `${lat.toFixed(4)},${lon.toFixed(4)}`;
   if (_geoCache[key] !== undefined) return Promise.resolve(_geoCache[key]);
-  return new Promise((resolve) => { _geoQueue.push({ key, lat, lon, resolve }); _geoPump(); });
+  // Several cards can ask for the SAME point (one away charge shows in the trip
+  // list, the calendar, the charge history and the journey chip): share the
+  // queued request instead of paying the 1.1 s throttle once per card.
+  if (_geoInflight[key]) return _geoInflight[key];
+  const p = new Promise((resolve) => { _geoQueue.push({ key, lat, lon, resolve }); _geoPump(); });
+  _geoInflight[key] = p;
+  p.then(() => { delete _geoInflight[key]; });
+  return p;
 }
 // Compact colour legend for the trip score bands (matches _scoreColor).
 const _scoreLegend = () =>
@@ -1535,6 +1546,7 @@ class EvTripListCard extends HTMLElement {
     this._latestOnly = !!this._config.latestOnly; // show only the newest trip, expanded
     this._temps = this._temps || {}; // trip id -> {start,end} | 'loading'
     this._streets = this._streets || {}; // trip id -> {start,end} | 'loading'
+    this._chStreets = this._chStreets || {}; // charge id -> {label,lat,lon} | 'loading'
     this._regen = this._regen || {}; // trip id -> {kwh,est} | 'loading'
     this._routes = this._routes || {}; // trip id -> [{lat,lon}] | 'loading'
   }
@@ -1603,6 +1615,20 @@ class EvTripListCard extends HTMLElement {
         ]).then(([s, e]) => { this._streets[id] = { start: s, end: e }; this._render(); });
       })
       .catch(() => { this._streets[id] = {}; this._render(); });
+  }
+  // Name the place of every AWAY charge woven into the timeline: charges store
+  // no coordinates, so resolve each one's street from the device_tracker history
+  // instead of showing the raw "not_home". Cached per charge id, one lookup per
+  // charge shown.
+  _fetchChargeStreets(charges) {
+    const ent = this._config.locationEntity;
+    if (!ent || !this._hass || !charges) return;
+    for (const c of charges) {
+      const id = _chargeKey(c);
+      if (id == null || !_chargeAway(c) || this._chStreets[id] !== undefined) continue;
+      this._chStreets[id] = "loading";
+      _chargeStreet(this._hass, ent, c).then((r) => { this._chStreets[id] = r; this._render(); });
+    }
   }
   // Estimate the energy regenerated DURING the trip (downhill / braking). The
   // logger's regen_kwh is usually null, so integrate the POSITIVE portion of
@@ -2044,6 +2070,9 @@ class EvTripListCard extends HTMLElement {
       const durStr = durMin == null ? null : durMin >= 60 ? `${Math.floor(durMin / 60)}h ${Math.round(durMin % 60)}m` : `${Math.round(durMin)} min`;
       const avgKw = c.kwh != null && durMin && durMin > 0 ? Number(c.kwh) / (durMin / 60) : null;
       const type = c.is_dcfc ? "DC" : "AC";
+      // Where it charged: the logger's named place, else the street we geocoded
+      // for this charge (never the raw "not_home").
+      const place = _chargePlace(c, this._chStreets[_chargeKey(c)]);
       const parts = [
         `<b>${fmtNum(c.kwh, 2)}</b> kWh`,
         `<b>${fmtNum(c.price_per_kwh, 3)}</b> ${_esc(sym)}/kWh`,
@@ -2055,7 +2084,7 @@ class EvTripListCard extends HTMLElement {
         <div class="charge-row">
           <div class="cr-badge"><ha-icon icon="mdi:ev-station"></ha-icon></div>
           <div class="cr-body">
-            <div class="cr-head">Charged${c.location ? ` · ${_esc(c.location)}` : ""}<span class="cr-time">${_fmtDate(c.ended_at, true)}</span></div>
+            <div class="cr-head">Charged${place ? ` · ${_esc(place)}` : ""}<span class="cr-time">${_fmtDate(c.ended_at, true)}</span></div>
             <div class="cr-metrics">${parts}</div>
           </div>
           <span class="cr-type cr-type--${type === "DC" ? "dc" : "ac"}">${type}</span>
@@ -2071,13 +2100,13 @@ class EvTripListCard extends HTMLElement {
       const dir = sort === "Oldest" ? 1 : -1;
       const tripTimes = rows.map(tsTrip).filter((x) => !isNaN(x));
       const minT = Math.min(...tripTimes);
+      const shown = charges.filter((c) => { const ct = tsChg(c); return !isNaN(ct) && ct >= minT; });
+      // Kick the street lookups off BEFORE building the rows so a charge that
+      // needs one renders "locating…" rather than flashing the "Away" fallback.
+      this._fetchChargeStreets(shown);
       const merged = rows
         .map((t) => ({ ts: tsTrip(t), html: tripRowHtml(t) }))
-        .concat(
-          charges
-            .filter((c) => { const ct = tsChg(c); return !isNaN(ct) && ct >= minT; })
-            .map((c) => ({ ts: tsChg(c), html: chargeRowHtml(c) }))
-        )
+        .concat(shown.map((c) => ({ ts: tsChg(c), html: chargeRowHtml(c) })))
         .sort((a, b) => (a.ts - b.ts) * dir);
       items = merged.map((x) => x.html);
     } else {
@@ -2931,14 +2960,14 @@ class EvTripHistoryCard extends HTMLElement {
           }
           curve = _miniPowerSvg(cv, id, selIdx);
         }
-        const cid = c.charge_id != null ? c.charge_id : c.id;
+        const cid = _chargeKey(c);
         const locked = c.price_locked === true;
         // Home charges always use the default home price — only AWAY charges
         // (not_home / a named zone like "Trabajo ele") need a manual price.
         const isHome = String(c.location || "").toLowerCase() === "home";
         // not_home → street + Google Maps link (geocoded from device_tracker
         // history at charge time; charges carry no coordinates).
-        const isAway = !c.location || String(c.location).toLowerCase() === "not_home";
+        const isAway = _chargeAway(c);
         let locHtml = "";
         if (this._config.locationEntity && isAway) {
           const ss = this._streets[cid];
@@ -3031,28 +3060,10 @@ class EvTripHistoryCard extends HTMLElement {
     const sessions = rows.filter((c) => dayKey(c.ended_at) === this._openId);
     for (const c of sessions) {
       if (c.in_progress) continue; // ongoing charge handled by live sensors
-      const id = c.charge_id != null ? c.charge_id : c.id;
-      const isAway = !c.location || String(c.location).toLowerCase() === "not_home";
-      if (id == null || !isAway || this._streets[id] !== undefined) continue;
+      const id = _chargeKey(c);
+      if (id == null || !_chargeAway(c) || this._streets[id] !== undefined) continue;
       this._streets[id] = "loading";
-      let start, end;
-      try {
-        start = new Date(new Date(c.started_at).getTime() - 120000).toISOString();
-        end = new Date(new Date(c.ended_at || c.started_at).getTime() + 120000).toISOString();
-      } catch (_e) { this._streets[id] = {}; continue; }
-      Promise.resolve(this._hass.callApi("GET", `history/period/${start}?end_time=${end}&filter_entity_id=${ent}&significant_changes_only=0`))
-        .then((res) => {
-          const ser = Array.isArray(res) && res[0] ? res[0] : [];
-          let lat = null, lon = null;
-          for (const x of ser) {
-            const a = x.attributes || {};
-            const la = parseFloat(a.latitude), lo = parseFloat(a.longitude);
-            if (!isNaN(la) && !isNaN(lo)) { lat = la; lon = lo; break; }
-          }
-          if (lat == null) { this._streets[id] = {}; this._render(); return; }
-          _reverseGeocode(lat, lon).then((label) => { this._streets[id] = { label: label || null, lat, lon }; this._render(); });
-        })
-        .catch(() => { this._streets[id] = {}; this._render(); });
+      _chargeStreet(this._hass, ent, c).then((r) => { this._streets[id] = r; this._render(); });
     }
   }
   _fetchCurve(D, c, id) {
@@ -3161,6 +3172,17 @@ class EvTripJourneyCard extends HTMLElement {
     return trips
       .filter((t) => String(t.journey_id) === String(jid))
       .sort((a, b) => new Date(a.started_at) - new Date(b.started_at));
+  }
+  // Name the place of the journey's charge: away charges carry a bare
+  // "not_home", so resolve the street from the device_tracker history around the
+  // charge window. Cached per charge id, one lookup per charge.
+  _fetchChargeStreet(c) {
+    this._chStreets = this._chStreets || {};
+    const ent = this._config.locationEntity;
+    const id = _chargeKey(c);
+    if (!ent || !this._hass || id == null || !_chargeAway(c) || this._chStreets[id] !== undefined) return;
+    this._chStreets[id] = "loading";
+    _chargeStreet(this._hass, ent, c).then((r) => { this._chStreets[id] = r; this._render(); });
   }
   // Fetch outside-temperature at each stage's start/end from recorder history
   // (the logger doesn't populate avg_temp_c). Cached per trip id, lazy.
@@ -3514,12 +3536,20 @@ class EvTripJourneyCard extends HTMLElement {
     const lc = stOf(`sensor.${D}_last_charge_energy`);
     const charging = cip && String(cip.state).toLowerCase() === "charging";
     const lcEnd = lc && lc.attributes && lc.attributes.ended_at;
-    const lcLoc = (lc && lc.attributes && lc.attributes.location) || "";
     const chargedThis = lcEnd && a.started_at && new Date(lcEnd) >= new Date(a.started_at);
     let chargeChip = "";
     if (charging) chargeChip = `<span class="jchip jchg"><ha-icon icon="mdi:ev-station"></ha-icon>Charging now</span>`;
-    else if (chargedThis)
-      chargeChip = `<span class="jchip jchg"><ha-icon icon="mdi:lightning-bolt"></ha-icon>Charged ${fmtNum(lc.state, 2)} kWh${lcLoc ? ` · ${_esc(lcLoc)}` : ""}</span>`;
+    else if (chargedThis) {
+      // The last-charge sensor carries only the coarse location ("not_home"), so
+      // pair it with its recent_charges record — that has the charge window we
+      // need to geocode the actual street.
+      const lcRec =
+        (((stOf(`sensor.${D}_recent_charges`) || {}).attributes || {}).charges || []).find((c) => c && c.ended_at === lcEnd) ||
+        { ended_at: lcEnd, location: (lc.attributes && lc.attributes.location) || "" };
+      this._fetchChargeStreet(lcRec);
+      const place = _chargePlace(lcRec, (this._chStreets || {})[_chargeKey(lcRec)]);
+      chargeChip = `<span class="jchip jchg"><ha-icon icon="mdi:lightning-bolt"></ha-icon>Charged ${fmtNum(lc.state, 2)} kWh${place ? ` · ${_esc(place)}` : ""}</span>`;
+    }
 
     if (this._open) { this._fetchStageTemps(stages); this._fetchStageStreets(stages); this._fetchStageRegen(stages); this._fetchStageRoute(stages); this._fetchJourneyRoute(stages); }
     const stageStr = `${isNaN(stagesNum) ? DASH : stagesNum} ${stagesNum === 1 ? "stage" : "stages"}`;
@@ -4619,6 +4649,50 @@ const _zoneLabel = (zone) => {
   if (lz === "home") return "Home";
   return z;
 };
+// ---- charge places --------------------------------------------------------
+// A charge carries only a coarse `location` (`home`, a zone name, or the raw
+// `not_home` token) and NO coordinates, so an away charge can only be named by
+// geocoding where the car stood during the charge window.
+const _chargeKey = (c) => (c == null ? null : c.charge_id != null ? c.charge_id : c.id != null ? c.id : c.ended_at || null);
+const _chargeAway = (c) => !_zoneLabel(c && c.location);
+// Street of an away charge: the first vehicle position inside the charge window
+// (± 2 min) from the recorder, reverse-geocoded (an HA zone containing the point
+// wins). Resolves to {label,lat,lon} — or {} when no position/street came back.
+// Callers cache the result per _chargeKey.
+function _chargeStreet(hass, ent, c) {
+  if (!hass || !ent || !c) return Promise.resolve({});
+  const t0 = c.started_at || c.ended_at, t1 = c.ended_at || c.started_at;
+  let start, end;
+  try {
+    start = new Date(new Date(t0).getTime() - 120000).toISOString();
+    end = new Date(new Date(t1).getTime() + 120000).toISOString();
+  } catch (_e) { return Promise.resolve({}); }
+  return Promise.resolve(hass.callApi("GET", `history/period/${start}?end_time=${end}&filter_entity_id=${ent}&significant_changes_only=0`))
+    .then((res) => {
+      const ser = Array.isArray(res) && res[0] ? res[0] : [];
+      for (const x of ser) {
+        const a = x.attributes || {};
+        const lat = parseFloat(a.latitude), lon = parseFloat(a.longitude);
+        if (isNaN(lat) || isNaN(lon)) continue;
+        const z = _zoneForPoint(hass, lat, lon);
+        if (z) return { label: z, lat, lon, zone: true };
+        return _reverseGeocode(lat, lon).then((label) => ({ label: label || null, lat, lon }));
+      }
+      return {};
+    })
+    .catch(() => ({}));
+}
+// Display name of a charge's place — never the raw `not_home` token: the
+// logger's named place when it has one, else the geocoded street, else "Away".
+// `st` is the cached _chargeStreet result (undefined/"loading" while in flight,
+// and always undefined for cards that can't geocode).
+const _chargePlace = (c, st) => {
+  const zl = _zoneLabel(c && c.location);
+  if (zl) return zl;
+  if (st === "loading") return L("locating…", "localizando…");
+  if (st && st.label) return st.label;
+  return L("Away", "Fuera");
+};
 // ---- Efficiency unit (user-toggleable, persisted in localStorage) ----------
 // The logger stores efficiency as kWh/100km; the user can cycle the DISPLAY
 // unit with a chip. The choice is global (one localStorage key) and a window
@@ -5148,9 +5222,9 @@ class EvTripCalendarCard extends HTMLElement {
       // _fetchOpenDayChargeStreets, exactly like trips already show a real
       // address instead of the raw zone state.
       const chgLoc = (c) => {
-        const isAway = !c.location || String(c.location).toLowerCase() === "not_home";
-        if (!isAway) return _esc(c.location);
-        const id = c.charge_id != null ? c.charge_id : c.id;
+        const zl = _zoneLabel(c.location); // home / a named zone → nothing to geocode
+        if (zl) return _esc(zl);
+        const id = _chargeKey(c);
         const ss = id != null ? this._streets[id] : undefined;
         if (ss === "loading" || ss === undefined) return L("locating…", "localizando…");
         const label = ss && ss.label ? _esc(ss.label) : L("Charge", "Carga");
@@ -5371,28 +5445,10 @@ class EvTripCalendarCard extends HTMLElement {
     const ent = this._config.locationEntity;
     if (!ent || !this._openCharges || !this._openCharges.length || !this._hass) return;
     for (const c of this._openCharges) {
-      const id = c.charge_id != null ? c.charge_id : c.id;
-      const isAway = !c.location || String(c.location).toLowerCase() === "not_home";
-      if (id == null || !isAway || this._streets[id] !== undefined) continue;
+      const id = _chargeKey(c);
+      if (id == null || !_chargeAway(c) || this._streets[id] !== undefined) continue;
       this._streets[id] = "loading";
-      let start, end;
-      try {
-        start = new Date(new Date(c.started_at).getTime() - 120000).toISOString();
-        end = new Date(new Date(c.ended_at || c.started_at).getTime() + 120000).toISOString();
-      } catch (_e) { this._streets[id] = {}; continue; }
-      Promise.resolve(this._hass.callApi("GET", `history/period/${start}?end_time=${end}&filter_entity_id=${ent}&significant_changes_only=0`))
-        .then((res) => {
-          const ser = Array.isArray(res) && res[0] ? res[0] : [];
-          let lat = null, lon = null;
-          for (const x of ser) {
-            const a = x.attributes || {};
-            const la = parseFloat(a.latitude), lo = parseFloat(a.longitude);
-            if (!isNaN(la) && !isNaN(lo)) { lat = la; lon = lo; break; }
-          }
-          if (lat == null) { this._streets[id] = {}; this._render(); return; }
-          _reverseGeocode(lat, lon).then((label) => { this._streets[id] = { label: label || null, lat, lon }; this._render(); });
-        })
-        .catch(() => { this._streets[id] = {}; this._render(); });
+      _chargeStreet(this._hass, ent, c).then((r) => { this._streets[id] = r; this._render(); });
     }
   }
   _fetchOpenDayRoutes() {
@@ -6293,9 +6349,18 @@ window.customCards.push({ type: "ev-trip-cost-card", name: "EV Trip — cost per
 // price per type, cheapest/priciest session, average session.
 // ==========================================================================
 class EvTripChargeInsightsCard extends HTMLElement {
-  setConfig(config) { this._config = config || {}; this._device = this._config.device || null; }
+  setConfig(config) { this._config = config || {}; this._device = this._config.device || null; this._chStreets = this._chStreets || {}; }
   set hass(hass) { this._hass = hass; this._render(); }
   getCardSize() { return 3; }
+  // Street of the cheapest/priciest charge when it happened away from any zone
+  // (they'd otherwise read as the raw "not_home"). Cached per charge id.
+  _fetchChargeStreet(c) {
+    const ent = this._config.locationEntity;
+    const id = _chargeKey(c);
+    if (!ent || !this._hass || id == null || !_chargeAway(c) || this._chStreets[id] !== undefined) return;
+    this._chStreets[id] = "loading";
+    _chargeStreet(this._hass, ent, c).then((r) => { this._chStreets[id] = r; this._render(); });
+  }
   _render() {
     if (!this._hass) return;
     const D = this._device || detectDevice(this._hass);
@@ -6323,6 +6388,9 @@ class EvTripChargeInsightsCard extends HTMLElement {
       g.n ? `<div class="ci-trow"><span class="ci-tdot" style="background:${color}"></span><span class="ci-tl">${label}</span>` +
         `<span class="ci-tn">${g.n} · ${g.kwh.toFixed(0)} kWh</span><span class="ci-tp">${fmtP(g.avgP)}</span></div>` : "";
     const line = (icon, label, val) => `<div class="ci-row"><ha-icon icon="${icon}"></ha-icon><span>${label}</span><b>${val}</b></div>`;
+    this._fetchChargeStreet(cheapest);
+    this._fetchChargeStreet(priciest);
+    const place = (c) => { const p = c ? _chargePlace(c, this._chStreets[_chargeKey(c)]) : ""; return p ? ` · ${_esc(p)}` : ""; };
     this.innerHTML = `
       <ha-card>
         <div class="ci-head"><ha-icon icon="mdi:lightning-bolt-circle"></ha-icon> Charging insights <span class="ci-sub">${charges.length} sessions</span></div>
@@ -6331,8 +6399,8 @@ class EvTripChargeInsightsCard extends HTMLElement {
           ${typeRow("DC fast", dc, "var(--warning-color,#fb8c00)")}
         </div>
         <div class="ci-rows">
-          ${cheapest ? line("mdi:tag-arrow-down", "Cheapest" + (cheapest.location ? ` · ${_esc(cheapest.location)}` : ""), fmtP(Number(cheapest.price_per_kwh))) : ""}
-          ${priciest && priciest !== cheapest ? line("mdi:tag-arrow-up", "Priciest" + (priciest.location ? ` · ${_esc(priciest.location)}` : ""), fmtP(Number(priciest.price_per_kwh))) : ""}
+          ${cheapest ? line("mdi:tag-arrow-down", "Cheapest" + place(cheapest), fmtP(Number(cheapest.price_per_kwh))) : ""}
+          ${priciest && priciest !== cheapest ? line("mdi:tag-arrow-up", "Priciest" + place(priciest), fmtP(Number(priciest.price_per_kwh))) : ""}
           ${avgKwh != null ? line("mdi:battery-charging", "Avg session", `${avgKwh.toFixed(1)} kWh · ${(avgCost || 0).toFixed(2)} ${_esc(sym)}`) : ""}
         </div>
         <style>
@@ -6698,6 +6766,16 @@ class EvChargeGraphCard extends HTMLElement {
   setConfig(config) {
     this._config = config || {};
     this._device = this._config.device || null;
+    this._chStreets = this._chStreets || {}; // charge id -> {label,lat,lon} | 'loading'
+  }
+  // Street of the graphed charge when it happened outside every zone — with no
+  // locationEntity configured the header falls back to a plain "Away".
+  _fetchChargeStreet(c) {
+    const ent = this._config.locationEntity;
+    const id = _chargeKey(c);
+    if (!ent || !this._hass || id == null || !_chargeAway(c) || this._chStreets[id] !== undefined) return;
+    this._chStreets[id] = "loading";
+    _chargeStreet(this._hass, ent, c).then((r) => { this._chStreets[id] = r; this._render(); });
   }
   set hass(hass) {
     const first = !this._hass;
@@ -6746,9 +6824,11 @@ class EvChargeGraphCard extends HTMLElement {
     if (!this._hass) return;
     const ch = this._charge;
     const DASH = "—";
+    this._fetchChargeStreet(ch);
+    const chPlace = ch ? _chargePlace(ch, this._chStreets[_chargeKey(ch)]) : "";
     const head = (body) => `
       <ha-card>
-        <div class="cg-head">Charging process${ch && ch.location ? ` · ${_esc(ch.location)}` : ""}
+        <div class="cg-head">Charging process${chPlace ? ` · ${_esc(chPlace)}` : ""}
           ${ch && ch.ended_at ? `<span class="cg-date">${_fmtDate(ch.ended_at, true)}</span>` : ""}</div>
         ${body}
         <style>

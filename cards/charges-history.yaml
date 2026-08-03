@@ -27,6 +27,10 @@ cards:
     content: |
       {%- set CUR = {'EUR':'€','USD':'$','GBP':'£'} %}
       {%- set charges = state_attr('sensor.__DEVICE___recent_charges', 'charges') or [] %}
+      {#- A charge's location is 'home', a zone name, or the raw 'not_home' token
+          — never show the token. Templates can't geocode the street; the
+          ev-trip-history-card does that. -#}
+      {%- macro place(v, dflt='—') %}{{ dflt if not v else ('Away' if v | lower in ['not_home','unknown','outside known zones'] else ('Home' if v | lower == 'home' else v)) }}{%- endmacro %}
       #### Recent charges
       {%- if charges | length == 0 %}
 
@@ -34,7 +38,7 @@ cards:
       {%- else %}
       {%- for c in charges %}
 
-      **{{ as_timestamp(c.ended_at) | timestamp_custom('%d/%m %H:%M') if c.ended_at else '—' }}** — {{ c.location or "—" }}
+      **{{ as_timestamp(c.ended_at) | timestamp_custom('%d/%m %H:%M') if c.ended_at else '—' }}** — {{ place(c.location) | trim }}
       {{ c.kwh if c.kwh is not none else '—' }} kWh × {{ c.price_per_kwh if c.price_per_kwh is not none else '—' }} {{ CUR.get(c.currency, c.currency or '€') }}/kWh = **{{ c.total_cost if c.total_cost is not none else '—' }} {{ CUR.get(c.currency, c.currency or '€') }}**
       {%- endfor %}
       {%- endif %}
