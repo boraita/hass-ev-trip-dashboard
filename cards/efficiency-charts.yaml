@@ -55,7 +55,7 @@ cards:
     conditions:
       - condition: template
         value_template: >-
-          {{ (state_attr('sensor.__DEVICE___monthly_history', 'months') | default([]) | list | length) > 0 }}
+          {{ (state_attr('sensor.__DEVICE___monthly_history', 'months') | default([], true) | list | length) > 0 }}
     card:
       type: custom:apexcharts-card
       header:
@@ -120,7 +120,7 @@ cards:
     conditions:
       - condition: template
         value_template: >-
-          {{ (state_attr('sensor.__DEVICE___monthly_history', 'months') | default([]) | list | length) == 0 }}
+          {{ (state_attr('sensor.__DEVICE___monthly_history', 'months') | default([], true) | list | length) == 0 }}
     card:
       type: custom:mushroom-template-card
       primary: Avg consumption per month
@@ -139,7 +139,7 @@ cards:
     conditions:
       - condition: template
         value_template: >-
-          {{ (state_attr('sensor.__DEVICE___recent_trips', 'trips') | default([]) | list | length) > 0 }}
+          {{ (state_attr('sensor.__DEVICE___recent_trips', 'trips') | default([], true) | list | length) > 0 }}
     card:
       type: custom:apexcharts-card
       header:
@@ -234,7 +234,7 @@ cards:
     conditions:
       - condition: template
         value_template: >-
-          {{ (state_attr('sensor.__DEVICE___recent_trips', 'trips') | default([]) | list | length) == 0 }}
+          {{ (state_attr('sensor.__DEVICE___recent_trips', 'trips') | default([], true) | list | length) == 0 }}
     card:
       type: custom:mushroom-template-card
       primary: Efficiency vs Distance
@@ -243,68 +243,48 @@ cards:
       icon_color: grey
       fill_container: true
 
-  # ===== Consumption by temperature bucket (BAR) =====
+  # ===== Consumption by temperature bucket =====
   # Reads attrs.by_bucket from sensor.__DEVICE___consumption_by_temperature.
-  # Object shape: {"-5": 22.1, "0": 19.4, ...} sorted numerically.
-  # Most users have no trips with avg_temp_c yet, so by_bucket is often {} —
-  # in that case we show a placeholder instead of an empty chart.
-  # NOTE: graph_span huge to bypass time-window filtering on category x-axis.
+  # Object shape: {"-5": 22.1, "0": 19.4, ...}, keys = each bucket's lower
+  # bound in °C, dynamic — the set of buckets that exist follows whatever
+  # temperatures the user has actually driven in, so there's no fixed
+  # category list to hardcode.
+  #
+  # Dropped the apexcharts-card bar chart here (#24), for the same reason
+  # as the "Por día" chart in patterns.yaml: apexcharts-card injects a
+  # datetime xaxis.min/max derived from `graph_span` regardless of
+  # xaxis.type, which converts a category axis back to numeric and the
+  # series (`[["25°C", 20.9], ...]`) then has nothing to map onto —
+  # confirmed on a live instance, 0 rendered marks, `TypeError: Cannot
+  # read properties of null (reading 'yRatio')`. No config-only fix found.
+  # A markdown bar list needs no chart library and handles the dynamic
+  # bucket count/labels more naturally than a fixed chart shape would.
   - type: conditional
     conditions:
       - condition: template
         value_template: >-
-          {{ (state_attr('sensor.__DEVICE___consumption_by_temperature', 'by_bucket') | default({}) | dictsort | length) > 0 }}
+          {{ (state_attr('sensor.__DEVICE___consumption_by_temperature', 'by_bucket') | default({}, true) | dictsort | length) > 0 }}
     card:
-      type: custom:apexcharts-card
-      header:
-        show: true
-        title: Consumption by temperature (kWh/100km)
-        show_states: false
-      chart_type: bar
-      graph_span: 30000d
-      apex_config:
-        chart:
-          height: 240
-          type: bar
-        plotOptions:
-          bar:
-            borderRadius: 4
-            columnWidth: 60%
-            distributed: true
-        dataLabels:
-          enabled: true
-          formatter: |
-            EVAL:function(val){ return val != null ? val.toFixed(1) : ''; }
-          style:
-            fontSize: 11px
-        legend:
-          show: false
-        grid:
-          borderColor: rgba(255,255,255,0.08)
-        xaxis:
-          type: category
-          title:
-            text: Temperature bucket (°C)
-        yaxis:
-          title:
-            text: kWh/100km
-          decimalsInFloat: 1
-      series:
-        - entity: sensor.__DEVICE___consumption_by_temperature
-          name: Consumo
-          type: bar
-          data_generator: |
-            const buckets = (entity.attributes && entity.attributes.by_bucket) || {};
-            return Object.keys(buckets)
-              .map((k) => [parseInt(k, 10), Number(buckets[k])])
-              .filter((p) => !isNaN(p[0]) && !isNaN(p[1]))
-              .sort((a, b) => a[0] - b[0])
-              .map(([k, v]) => [`${k}°C`, Math.round(v * 10) / 10]);
+      type: markdown
+      title: Consumption by temperature (kWh/100km)
+      content: >-
+        {% set buckets = state_attr('sensor.__DEVICE___consumption_by_temperature', 'by_bucket') or {} %}
+        {% set size = state_attr('sensor.__DEVICE___consumption_by_temperature', 'bucket_size_c') | float(5) %}
+        {% set keys = buckets.keys() | map('int') | list | sort %}
+        {% set maxv = buckets.values() | list | max %}
+        {% for k in keys %}
+        {%- set v = buckets[k | string] | float(0) %}
+        {%- set pct = ((v / maxv) * 100) | round(0) if maxv > 0 else 0 %}
+        **{{ k }}–{{ (k + size) | int }}°C** · {{ '%.1f' | format(v) }} kWh/100km
+        <div style="background:var(--divider-color);border-radius:4px;height:8px;margin:2px 0 12px;">
+          <div style="background:#2ea043;border-radius:4px;height:8px;width:{{ pct }}%;"></div>
+        </div>
+        {% endfor %}
   - type: conditional
     conditions:
       - condition: template
         value_template: >-
-          {{ (state_attr('sensor.__DEVICE___consumption_by_temperature', 'by_bucket') | default({}) | dictsort | length) == 0 }}
+          {{ (state_attr('sensor.__DEVICE___consumption_by_temperature', 'by_bucket') | default({}, true) | dictsort | length) == 0 }}
     card:
       type: custom:mushroom-template-card
       primary: Consumption by temperature

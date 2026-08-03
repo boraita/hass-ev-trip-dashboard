@@ -1,8 +1,10 @@
 # Pantalla 4 — Trip patterns.
 #
 # Shows when you tend to drive: total trip count + daily-average distance,
-# a 24-bar histogram (trips per hour), a weekday radar (trips per day) and
-# a 7-cell strip with km totals Mon–Sun.
+# a 24-bar histogram (trips per hour), a 7-cell strip with trip counts
+# Mon-Sun (#24 — was an apexcharts-card radar chart, see the comment above
+# that section for why it's a plain cell strip now) and a 7-cell strip
+# with km totals Mon–Sun.
 #
 # Required HACS frontend cards:
 #   - custom:apexcharts-card
@@ -142,68 +144,112 @@ cards:
           }
           return out;
 
-  # ===== By Day — radar chart from attrs.by_weekday =====
-  # Tricky bits:
-  #   * apexcharts-card accepts apex_config.chart.type = "radar".
-  #   * Series for a radar chart wants a flat [n0, n1, ...] array, with labels
-  #     coming from apex_config.xaxis.categories (NOT from {x,y} pairs).
-  #   * by_weekday is keyed "0".."6" with 0 = Monday, so we map L,M,X,J,V,S,D
-  #     in that order — no reshuffle needed.
-  #   * We still return an [{x,y}, ...] structure from data_generator because
-  #     apexcharts-card insists on it; Apex flattens the y values for radar.
-  - type: custom:apexcharts-card
-    header:
-      show: true
-      title: Por día
-      show_states: false
-    apex_config:
-      chart:
-        type: radar
-        height: 280
-        toolbar:
-          show: false
-      stroke:
-        width: 2
-      fill:
-        opacity: 0.35
-      markers:
-        size: 4
-      xaxis:
-        categories:
-          - L
-          - M
-          - X
-          - J
-          - V
-          - S
-          - D
-        labels:
-          style:
-            fontSize: 12px
-            fontWeight: 600
-      yaxis:
-        show: false
-      colors:
-        - "#6366f1"
-      tooltip:
-        y:
-          formatter: |
-            EVAL:function(val) { return val + " viajes"; }
-    series:
-      - entity: sensor.__DEVICE___trip_patterns
-        name: Viajes
-        # 0 = Mon, 6 = Sun. Iterate in order so the values line up with
-        # the L,M,X,J,V,S,D categories above. Keep the {x,y} shape because
-        # apexcharts-card requires it; Apex will use only the y values for
-        # the radar series and pull the labels from xaxis.categories.
-        data_generator: |
-          const labels = ["L","M","X","J","V","S","D"];
-          const by = entity.attributes.by_weekday || {};
-          const out = [];
-          for (let i = 0; i < 7; i++) {
-            out.push({ x: labels[i], y: Number(by[String(i)] || 0) });
-          }
-          return out;
+  # ===== By Day — trips per weekday, 7-cell strip from attrs.by_weekday =====
+  # v0.2.x shipped this as an apexcharts-card radar chart. Dropped (#24):
+  # apexcharts-card injects a datetime xaxis.min/max derived from
+  # `graph_span` regardless of xaxis.type, which converts a category/radar
+  # axis back to numeric and leaves the series with nothing to map onto —
+  # confirmed on a live instance with populated data, 0 rendered marks, no
+  # config-only workaround found (category xaxis.type, null min/max
+  # overrides, a 1h graph_span all got overridden the same way). Replaced
+  # with the same dependency-free mushroom-template-card strip already
+  # used for "Km per weekday" below — proven to work, no chart library
+  # involved, so nothing to fight with apexcharts.
+  - type: custom:mushroom-title-card
+    title: Por día
+    subtitle: Viajes por día de la semana
+  - type: horizontal-stack
+    cards:
+      - type: custom:mushroom-template-card
+        primary: L
+        secondary: >-
+          {{ (state_attr('sensor.__DEVICE___trip_patterns','by_weekday') or
+          {}).get('0', 0) }}
+        icon: mdi:routes
+        icon_color: indigo
+        layout: vertical
+        fill_container: true
+        tap_action:
+          action: more-info
+          entity: sensor.__DEVICE___trip_patterns
+
+      - type: custom:mushroom-template-card
+        primary: M
+        secondary: >-
+          {{ (state_attr('sensor.__DEVICE___trip_patterns','by_weekday') or
+          {}).get('1', 0) }}
+        icon: mdi:routes
+        icon_color: indigo
+        layout: vertical
+        fill_container: true
+        tap_action:
+          action: more-info
+          entity: sensor.__DEVICE___trip_patterns
+
+      - type: custom:mushroom-template-card
+        primary: X
+        secondary: >-
+          {{ (state_attr('sensor.__DEVICE___trip_patterns','by_weekday') or
+          {}).get('2', 0) }}
+        icon: mdi:routes
+        icon_color: indigo
+        layout: vertical
+        fill_container: true
+        tap_action:
+          action: more-info
+          entity: sensor.__DEVICE___trip_patterns
+
+      - type: custom:mushroom-template-card
+        primary: J
+        secondary: >-
+          {{ (state_attr('sensor.__DEVICE___trip_patterns','by_weekday') or
+          {}).get('3', 0) }}
+        icon: mdi:routes
+        icon_color: indigo
+        layout: vertical
+        fill_container: true
+        tap_action:
+          action: more-info
+          entity: sensor.__DEVICE___trip_patterns
+
+      - type: custom:mushroom-template-card
+        primary: V
+        secondary: >-
+          {{ (state_attr('sensor.__DEVICE___trip_patterns','by_weekday') or
+          {}).get('4', 0) }}
+        icon: mdi:routes
+        icon_color: amber
+        layout: vertical
+        fill_container: true
+        tap_action:
+          action: more-info
+          entity: sensor.__DEVICE___trip_patterns
+
+      - type: custom:mushroom-template-card
+        primary: S
+        secondary: >-
+          {{ (state_attr('sensor.__DEVICE___trip_patterns','by_weekday') or
+          {}).get('5', 0) }}
+        icon: mdi:routes
+        icon_color: orange
+        layout: vertical
+        fill_container: true
+        tap_action:
+          action: more-info
+          entity: sensor.__DEVICE___trip_patterns
+
+      - type: custom:mushroom-template-card
+        primary: D
+        secondary: >-
+          {{ (state_attr('sensor.__DEVICE___trip_patterns','by_weekday') or
+          {}).get('6', 0) }}
+        icon: mdi:routes
+        icon_color: orange
+        layout: vertical
+        fill_container: true
+        tap_action:
+          action: more-info
+          entity: sensor.__DEVICE___trip_patterns
 
   # ===== Km per weekday — 7-cell horizontal strip from attrs.km_by_weekday =====
   - type: horizontal-stack
