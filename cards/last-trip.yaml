@@ -288,7 +288,9 @@ cards:
     icon: mdi:cash-multiple
     show_state: true
     label: >-
-      {% set t = state_attr('sensor.__DEVICE___recent_trips', 'trips')[0] %}
+      {% set t = state_attr('sensor.__DEVICE___recent_trips', 'trips')[0]
+                 if state_attr('sensor.__DEVICE___recent_trips', 'trips')
+                 else none %}
       {% set basis = t.cost_basis_per_kwh if t else None %}
       {% if basis is not none %}
         FIFO · {{ '%.3f' | format(basis) }} €/kWh

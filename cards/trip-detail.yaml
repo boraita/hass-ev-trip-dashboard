@@ -215,7 +215,7 @@ cards:
       secondary: >-
         {% set t = (state_attr('sensor.__DEVICE___recent_trips', 'trips') or []) | first %}
         {% set r = (t.regen_kwh if t else 0) | float(0) %}
-        {% set e = t.energy_kwh | float(0) %}
+        {% set e = (t.energy_kwh if t else 0) | float(0) %}
         {% set gross = e + r %}
         {% if gross > 0 %}
           Recuperación por frenada regenerativa ·
