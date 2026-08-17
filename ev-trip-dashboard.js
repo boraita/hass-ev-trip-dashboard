@@ -2444,7 +2444,7 @@ class EvTripHistoryCard extends HTMLElement {
   _applyPrice(chargeId) {
     const id = parseInt(chargeId, 10);
     if (isNaN(id)) return;
-    const input = this.querySelector(`.cp-input[data-charge-id="${chargeId}"]`);
+    const input = this.querySelector(`.cp-input[data-charge-id="${chargeId}"]:not(.cp-kwh-input)`);
     if (!input) return;
     const total = parseFloat(String(input.value).replace(",", "."));
     if (isNaN(total) || total < 0) { input.focus(); return; }
@@ -2455,6 +2455,15 @@ class EvTripHistoryCard extends HTMLElement {
     // at 177.44€). Send total_cost and let the backend divide by the
     // charge's own kWh — set_last_charge_price already supports this.
     const data = { charge_id: id, total_cost: total };
+    // v-next — optional kWh-on-invoice, sent alongside price in the same
+    // "Set" action (see cp-kwh-input above). Reuses evse_energy_kwh, the
+    // same field the home EVSE sensor writes, so the efficiency chip
+    // (chip--eff) just works regardless of source.
+    const kwhInput = this.querySelector(`.cp-kwh-input[data-charge-id="${chargeId}"]`);
+    if (kwhInput && String(kwhInput.value).trim() !== "") {
+      const invoiceKwh = parseFloat(String(kwhInput.value).replace(",", "."));
+      if (!isNaN(invoiceKwh) && invoiceKwh > 0) data.evse_energy_kwh = invoiceKwh;
+    }
     if (this._config.entry_id) data.entry_id = this._config.entry_id;
     // ev_trip_logger.set_last_charge_price targets a specific charge when
     // charge_id is given, and sets price_locked=1 (so the editor then hides).
@@ -2988,9 +2997,17 @@ class EvTripHistoryCard extends HTMLElement {
         if (locked) {
           priceHtml = `<div class="cp-locked"><ha-icon icon="mdi:lock-check"></ha-icon>${fmtNum(c.total_cost, 2)} ${_esc(sym(c.currency))} · ${fmtNum(c.price_per_kwh, 3)} ${_esc(sym(c.currency))}/kWh · ${L("set", "fijado")}</div>`;
         } else if (!isHome) {
+          // v-next — a second, optional input for the kWh figure on the
+          // operator's invoice. Away chargers have no EVSE sensor, so this
+          // is the only way to get charging_efficiency_pct (car kWh vs
+          // charger kWh) for a public session; home already gets it live
+          // from the EVSE integral. Sent together with the price on "Set" —
+          // same lock, same call (backend: set_last_charge_price).
           priceHtml = `<div class="cp-edit">
                <span class="cp-lbl">${L(`Set total paid for ${fmtNum(c.kwh)} kWh`, `Precio total pagado (${fmtNum(c.kwh)} kWh)`)}</span>
                <input class="cp-input" data-charge-id="${_esc(cid)}" type="number" inputmode="decimal" step="0.01" min="0" placeholder="${fmtNum(c.total_cost, 2)}" />
+               <span class="cp-lbl">${L("kWh on invoice", "kWh en factura")}</span>
+               <input class="cp-input cp-kwh-input" data-charge-id="${_esc(cid)}" type="number" inputmode="decimal" step="0.01" min="0" placeholder="${fmtNum(c.evse_energy_kwh)}" />
                <button class="cp-apply" data-charge-id="${_esc(cid)}"><ha-icon icon="mdi:check"></ha-icon>${L("Set", "Fijar")}</button>
              </div>`;
         }
@@ -4345,14 +4362,33 @@ class EvTripEffTrendCard extends HTMLElement {
       const yy = sy(g).toFixed(1);
       grid += `<line x1="${x0}" y1="${yy}" x2="${x1}" y2="${yy}" class="et-grid"/><text x="${x0 - 5}" y="${(sy(g) + 3).toFixed(1)}" text-anchor="end" class="et-yl">${g % 1 === 0 ? g : g.toFixed(0)}</text>`;
     }
-    // area + line
+    // area + line — inactive bars (no km that period → v forced to 0, NOT a
+    // real 0 kWh/100km reading) break the line/area instead of dragging it
+    // to zero. A day with no driving isn't "0 efficiency", it's no data;
+    // plotting it as 0 reads as a real efficiency crash. Runs of consecutive
+    // active bars each get their own path segment.
     const pts = bars.map((b, i) => [sx(i), sy(b.v)]);
-    const line = pts.map((pt, i) => `${i ? "L" : "M"}${pt[0].toFixed(1)},${pt[1].toFixed(1)}`).join(" ");
-    const area = `M${pts[0][0].toFixed(1)},${y1} ` + pts.map((pt) => `L${pt[0].toFixed(1)},${pt[1].toFixed(1)}`).join(" ") + ` L${pts[n - 1][0].toFixed(1)},${y1} Z`;
-    // dots + value labels
+    let line = "", area = "";
+    let runStart = -1;
+    for (let i = 0; i <= n; i++) {
+      const isActive = i < n && bars[i].active;
+      if (isActive && runStart === -1) runStart = i;
+      if ((!isActive || i === n) && runStart !== -1) {
+        const runEnd = i - 1;
+        const runPts = pts.slice(runStart, runEnd + 1);
+        line += runPts.map((pt, j) => `${j ? "L" : "M"}${pt[0].toFixed(1)},${pt[1].toFixed(1)}`).join(" ") + " ";
+        area += `M${runPts[0][0].toFixed(1)},${y1} ` + runPts.map((pt) => `L${pt[0].toFixed(1)},${pt[1].toFixed(1)}`).join(" ") + ` L${runPts[runPts.length - 1][0].toFixed(1)},${y1} Z `;
+        runStart = -1;
+      }
+    }
+    // dots + value labels — only for active bars; inactive days get a small
+    // "no data" tick on the axis instead of a misleading 0.
     const dots = bars.map((b, i) => {
       const [px, py] = pts[i];
       const anchor = i === 0 ? "start" : i === n - 1 ? "end" : "middle";
+      if (!b.active) {
+        return `<text x="${px.toFixed(1)}" y="${(y1 + 3).toFixed(1)}" text-anchor="${anchor}" class="et-nodata">${L("no data", "sin datos")}</text>`;
+      }
       const lbl = `<text x="${px.toFixed(1)}" y="${(py - 8).toFixed(1)}" text-anchor="${anchor}" class="et-pl">${b.v.toFixed(1)}</text>`;
       return `<circle cx="${px.toFixed(1)}" cy="${py.toFixed(1)}" r="3.2" class="et-dot"/>${lbl}`;
     }).join("");
@@ -4379,6 +4415,7 @@ class EvTripEffTrendCard extends HTMLElement {
         .et-yl{fill:var(--secondary-text-color);font-size:9px;}
         .et-xl{fill:var(--secondary-text-color);font-size:9px;}
         .et-pl{fill:var(--primary-text-color);font-size:9.5px;font-weight:700;}
+        .et-nodata{fill:var(--secondary-text-color);font-size:7.5px;opacity:.6;}
         .et-linep{fill:none;stroke:var(--et-line,#26a69a);stroke-width:2.5;stroke-linejoin:round;stroke-linecap:round;}
         .et-dot{fill:var(--et-line,#26a69a);stroke:var(--card-background-color,#fff);stroke-width:1.5;}
         .et-ref{stroke:var(--secondary-text-color);stroke-width:1.5;stroke-dasharray:5 4;opacity:.65;}
