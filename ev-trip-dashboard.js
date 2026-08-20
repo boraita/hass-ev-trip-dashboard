@@ -4757,6 +4757,17 @@ const _endpoint = (addr, fallback) => {
   if (z === "home") return "Home";
   return _esc(v);
 };
+// Reverse-geocoded addresses read "Road/POI, Town" — a journey header only
+// needs the town/city (the full street truncates with an ellipsis at that
+// size and reads as noise); per-stage rows keep the full _endpoint() address.
+const _townOnly = (addr, fallback) => {
+  const v = addr || fallback || "?";
+  const z = String(v).trim().toLowerCase();
+  if (z === "not_home" || z === "outside known zones") return "Away";
+  if (z === "home") return "Home";
+  const parts = String(v).split(",");
+  return _esc(parts[parts.length - 1].trim() || v);
+};
 // HA zone/area name for a trip endpoint, or null when the car was OUTSIDE any
 // zone (`not_home`/empty) — in which case the caller should reverse-geocode the
 // street. `home` and named zones (e.g. "Trabajo ele") return the area name.
@@ -5328,9 +5339,12 @@ class EvTripCalendarCard extends HTMLElement {
       };
       const stage = (t, idx, groupKey) => `
         <div class="cal-stage${idx != null && inSel(groupKey, idx) ? " cal-stage--sel" : ""}"${idx != null ? ` data-stage-idx="${idx}" data-group-key="${_esc(groupKey)}"` : ""}>
-          <span class="cal-stime">${_timeRange(t.started_at, t.ended_at) || _timeOfDay(t.started_at)}${_estChip(t)}</span>
-          <span class="cal-sroute">${_endpoint(t.start_address, t.origin)}<ha-icon class="cal-arr" icon="mdi:arrow-right"></ha-icon>${_endpoint(t.end_address, t.destination)}</span>
-          <span class="cal-smeta">${f0(t.distance_km)} km${_fmtDur(t.duration_min) ? ` · ${_fmtDur(t.duration_min)}` : ""} · ${t.consumption_kwh_100km != null && Number(t.consumption_kwh_100km) >= 0 ? _fmtEff(t.consumption_kwh_100km) : "—"}</span>
+          <div class="cal-stage-badge"><ha-icon icon="mdi:road-variant"></ha-icon></div>
+          <div class="cal-stage-body">
+            <div class="cal-stime">${_timeRange(t.started_at, t.ended_at) || _timeOfDay(t.started_at)}${_estChip(t)}</div>
+            <div class="cal-sroute">${_endpoint(t.start_address, t.origin)}<ha-icon class="cal-arr" icon="mdi:arrow-right"></ha-icon>${_endpoint(t.end_address, t.destination)}</div>
+            <div class="cal-smeta">${f0(t.distance_km)} km${_fmtDur(t.duration_min) ? ` · ${_fmtDur(t.duration_min)}` : ""} · ${t.consumption_kwh_100km != null && Number(t.consumption_kwh_100km) >= 0 ? _fmtEff(t.consumption_kwh_100km) : "—"}</div>
+          </div>
           ${t.score != null ? `<span class="cal-pill" style="background:${_scoreColor(t.score)}">${f1(t.score)}</span>` : ""}
         </div>`;
       // v0.8.11 — duration alongside the date/time: a clock range like
@@ -5356,10 +5370,13 @@ class EvTripCalendarCard extends HTMLElement {
         return label;
       };
       const chargeStage = (c) => `
-        <div class="cal-stage cal-stage--chg">
-          <span class="cal-stime">${_timeRange(c.started_at, c.ended_at) || _timeOfDay(c.started_at)}</span>
-          <span class="cal-sroute"><ha-icon class="cal-arr cal-chg-ic" icon="mdi:lightning-bolt"></ha-icon>${chgLoc(c)}${c.is_dcfc ? " · DC" : ""}</span>
-          <span class="cal-smeta">${(Number(c.kwh) || 0).toFixed(1)} kWh${chgDur(c) ? ` · ${chgDur(c)}` : ""}${c.total_cost != null ? ` · ${(Number(c.total_cost) || 0).toFixed(2)} ${_esc(sym(c.currency))}` : ""}</span>
+        <div class="cal-stage cal-stage--chg${c.is_dcfc ? " cal-stage--dc" : " cal-stage--ac"}">
+          <div class="cal-stage-badge cal-stage-badge--chg"><ha-icon icon="mdi:ev-station"></ha-icon></div>
+          <div class="cal-stage-body">
+            <div class="cal-stime">${_timeRange(c.started_at, c.ended_at) || _timeOfDay(c.started_at)}</div>
+            <div class="cal-sroute">${chgLoc(c)}${c.is_dcfc ? ` · <span class="cal-chg-type">DC</span>` : ` · <span class="cal-chg-type">AC</span>`}</div>
+            <div class="cal-smeta">${(Number(c.kwh) || 0).toFixed(1)} kWh${chgDur(c) ? ` · ${chgDur(c)}` : ""}${c.total_cost != null ? ` · ${(Number(c.total_cost) || 0).toFixed(2)} ${_esc(sym(c.currency))}` : ""}</div>
+          </div>
         </div>`;
       const stagesAndCharges = (stages, embedded, groupKey) =>
         stages
@@ -5399,7 +5416,7 @@ class EvTripCalendarCard extends HTMLElement {
         <div class="cal-journey">
           <div class="cal-jhead">
             <span class="cal-jicon"><ha-icon icon="${g.roundTrip ? "mdi:home-map-marker" : "mdi:map-marker-path"}"></ha-icon></span>
-            <span class="cal-jtitle">${_endpoint(g.origin)} → ${_endpoint(g.destination)}</span>
+            <span class="cal-jtitle">${_townOnly(g.origin)} → ${_townOnly(g.destination)}</span>
             <span class="cal-jtime">${_timeOfDay(g.started_at)}–${_timeOfDay(g.ended_at)}</span>
           </div>
           <div class="cal-jsum">${g.stages.length} ${g.stages.length === 1 ? "stage" : "stages"}${chgBadge(g.embeddedCharges.length)} · <span class="cal-jhint">${L("tap a stage, then another, to sum a stretch", "toca una etapa y luego otra para sumar un tramo")}</span></div>
@@ -5512,13 +5529,24 @@ class EvTripCalendarCard extends HTMLElement {
           .cal-jchg ha-icon{--mdc-icon-size:12px;}
           .cal-journey--chg{border-style:dashed;}
           .cal-jicon--chg{background:rgba(3,155,229,.16);color:var(--info-color,#039be5);}
-          .cal-stages{display:flex;flex-direction:column;gap:6px;border-left:2px solid var(--divider-color);
-                      margin-left:13px;padding-left:12px;}
-          .cal-stage{display:flex;align-items:center;gap:8px;font-size:.85em;flex-wrap:wrap;}
+          /* Each stage/charge is its own card (badge + body + pill) instead
+             of a bare text line on a timeline rule — a wall of same-looking
+             gray text reads as monotonous, especially once lines wrap. */
+          .cal-stages{display:flex;flex-direction:column;gap:8px;}
+          .cal-stage{display:flex;align-items:center;gap:10px;font-size:.85em;
+                     background:var(--secondary-background-color, var(--card-background-color));
+                     border:1px solid var(--divider-color);border-radius:12px;padding:9px 10px;}
           ${_estChipCss}
-          .cal-stage[data-stage-idx]{cursor:pointer;border-radius:8px;margin:-4px -6px;padding:4px 6px;transition:background .1s;}
-          .cal-stage[data-stage-idx]:hover{background:var(--secondary-background-color);}
-          .cal-stage--sel{background:rgba(3,155,229,.14);}
+          .cal-stage[data-stage-idx]{cursor:pointer;transition:border-color .15s ease;}
+          .cal-stage[data-stage-idx]:hover{border-color:var(--primary-color);}
+          .cal-stage--sel{border-color:var(--info-color,#039be5);background:rgba(3,155,229,.10);}
+          .cal-stage-badge{flex:0 0 auto;width:32px;height:32px;border-radius:50%;
+                           display:flex;align-items:center;justify-content:center;
+                           background:rgba(3,155,229,.16);color:var(--info-color,#039be5);}
+          .cal-stage-badge ha-icon{--mdc-icon-size:17px;}
+          .cal-stage-badge--chg{background:rgba(67,160,71,.16);color:var(--success-color,#43a047);}
+          .cal-stage--dc .cal-stage-badge--chg{background:rgba(251,140,0,.18);color:var(--warning-color,#fb8c00);}
+          .cal-stage-body{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;gap:2px;}
           .cal-jhint{font-style:italic;opacity:.75;}
           .cal-jsel{border:1px dashed var(--info-color,#039be5);border-radius:10px;padding:8px;
                     display:flex;flex-direction:column;gap:6px;background:rgba(3,155,229,.06);}
@@ -5526,16 +5554,17 @@ class EvTripCalendarCard extends HTMLElement {
           .cal-jsel-head ha-icon{--mdc-icon-size:15px;color:var(--info-color,#039be5);}
           .cal-jsel-clear{margin-left:auto;cursor:pointer;opacity:.7;padding:0 4px;}
           .cal-jsel-clear:hover{opacity:1;}
-          .cal-stime{flex:0 0 auto;color:var(--secondary-text-color);font-variant-numeric:tabular-nums;}
-          .cal-sroute{flex:1 1 auto;min-width:0;display:flex;align-items:center;gap:4px;overflow:hidden;
+          .cal-stime{color:var(--secondary-text-color);font-variant-numeric:tabular-nums;}
+          .cal-sroute{display:flex;align-items:center;gap:4px;overflow:hidden;font-weight:600;
                       text-overflow:ellipsis;white-space:nowrap;}
           .cal-arr{--mdc-icon-size:14px;color:var(--secondary-text-color);flex:0 0 auto;}
-          .cal-stage--chg .cal-sroute{color:var(--info-color,#039be5);font-weight:600;}
-          .cal-chg-ic{color:var(--info-color,#039be5)!important;}
+          .cal-stage--ac .cal-sroute{color:var(--success-color,#43a047);}
+          .cal-stage--dc .cal-sroute{color:var(--warning-color,#fb8c00);}
+          .cal-chg-type{font-weight:800;}
           .cal-sroute a,.cal-jtitle a{color:var(--info-color,#039be5);text-decoration:none;font-weight:600;}
           .cal-sroute a:hover,.cal-jtitle a:hover{text-decoration:underline;}
-          .cal-smeta{flex:0 0 auto;color:var(--secondary-text-color);font-variant-numeric:tabular-nums;}
-          .cal-pill{flex:0 0 auto;min-width:30px;text-align:center;padding:2px 7px;border-radius:999px;
+          .cal-smeta{color:var(--secondary-text-color);font-variant-numeric:tabular-nums;font-size:.92em;}
+          .cal-pill{flex:0 0 auto;align-self:flex-start;min-width:30px;text-align:center;padding:2px 7px;border-radius:999px;
                     color:#fff;font-weight:800;font-size:.8em;font-variant-numeric:tabular-nums;}
           .cal-map{height:170px;border-radius:10px;overflow:hidden;border:1px solid var(--divider-color);
                    background:var(--secondary-background-color);}
