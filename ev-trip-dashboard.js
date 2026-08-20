@@ -1130,105 +1130,10 @@ function detalleView(D, V, hass) {
 
 // ==========================================================================
 // View 8 — Viajes (Pantalla 8)
-// "Trips" header + Last-30-days KPI strip (5 tiles) + ev-trip-list-card
-// (custom element ships with this plugin — replaces the markdown blob in
-// trip-list-v2.yaml with a reactive, expandable list).
+// "Trips" header + ev-trip-list-card (custom element ships with this plugin —
+// replaces the markdown blob in trip-list-v2.yaml with a reactive,
+// expandable list).
 // ==========================================================================
-// 30-day average KPI tiles — moved out of the old Trips-cards view so the
-// restored Trips view can show them on top.
-function trips30dKpis(D) {
-  const kpiStyles = {
-    card: [{ padding: "12px" }, { "border-radius": "14px" }],
-    name: [{ "font-size": "12px" }, { opacity: "0.75" }],
-    state: [{ "font-size": "18px" }, { "font-weight": "bold" }],
-  };
-
-  return {
-    type: "grid",
-    columns: 3,
-    square: false,
-    cards: [
-      {
-        type: "custom:button-card",
-        entity: `sensor.${D}_avg_trip_distance_30_days`,
-        name: "Avg distance",
-        icon: "mdi:map-marker-distance",
-        show_state: true,
-        show_name: true,
-        show_icon: true,
-        styles: kpiStyles,
-        state_display:
-          "[[[ const v = entity && entity.state; return (v==null||v==='unavailable'||v==='unknown') ? '—' : `${Number(v).toFixed(1)} km` ]]]",
-      },
-      {
-        type: "custom:button-card",
-        name: "Avg consumption",
-        icon: "mdi:flash",
-        show_state: true,
-        show_name: true,
-        show_icon: true,
-        styles: kpiStyles,
-        // Mean of the last 10 trips' energy_kwh; falls back to "— kWh".
-        state_display:
-          "[[[\n  const trips = (states['sensor." +
-          D +
-          "_recent_trips']\n                && states['sensor." +
-          D +
-          "_recent_trips'].attributes\n                && states['sensor." +
-          D +
-          "_recent_trips'].attributes.trips) || [];\n  const vals = trips.map(t => parseFloat(t.energy_kwh)).filter(v => !isNaN(v));\n  if (!vals.length) return '— kWh';\n  const avg = vals.reduce((a,b)=>a+b,0) / vals.length;\n  return `${avg.toFixed(1)} kWh`;\n]]]",
-      },
-      {
-        type: "custom:button-card",
-        entity: `sensor.${D}_avg_consumption_30_days`,
-        name: "Avg efficiency",
-        icon: "mdi:lightning-bolt-outline",
-        show_state: true,
-        show_name: true,
-        show_icon: true,
-        styles: kpiStyles,
-        state_display:
-          "[[[ const v = entity && entity.state; return (v==null||v==='unavailable'||v==='unknown') ? '—' : `${Number(v).toFixed(1)} kWh/100km` ]]]",
-      },
-      {
-        type: "custom:button-card",
-        entity: `sensor.${D}_avg_trip_duration_30_days`,
-        name: "Avg duration",
-        icon: "mdi:timer-outline",
-        show_state: true,
-        show_name: true,
-        show_icon: true,
-        styles: kpiStyles,
-        state_display:
-          "[[[ const v = entity && entity.state; return (v==null||v==='unavailable'||v==='unknown') ? '—' : `${Number(v).toFixed(0)} min` ]]]",
-      },
-      {
-        type: "custom:button-card",
-        entity: `sensor.${D}_avg_trip_speed_30_days`,
-        name: "Avg speed",
-        icon: "mdi:speedometer",
-        show_state: true,
-        show_name: true,
-        show_icon: true,
-        styles: kpiStyles,
-        state_display:
-          "[[[ const v = entity && entity.state; return (v==null||v==='unavailable'||v==='unknown') ? '—' : `${Number(v).toFixed(1)} km/h` ]]]",
-      },
-      {
-        type: "custom:button-card",
-        entity: `sensor.${D}_avg_trip_regen_30_days`,
-        name: L("Avg regen", "Regen media"),
-        icon: "mdi:battery-charging",
-        show_state: true,
-        show_name: true,
-        show_icon: true,
-        styles: kpiStyles,
-        state_display:
-          "[[[ const v = entity && entity.state; return (v==null||v==='unavailable'||v==='unknown') ? '—' : `${Number(v).toFixed(2)} kWh` ]]]",
-      },
-    ],
-  };
-}
 
 // ==========================================================================
 // View 9 — Cargas (Pantalla 9)
@@ -2374,8 +2279,16 @@ class EvTripHistoryCard extends HTMLElement {
     const D = this._device || detectDevice(hass);
     const sig = _sig(hass, [
       `sensor.${D}_recent_charges`,
+      `sensor.${D}_recent_journeys`,
       `sensor.${D}_recent_trips`,
       `sensor.${D}_charge_in_progress`,
+      `input_text.${D}_journey_search`,
+      `input_select.${D}_journey_sort`,
+      `input_select.${D}_journey_window`,
+      `input_number.${D}_journey_min_distance`,
+      `input_number.${D}_journey_min_score`,
+      `input_number.${D}_journey_max_cost`,
+      `input_number.${D}_journey_max_consumption`,
     ]);
     if (sig === this._histSig) return;
     this._histSig = sig;
@@ -2516,6 +2429,89 @@ class EvTripHistoryCard extends HTMLElement {
       is_dcfc: type === "DC", type, currency, location,
     };
   }
+  _s(id) {
+    const e = this._hass.states[id];
+    return e ? e.state : undefined;
+  }
+  _n(id, dflt) {
+    const v = parseFloat(this._s(id));
+    return isNaN(v) ? dflt : v;
+  }
+  // Journeys carry only totals (distance_km/energy_kwh/cost), so "score" and
+  // "consumption" filters/sorts need the per-stage trips (journey_id match)
+  // averaged once per journey here. Uses its own <D>_journey_* filter
+  // helpers — separate from the Trips view's <D>_trip_* ones, so filtering
+  // journeys never also filters/sorts the per-leg Trips list.
+  _filteredJourneys(D) {
+    const hass = this._hass;
+    const jst = hass.states[`sensor.${D}_recent_journeys`];
+    const journeys = (jst && jst.attributes && Array.isArray(jst.attributes.journeys) && jst.attributes.journeys) || [];
+    const total = journeys.length;
+    const ts = hass.states[`sensor.${D}_recent_trips`];
+    const allTrips = (ts && ts.attributes && Array.isArray(ts.attributes.trips) && ts.attributes.trips) || [];
+
+    const enriched = journeys.map((j) => {
+      const stages = allTrips.filter((t) => t.journey_id != null && String(t.journey_id) === String(j.journey_id));
+      const scores = stages.map((t) => t.score).filter((v) => v != null && !isNaN(v));
+      const avgScore = scores.length ? scores.reduce((a, b) => a + b, 0) / scores.length : null;
+      const avgConsumption = j.energy_kwh != null && j.distance_km ? (j.energy_kwh / j.distance_km) * 100 : null;
+      const label =
+        (stages.map((t) => `${t.origin || ""} ${t.destination || ""} ${t.start_address || ""} ${t.end_address || ""}`).join(" ") +
+          " " + _fmtDate(j.ended_at)).toLowerCase();
+      return { j, avgScore, avgConsumption, label };
+    });
+
+    let raw = this._s(`input_text.${D}_journey_search`);
+    const q = !raw || ["unknown", "unavailable", "None"].includes(raw) ? "" : raw.toLowerCase().trim();
+    const sort = this._s(`input_select.${D}_journey_sort`) || "Newest";
+    const win = this._s(`input_select.${D}_journey_window`) || "All";
+    const minD = this._n(`input_number.${D}_journey_min_distance`, 0);
+    const minS = this._n(`input_number.${D}_journey_min_score`, 0);
+    const maxC = this._n(`input_number.${D}_journey_max_cost`, 1e9);
+    const maxE = this._n(`input_number.${D}_journey_max_consumption`, 1e9);
+
+    const now = new Date();
+    const midnight = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const weekStart = new Date(midnight.getTime() - ((now.getDay() + 6) % 7) * 864e5);
+    const inWindow = (j) => {
+      if (win === "All") return true;
+      const d = new Date(j.ended_at || j.started_at);
+      if (isNaN(d)) return true;
+      if (win === "Today") return d >= midnight;
+      if (win === "This week") return d >= weekStart;
+      if (win === "This month") return d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth();
+      return true;
+    };
+
+    let rows = enriched.filter((e) => {
+      if (q && !e.label.includes(q)) return false;
+      if (e.j.distance_km != null && e.j.distance_km < minD) return false;
+      if (e.avgScore != null && e.avgScore < minS) return false;
+      if (e.j.cost != null && e.j.cost > maxC) return false;
+      if (e.avgConsumption != null && e.avgConsumption > maxE) return false;
+      return inWindow(e.j);
+    });
+    // Sort by a numeric key; entries MISSING that key (null/NaN) always sink
+    // to the bottom regardless of direction (same rule as the Trips list).
+    const by = (getter, dir = 1) => (a, b) => {
+      const av = getter(a), bv = getter(b);
+      const an = av == null || isNaN(av), bn = bv == null || isNaN(bv);
+      if (an && bn) return 0;
+      if (an) return 1;
+      if (bn) return -1;
+      return (av - bv) * dir;
+    };
+    const byDate = (dir) => (a, b) => (new Date(a.j.ended_at || a.j.started_at) - new Date(b.j.ended_at || b.j.started_at)) * dir;
+    const sorters = {
+      Newest: byDate(-1), Oldest: byDate(1),
+      Longest: by((e) => e.j.distance_km, -1), Shortest: by((e) => e.j.distance_km, 1),
+      "Best score": by((e) => e.avgScore, -1), "Worst score": by((e) => e.avgScore, 1),
+      "Most efficient": by((e) => e.avgConsumption, 1), "Least efficient": by((e) => e.avgConsumption, -1),
+      Cheapest: by((e) => e.j.cost, 1), Priciest: by((e) => e.j.cost, -1),
+    };
+    rows = rows.slice().sort(sorters[sort] || byDate(-1));
+    return { rows: rows.map((e) => e.j), total, sort };
+  }
   _render() {
     if (!this._hass) return;
     _setUiLang(this._hass);
@@ -2526,21 +2522,23 @@ class EvTripHistoryCard extends HTMLElement {
     const D = this._device || detectDevice(this._hass);
     this._device = D;
     const kind = this._kind;
-    const st = this._hass.states[`sensor.${D}_recent_${kind}`];
-    const raw = (st && st.attributes && Array.isArray(st.attributes[kind]) && st.attributes[kind]) || [];
-    // Always show newest first regardless of the underlying attribute order.
-    // Journeys sort by ended_at desc when available, fallback to started_at;
-    // charges sort by ended_at desc.
-    const sortKey = kind === "journeys" ? "ended_at" : "ended_at";
-    const fallback = kind === "journeys" ? "started_at" : "ended_at";
-    const rows = raw.slice().sort((a, b) => {
-      const ax = a[sortKey] || a[fallback] || "";
-      const bx = b[sortKey] || b[fallback] || "";
-      return bx.localeCompare(ax);
-    });
-    // Prepend the charge in progress (not yet in recent_charges) so it shows
-    // at the top of today, instead of vanishing until it finishes.
-    if (kind === "charges") {
+    let rows, total;
+    if (kind === "journeys") {
+      const ft = this._filteredJourneys(D);
+      rows = ft.rows;
+      total = ft.total;
+    } else {
+      const st = this._hass.states[`sensor.${D}_recent_${kind}`];
+      const raw = (st && st.attributes && Array.isArray(st.attributes[kind]) && st.attributes[kind]) || [];
+      total = raw.length;
+      // Always show newest first regardless of the underlying attribute order.
+      rows = raw.slice().sort((a, b) => {
+        const ax = a.ended_at || a.started_at || "";
+        const bx = b.ended_at || b.started_at || "";
+        return bx.localeCompare(ax);
+      });
+      // Prepend the charge in progress (not yet in recent_charges) so it shows
+      // at the top of today, instead of vanishing until it finishes.
       const live = this._liveCharge(D);
       if (live) rows.unshift(live);
     }
@@ -2695,7 +2693,7 @@ class EvTripHistoryCard extends HTMLElement {
           .stat-unit{font-size:.55em;font-weight:600;color:var(--secondary-text-color);}
         </style>
         <div class="head"><span>${_esc(this._config.title || (kind === "journeys" ? "Journeys" : "Charges"))}</span>
-          <span class="count">${rows.length} ${rows.length === 1 ? kind.replace(/s$/, "") : kind}</span></div>
+          <span class="count">${kind === "journeys" ? `${rows.length} of ${total}` : `${rows.length} ${rows.length === 1 ? kind.replace(/s$/, "") : kind}`}</span></div>
         <div class="list${this._config.scrollRows ? " list--scroll" : ""}"${this._config.scrollRows ? ` style="max-height:${Math.round(this._config.scrollRows * 78)}px;overflow-y:auto;"` : ""}>${inner}</div>
       </ha-card>`;
   }
@@ -7394,8 +7392,6 @@ function drivingView(D, V, hass, cfg) {
     });
   }
 
-  // Left column: the charger·battery·driving summary.
-  if (has(hass, `sensor.${D}_recent_charges`)) status.push({ type: "custom:ev-charge-summary-card", device: D });
   // The live charge card (tiles: SoC/Added/Power/Time) is placed ABOVE the
   // Charging(6h) chart in the RIGHT column (see rightCards). It self-hides when
   // not charging.
@@ -7494,13 +7490,10 @@ function drivingView(D, V, hass, cfg) {
   }
 
   // Two fixed columns (exactly two sections, so each takes one column):
-  //  • LEFT  = the sensor/status list, with Today's journey below it.
-  //  • RIGHT = the live charts (Charging, Driving) with Last trip below them.
-  const leftCards = status.concat([
-    heading("Today's journey", "mdi:map-marker-path"),
-    { type: "custom:ev-trip-journey-card", device: D, tempEntity: jTempEntity, locationEntity: jLocationEntity, tripPowerEntity: jTripPowerEntity },
-  ]);
-  const rightCards = [chargeStatusCard].concat(chartCards, now);
+  //  • LEFT  = the sensor/status list, with Last trip below it.
+  //  • RIGHT = the live charts (Charging, Driving).
+  const leftCards = status.concat(now);
+  const rightCards = [chargeStatusCard].concat(chartCards);
 
   const sections = [grid(leftCards), grid(rightCards)];
 
@@ -7571,9 +7564,7 @@ function tripsView(D, hass, V, cfg) {
     device: D, title: "Trips",
     plugEntity, chargingEntity, powerEntity, tempEntity, locationEntity, tripPowerEntity,
   };
-  const sections = [
-    { type: "grid", column_span: 2, cards: [heading("Last 30 days", "mdi:calendar-range"), trips30dKpis(D)] },
-  ];
+  const sections = [];
   if (hasFilter) {
     sections.push(grid([heading("Trips", "mdi:map-marker-path"), listCard]));
     sections.push(grid([heading("Search & filter", "mdi:filter-variant"), {
@@ -7595,6 +7586,42 @@ function tripsView(D, hass, V, cfg) {
     sections.push({ type: "grid", column_span: 2, cards: [heading("Trips", "mdi:map-marker-path"), listCard] });
   }
   return { title: "Trips", path: "trips", icon: "mdi:map-search", type: "sections", max_columns: 2, sections };
+}
+
+// ==========================================================================
+// View — Journeys
+// Full home→home journeys (multi-stage trips merged into one entry), as
+// opposed to the Trips view which lists every individual trip/stage. Reuses
+// ev-trip-history-card in kind="journeys" mode with its OWN search/filter
+// helpers (input_text/input_select/input_number.<D>_journey_*) — separate
+// from the Trips view's <D>_trip_* helpers, so filtering journeys never
+// changes what the Trips list shows (and vice versa).
+// ==========================================================================
+function journeysView(D, hass, V, cfg) {
+  const hasFilter = hass && has(hass, `input_text.${D}_journey_search`);
+  const historyCard = { type: "custom:ev-trip-history-card", device: D, kind: "journeys", title: "Journeys" };
+  const sections = [];
+  if (hasFilter) {
+    sections.push(grid([heading("Journeys", "mdi:road-variant"), historyCard]));
+    sections.push(grid([heading("Search & filter", "mdi:filter-variant"), {
+      type: "entities",
+      show_header_toggle: false,
+      entities: [
+        { entity: `input_text.${D}_journey_search`, name: "Search (destination / date)" },
+        { entity: `input_select.${D}_journey_sort`, name: "Sort by" },
+        { entity: `input_select.${D}_journey_window`, name: "Period" },
+        { type: "divider" },
+        { entity: `input_number.${D}_journey_min_distance`, name: "Min distance (km)" },
+        { entity: `input_number.${D}_journey_min_score`, name: "Min score" },
+        { entity: `input_number.${D}_journey_max_cost`, name: "Max cost" },
+        { entity: `input_number.${D}_journey_max_consumption`, name: "Max kWh/100" },
+      ],
+    }]));
+  } else {
+    // No filter helpers → journeys list full-width.
+    sections.push({ type: "grid", column_span: 2, cards: [heading("Journeys", "mdi:road-variant"), historyCard] });
+  }
+  return { title: "Journeys", path: "journeys", icon: "mdi:road-variant", type: "sections", max_columns: 2, sections };
 }
 
 
@@ -7630,6 +7657,7 @@ class EvTripDashboardStrategy {
       // Restored pre-2.0 favourites first (Driving + Trips with search).
       drivingView(D, V, hass, config),
       tripsView(D, hass, V, config),
+      journeysView(D, hass, V, config),
       calendarioView(D, hass, V, config),
       tendenciasView(D, hass, config),
       patternsView(D, hass),
