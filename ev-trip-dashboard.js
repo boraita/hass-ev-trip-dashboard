@@ -1379,9 +1379,11 @@ const _esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({ "&"
 // a small chip everywhere a trip renders, so a reconstructed 130 km/h village
 // hop doesn't look identical to a real measured one.
 const _isEstimated = (t) => !!(t && t.confidence && t.confidence !== "live");
-const _estChipHtml = `<span class="est-chip" title="${_esc(L("Estimated — reconstructed from a data gap, not directly measured", "Estimado — reconstruido por un hueco de datos, no medido directamente"))}"><ha-icon icon="mdi:approximately-equal"></ha-icon>${L("Est.", "Aprox.")}</span>`;
-const _estChip = (t) => (_isEstimated(t) ? _estChipHtml : "");
-const _estChipIf = (bool) => (bool ? _estChipHtml : "");
+// L() isn't defined until later in the file, so this must stay a function
+// (built at render time) rather than a module-load-time constant.
+const _estChipHtml = () => `<span class="est-chip" title="${_esc(L("Estimated — reconstructed from a data gap, not directly measured", "Estimado — reconstruido por un hueco de datos, no medido directamente"))}"><ha-icon icon="mdi:approximately-equal"></ha-icon>${L("Est.", "Aprox.")}</span>`;
+const _estChip = (t) => (_isEstimated(t) ? _estChipHtml() : "");
+const _estChipIf = (bool) => (bool ? _estChipHtml() : "");
 const _estChipCss = `
           .est-chip{display:inline-flex;align-items:center;gap:2px;margin-left:6px;
                     font-size:.72em;font-weight:700;padding:1px 6px;border-radius:999px;
