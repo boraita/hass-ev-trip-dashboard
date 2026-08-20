@@ -2756,6 +2756,10 @@ class EvTripHistoryCard extends HTMLElement {
         const stageCount = j.stages != null ? j.stages : stages.length || null;
         const stageChip = stageCount == null ? "" : `<span class="chip"><ha-icon icon="mdi:map-marker-path"></ha-icon>${stageCount} ${stageCount === 1 ? "stage" : "stages"}</span>`;
         const costStr = j.cost != null ? `${fmtNum(j.cost, 2)} ${_esc(sym(j.currency))}` : DASH;
+        const costPer100 =
+          j.cost != null && j.distance_km != null && j.distance_km !== 0
+            ? `${fmtNum((j.cost / j.distance_km) * 100, 2)} ${_esc(sym(j.currency))}/100km`
+            : DASH;
         // Any stage reconstructed/estimated → flag the whole journey row, even
         // collapsed, so you don't have to open it to spot a low-confidence leg.
         const journeyEstChip = _estChipIf(stages.some((t) => _isEstimated(t)));
@@ -2789,7 +2793,7 @@ class EvTripHistoryCard extends HTMLElement {
                 ${chargeChip}
                 ${journeyEstChip}
               </div>
-              <div class="sub"><b>${fmtNum(j.distance_km)}</b> km · <b>${fmtNum(j.energy_kwh)}</b> kWh · <b>${costStr}</b></div>
+              <div class="sub"><b>${fmtNum(j.distance_km)}</b> km · <b>${fmtNum(j.energy_kwh)}</b> kWh · <b>${costStr}</b> · <b>${costPer100}</b></div>
             </div>
             <div class="caret"><ha-icon icon="mdi:chevron-down"></ha-icon></div>
           </div>
