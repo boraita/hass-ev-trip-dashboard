@@ -302,17 +302,21 @@ async function awaitFancyCards(timeoutMs = 2500) {
 
 // A mushroom-template-card "tile" with a colored icon (Driving KPIs); falls
 // back to a native tile card when mushroom isn't installed.
-function kpiTile(entity, name, icon, color, decimals) {
+// `unit`, when given, overrides the entity's own unit_of_measurement — e.g. a
+// EUR-denominated sensor's attribute literally reads "EUR", but this
+// dashboard shows "€" everywhere else, so callers pass unit="€" to match.
+function kpiTile(entity, name, icon, color, decimals, unit) {
   if (hasCard("mushroom-template-card")) {
     // Round the numeric state to `decimals` (default 1) so raw vehicle sensors
     // without suggested_display_precision (e.g. Tesla odometer 45732.1741…,
     // range 212.578…) don't show a long decimal tail. Non-numeric → shown raw.
     const dp = decimals == null ? 1 : decimals;
     const round = dp === 0 ? "(f | round(0) | int)" : `(f | round(${dp}))`;
+    const unitExpr = unit != null ? `'${String(unit).replace(/'/g, "\\'")}'` : "state_attr(entity,'unit_of_measurement')";
     const secondary =
       `{% set v = states(entity) %}{% set f = v | float(none) %}` +
       `{{ ${round} if f is not none else v }}` +
-      `{{ ' ' ~ state_attr(entity,'unit_of_measurement') if state_attr(entity,'unit_of_measurement') else '' }}`;
+      `{{ ' ' ~ ${unitExpr} if ${unitExpr} else '' }}`;
     return {
       type: "custom:mushroom-template-card",
       entity,
@@ -1187,15 +1191,9 @@ function cargasView(D, hass, V, cfg) {
   // (Per-charge power curves are rendered inside the charge history card —
   // each charge shows its own kW-vs-time graph when its day is expanded.)
 
-  // ---- KPI grid (2x2) --------------------------------------------------
-  // Each tile is a button-card with 96px height so the grid feels denser
-  // than the default tile spacing.
-  const chKpiStyles = (iconColor) => ({
-    card: [{ padding: "12px" }, { height: "96px" }],
-    name: [{ "font-size": "12px" }, { color: "var(--secondary-text-color)" }],
-    state: [{ "font-size": "22px" }, { "font-weight": "600" }],
-    icon: [{ color: iconColor }, { width: "28px" }],
-  });
+  // ---- KPI grids ---------------------------------------------------------
+  // Plain mushroom-template-card tiles (kpiTile) — a Jinja round()+unit
+  // template instead of a bespoke button-card per tile with JS state_display.
 
   // This-month totals (energy charged / spent / sessions) — complements the
   // 30-day averages below.
@@ -1205,32 +1203,9 @@ function cargasView(D, hass, V, cfg) {
     columns: 3,
     square: false,
     cards: [
-      {
-        type: "custom:button-card",
-        entity: `sensor.${D}_energy_charged_this_month`,
-        name: "Charged",
-        icon: "mdi:lightning-bolt",
-        show_state: true, show_name: true, show_icon: true,
-        styles: chKpiStyles("var(--info-color)"),
-        state_display: "[[[ const v = entity && entity.state; return (v==null||v==='unavailable'||v==='unknown') ? '—' : `${Number(v).toFixed(1)} kWh` ]]]",
-      },
-      {
-        type: "custom:button-card",
-        entity: `sensor.${D}_spent_on_charging_this_month`,
-        name: "Spent",
-        icon: "mdi:cash-multiple",
-        show_state: true, show_name: true, show_icon: true,
-        styles: chKpiStyles("var(--warning-color)"),
-        state_display: "[[[ const v = entity && entity.state; return (v==null||v==='unavailable'||v==='unknown') ? '—' : `${Number(v).toFixed(2)} €` ]]]",
-      },
-      {
-        type: "custom:button-card",
-        entity: `sensor.${D}_charges_this_month`,
-        name: "Sessions",
-        icon: "mdi:counter",
-        show_state: true, show_name: true, show_icon: true,
-        styles: chKpiStyles("var(--success-color)"),
-      },
+      kpiTile(`sensor.${D}_energy_charged_this_month`, "Charged", "mdi:lightning-bolt", "blue", 1),
+      kpiTile(`sensor.${D}_spent_on_charging_this_month`, "Spent", "mdi:cash-multiple", "orange", 2, "€"),
+      kpiTile(`sensor.${D}_charges_this_month`, "Sessions", "mdi:counter", "green", 0),
     ],
   });
 
@@ -1240,63 +1215,23 @@ function cargasView(D, hass, V, cfg) {
     columns: 2,
     square: false,
     cards: [
-      {
-        type: "custom:button-card",
-        entity: `sensor.${D}_avg_charge_energy_30_days`,
-        name: "Avg kWh",
-        icon: "mdi:flash",
-        show_state: true,
-        show_name: true,
-        show_icon: true,
-        styles: chKpiStyles("var(--info-color)"),
-      },
-      {
-        type: "custom:button-card",
-        entity: `sensor.${D}_avg_charge_cost_30_days`,
-        name: "Avg Cost",
-        icon: "mdi:currency-eur",
-        show_state: true,
-        show_name: true,
-        show_icon: true,
-        styles: chKpiStyles("var(--warning-color)"),
-      },
-      {
-        type: "custom:button-card",
-        entity: `sensor.${D}_avg_charge_price_30_days`,
-        name: "Avg €/kWh",
-        icon: "mdi:tag-outline",
-        show_state: true,
-        show_name: true,
-        show_icon: true,
-        styles: chKpiStyles("var(--accent-color)"),
-      },
-      {
-        type: "custom:button-card",
-        name: "Total charges",
+      kpiTile(`sensor.${D}_avg_charge_energy_30_days`, "Avg kWh", "mdi:flash", "blue", 1),
+      kpiTile(`sensor.${D}_avg_charge_cost_30_days`, "Avg Cost", "mdi:currency-eur", "orange", 2, "€"),
+      kpiTile(`sensor.${D}_avg_charge_price_30_days`, "Avg €/kWh", "mdi:tag-outline", "purple", 3, "€/kWh"),
+      // Counts the recent_charges window so it matches the list below ("9
+      // charges"), instead of charges_this_month which only counts the
+      // current calendar month — not a per-entity value, so its own template.
+      mushroomTpl({
+        primary: "Total charges",
+        secondary: `{% set arr = state_attr('sensor.${D}_recent_charges','charges') %}{{ arr | count if arr else '—' }}`,
         icon: "mdi:counter",
-        show_state: true,
-        show_name: true,
-        show_icon: true,
-        // Count the recent_charges window so it matches the list below
-        // ("9 charges"), instead of charges_this_month which only counts
-        // the current calendar month.
-        state_display:
-          "[[[\n  const s = states['sensor." +
-          D +
-          "_recent_charges'];\n  const arr = s && s.attributes && Array.isArray(s.attributes.charges) ? s.attributes.charges : null;\n  return arr ? String(arr.length) : '—';\n]]]",
-        styles: chKpiStyles("var(--success-color)"),
-      },
+        iconColor: "green",
+      }),
       // AC→DC charging efficiency (30-day rolling median) — only once the EVSE
       // power sensor has produced data, so it never shows a bare "unknown".
-      ...(hasVal(hass, `sensor.${D}_avg_charging_efficiency_30d`) ? [{
-        type: "custom:button-card",
-        entity: `sensor.${D}_avg_charging_efficiency_30d`,
-        name: L("Avg efficiency", "Eficiencia media"),
-        icon: "mdi:gauge",
-        show_state: true, show_name: true, show_icon: true,
-        styles: chKpiStyles("var(--accent-color)"),
-        state_display: "[[[ const v = entity && entity.state; return (v==null||v==='unavailable'||v==='unknown') ? '—' : `${Number(v).toFixed(0)}%` ]]]",
-      }] : []),
+      ...(hasVal(hass, `sensor.${D}_avg_charging_efficiency_30d`)
+        ? [kpiTile(`sensor.${D}_avg_charging_efficiency_30d`, L("Avg efficiency", "Eficiencia media"), "mdi:gauge", "purple", 0)]
+        : []),
     ],
   });
 
@@ -2404,51 +2339,6 @@ class EvTripHistoryCard extends HTMLElement {
       .then(() => { this._render(); })
       .catch((e) => { console.error("set charge price failed", e); this._render(); });
   }
-  // Synthesise the charge that is happening RIGHT NOW from the live sensors —
-  // the logger only writes a charge to recent_charges once it ENDS, so an
-  // ongoing (e.g. overnight) charge would otherwise be missing from the
-  // history. Returns null when not charging. Marked in_progress for the UI.
-  _liveCharge(D) {
-    const st = (id) => this._hass.states[id];
-    const cip = st(`sensor.${D}_charge_in_progress`);
-    const cipOn = cip && String(cip.state).toLowerCase() === "charging";
-    if (!cipOn) return null;
-    const numOf = (id) => { const s = st(id); const v = s ? parseFloat(s.state) : NaN; return isNaN(v) ? null : v; };
-    let energy = numOf(`sensor.${D}_current_charge_energy`);
-    const durMin = numOf(`sensor.${D}_current_charge_duration`);
-    const typeS = st(`sensor.${D}_current_charge_type`);
-    const type = typeS && typeS.state && !["unknown", "unavailable"].includes(String(typeS.state).toLowerCase()) ? String(typeS.state).toUpperCase() : null;
-    const socStart = cip.attributes && cip.attributes.soc_start != null ? Number(cip.attributes.soc_start) : null;
-    const socNow = numOf(`sensor.${D}_battery_percent`);
-    // current_charge_energy is often stuck at 0 mid-charge (logger bug:
-    // soc_start null). Estimate the kWh into the battery so the live row isn't
-    // "0": prefer EVSE-metered AC × efficiency (DC), else SoC-gain × pack kWh.
-    if (energy == null || energy === 0) {
-      const evse = numOf(`sensor.${D}_current_charge_evse_kwh`);
-      const eff = numOf(`sensor.${D}_current_charge_efficiency`);
-      if (evse != null && evse > 0) energy = eff != null && eff > 20 && eff <= 100 ? evse * (eff / 100) : evse;
-      else if (socStart != null && socNow != null && socNow > socStart) {
-        const cap = (numOf(`sensor.${D}_battery_energy`) || 0) + (numOf(`sensor.${D}_energy_to_full_charge`) || 0);
-        if (cap > 0) energy = ((socNow - socStart) / 100) * cap;
-      }
-    }
-    const costEnt = st(`sensor.${D}_current_charge_cost`);
-    const currency = (costEnt && costEnt.attributes && costEnt.attributes.unit_of_measurement) || "EUR";
-    const le = this._config.locationEntity ? st(this._config.locationEntity) : null;
-    const location = le && String(le.state).toLowerCase() === "home" ? "home" : null;
-    let now, started;
-    try { now = new Date(); started = durMin != null ? new Date(now.getTime() - durMin * 60000) : null; }
-    catch (_e) { return null; }
-    return {
-      id: "__live__", charge_id: "__live__", in_progress: true,
-      started_at: started ? started.toISOString() : null,
-      ended_at: now.toISOString(),
-      kwh: energy, total_cost: numOf(`sensor.${D}_current_charge_cost`),
-      price_per_kwh: numOf(`sensor.${D}_current_charge_price_per_kwh`),
-      soc_start: socStart, soc_end: socNow,
-      is_dcfc: type === "DC", type, currency, location,
-    };
-  }
   _s(id) {
     const e = this._hass.states[id];
     return e ? e.state : undefined;
@@ -2660,10 +2550,6 @@ class EvTripHistoryCard extends HTMLElement {
         const bx = b.ended_at || b.started_at || "";
         return bx.localeCompare(ax);
       });
-      // Prepend the charge in progress (not yet in recent_charges) so it shows
-      // at the top of today, instead of vanishing until it finishes.
-      const live = this._liveCharge(D);
-      if (live) rows.unshift(live);
     }
     const cur = { EUR: "€", USD: "$", GBP: "£" };
     const sym = (c) => cur[c] || c || "€";
