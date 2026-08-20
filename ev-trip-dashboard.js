@@ -2749,19 +2749,29 @@ class EvTripHistoryCard extends HTMLElement {
     return journeys
       .map((j) => {
         const isOpen = j.journey_id != null && String(this._openId) === String(j.journey_id);
-        const stageCount = j.stages != null ? j.stages : null;
+        const stages = allTrips
+          .filter((t) => t.journey_id != null && String(t.journey_id) === String(j.journey_id))
+          .sort((a, b) => new Date(a.started_at) - new Date(b.started_at));
+        const stageCount = j.stages != null ? j.stages : stages.length || null;
         const stageChip = stageCount == null ? "" : `<span class="chip"><ha-icon icon="mdi:map-marker-path"></ha-icon>${stageCount} ${stageCount === 1 ? "stage" : "stages"}</span>`;
         const costStr = j.cost != null ? `${fmtNum(j.cost, 2)} ${_esc(sym(j.currency))}` : DASH;
         // Any stage reconstructed/estimated → flag the whole journey row, even
         // collapsed, so you don't have to open it to spot a low-confidence leg.
-        const hasEstimated = allTrips.some((t) => t.journey_id != null && String(t.journey_id) === String(j.journey_id) && _isEstimated(t));
-        const journeyEstChip = _estChipIf(hasEstimated);
+        const journeyEstChip = _estChipIf(stages.some((t) => _isEstimated(t)));
+
+        // Charges within this journey's span, and the "trip time" — driving
+        // duration + time actually spent charging, i.e. the real travel time
+        // minus any leisure/rest stop (same concept as the calendar's chip).
+        const charges = this._journeyCharges(D, stages);
+        const chargeChip = charges.length
+          ? `<span class="chip"><ha-icon icon="mdi:ev-station"></ha-icon>${charges.length} ${charges.length === 1 ? L("charge", "carga") : L("charges", "cargas")}</span>`
+          : "";
+        const drivingMin = stages.reduce((a, t) => a + (Number(t.duration_min) || 0), 0);
+        const tripMin = drivingMin + _chargeMinutesSum(charges);
+        const timeChip = tripMin > 0 ? `<span class="chip"><ha-icon icon="mdi:clock-check-outline"></ha-icon>${_fmtDur(tripMin)}</span>` : "";
 
         let detail = "";
         if (isOpen) {
-          const stages = allTrips
-            .filter((t) => t.journey_id != null && String(t.journey_id) === String(j.journey_id))
-            .sort((a, b) => new Date(a.started_at) - new Date(b.started_at));
           detail = this._journeyDetailHtml(D, j, stages, sym, DASH, fmtNum);
         }
 
@@ -2773,6 +2783,8 @@ class EvTripHistoryCard extends HTMLElement {
                 <span class="title">${_fmtDate(j.ended_at)}</span>
                 <span class="id">#${_esc(j.journey_id)}</span>
                 ${stageChip}
+                ${timeChip}
+                ${chargeChip}
                 ${journeyEstChip}
               </div>
               <div class="sub"><b>${fmtNum(j.distance_km)}</b> km · <b>${fmtNum(j.energy_kwh)}</b> kWh · <b>${costStr}</b></div>
