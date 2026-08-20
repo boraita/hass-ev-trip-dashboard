@@ -1373,6 +1373,21 @@ const _scoreColor = (s) =>
     ? "var(--warning-color, #fbc02d)"
     : "var(--error-color, #e53935)";
 const _esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+// A trip/stage is "estimated" when the logger couldn't measure it directly —
+// confidence is anything other than "live" (orphan/orphan_odo_only/
+// reconstructed_recovery: GPS or odometer gap filled in by a guess). Shown as
+// a small chip everywhere a trip renders, so a reconstructed 130 km/h village
+// hop doesn't look identical to a real measured one.
+const _isEstimated = (t) => !!(t && t.confidence && t.confidence !== "live");
+const _estChipHtml = `<span class="est-chip" title="${_esc(L("Estimated — reconstructed from a data gap, not directly measured", "Estimado — reconstruido por un hueco de datos, no medido directamente"))}"><ha-icon icon="mdi:approximately-equal"></ha-icon>${L("Est.", "Aprox.")}</span>`;
+const _estChip = (t) => (_isEstimated(t) ? _estChipHtml : "");
+const _estChipIf = (bool) => (bool ? _estChipHtml : "");
+const _estChipCss = `
+          .est-chip{display:inline-flex;align-items:center;gap:2px;margin-left:6px;
+                    font-size:.72em;font-weight:700;padding:1px 6px;border-radius:999px;
+                    background:rgba(251,140,0,.14);border:1px solid var(--warning-color,#fb8c00);
+                    color:var(--warning-color,#fb8c00);vertical-align:middle;}
+          .est-chip ha-icon{--mdc-icon-size:11px;}`;
 // Cheap dirty-check: build a signature string from the last_updated+state of a
 // set of entity ids. Cards use this in set hass to skip _render() when nothing
 // they actually read has changed (HA fires set hass on EVERY state change in the
@@ -1957,7 +1972,7 @@ class EvTripListCard extends HTMLElement {
         : "";
       return `
         <div class="trip${isOpen ? " trip--open" : ""}" data-trip-id="${_esc(t.id)}">
-          <div class="trip-date">${_fmtDate(t.ended_at, true)}${driverChip}</div>
+          <div class="trip-date">${_fmtDate(t.ended_at, true)}${driverChip}${_estChip(t)}</div>
           <div class="cols">
             ${col("Distance", fmtNum(t.distance_km), "km")}
             ${col("Consumption", nn(t.energy_kwh), "kWh")}
@@ -2162,6 +2177,7 @@ class EvTripListCard extends HTMLElement {
                        background:var(--secondary-background-color,rgba(0,0,0,.06));
                        border:1px solid var(--divider-color);color:var(--secondary-text-color);
                        vertical-align:middle;}
+          ${_estChipCss}
           .driver-icon{width:11px;height:11px;fill:currentColor;flex:0 0 auto;}
           .d-driver{display:inline-flex;align-items:center;gap:3px;
                     color:var(--secondary-text-color);font-size:.9em;}
@@ -2612,6 +2628,7 @@ class EvTripHistoryCard extends HTMLElement {
           .stage .sbody{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;gap:3px;}
           .stage .swhen{font-size:.8em;color:var(--secondary-text-color);
                         font-variant-numeric:tabular-nums;}
+          ${_estChipCss}
           .stage .sroute{display:flex;align-items:center;gap:6px;flex-wrap:wrap;font-size:.9em;}
           .stage .smetrics{font-size:.8em;color:var(--secondary-text-color);
                            font-variant-numeric:tabular-nums;}
@@ -2709,6 +2726,10 @@ class EvTripHistoryCard extends HTMLElement {
         const stageCount = j.stages != null ? j.stages : null;
         const stageChip = stageCount == null ? "" : `<span class="chip"><ha-icon icon="mdi:map-marker-path"></ha-icon>${stageCount} ${stageCount === 1 ? "stage" : "stages"}</span>`;
         const costStr = j.cost != null ? `${fmtNum(j.cost, 2)} ${_esc(sym(j.currency))}` : DASH;
+        // Any stage reconstructed/estimated → flag the whole journey row, even
+        // collapsed, so you don't have to open it to spot a low-confidence leg.
+        const hasEstimated = allTrips.some((t) => t.journey_id != null && String(t.journey_id) === String(j.journey_id) && _isEstimated(t));
+        const journeyEstChip = _estChipIf(hasEstimated);
 
         let detail = "";
         if (isOpen) {
@@ -2726,6 +2747,7 @@ class EvTripHistoryCard extends HTMLElement {
                 <span class="title">${_fmtDate(j.ended_at)}</span>
                 <span class="id">#${_esc(j.journey_id)}</span>
                 ${stageChip}
+                ${journeyEstChip}
               </div>
               <div class="sub"><b>${fmtNum(j.distance_km)}</b> km · <b>${fmtNum(j.energy_kwh)}</b> kWh · <b>${costStr}</b></div>
             </div>
@@ -2751,7 +2773,7 @@ class EvTripHistoryCard extends HTMLElement {
           return `
             <div class="stage">
               <div class="sbody">
-                <div class="swhen">${_fmtDate(t.started_at)}</div>
+                <div class="swhen">${_fmtDate(t.started_at)}${_estChip(t)}</div>
                 <div class="sroute">${origin}<span class="arrow"><ha-icon icon="mdi:arrow-right" style="--mdc-icon-size:16px"></ha-icon></span>${dest}</div>
                 <div class="smetrics"><b>${fmtNum(t.distance_km)}</b> km · <b>${_fmtEff(t.consumption_kwh_100km)}</b></div>
               </div>
@@ -5243,7 +5265,7 @@ class EvTripCalendarCard extends HTMLElement {
       };
       const stage = (t, idx, groupKey) => `
         <div class="cal-stage${idx != null && inSel(groupKey, idx) ? " cal-stage--sel" : ""}"${idx != null ? ` data-stage-idx="${idx}" data-group-key="${_esc(groupKey)}"` : ""}>
-          <span class="cal-stime">${_timeRange(t.started_at, t.ended_at) || _timeOfDay(t.started_at)}</span>
+          <span class="cal-stime">${_timeRange(t.started_at, t.ended_at) || _timeOfDay(t.started_at)}${_estChip(t)}</span>
           <span class="cal-sroute">${_endpoint(t.start_address, t.origin)}<ha-icon class="cal-arr" icon="mdi:arrow-right"></ha-icon>${_endpoint(t.end_address, t.destination)}</span>
           <span class="cal-smeta">${f0(t.distance_km)} km${_fmtDur(t.duration_min) ? ` · ${_fmtDur(t.duration_min)}` : ""} · ${t.consumption_kwh_100km != null && Number(t.consumption_kwh_100km) >= 0 ? _fmtEff(t.consumption_kwh_100km) : "—"}</span>
           ${t.score != null ? `<span class="cal-pill" style="background:${_scoreColor(t.score)}">${f1(t.score)}</span>` : ""}
@@ -5430,6 +5452,7 @@ class EvTripCalendarCard extends HTMLElement {
           .cal-stages{display:flex;flex-direction:column;gap:6px;border-left:2px solid var(--divider-color);
                       margin-left:13px;padding-left:12px;}
           .cal-stage{display:flex;align-items:center;gap:8px;font-size:.85em;flex-wrap:wrap;}
+          ${_estChipCss}
           .cal-stage[data-stage-idx]{cursor:pointer;border-radius:8px;margin:-4px -6px;padding:4px 6px;transition:background .1s;}
           .cal-stage[data-stage-idx]:hover{background:var(--secondary-background-color);}
           .cal-stage--sel{background:rgba(3,155,229,.14);}
