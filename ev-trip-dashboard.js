@@ -5076,16 +5076,29 @@ class EvTripCalendarCard extends HTMLElement {
   }
   // Group a day's trips into journeys (home→home) by journey_id; ungrouped
   // trips become 1-stage standalone entries. Each group gets a summary.
+  //
+  // The logger only backfills journey_id once the round trip actually closes
+  // back home — while away on a multi-day trip, that day's trips carry NO
+  // journey_id yet, so they'd otherwise render as N disconnected "solo" cards
+  // (and N separate little maps) for what is obviously one connected day of
+  // driving. Since this method only ever sees ONE calendar day's trips at a
+  // time already, any journey_id-less trips for that day are chained into a
+  // single synthetic group instead — real grouping resumes automatically
+  // once the logger backfills journey_id (this day's group then just gets a
+  // real id). A single unattached trip stays standalone — nothing to chain.
   _groupByJourney(trips) {
     const sorted = trips.slice().sort((a, b) => new Date(a.started_at) - new Date(b.started_at));
     const groups = [], byId = new Map(), standalone = [];
+    const pending = [];
     for (const t of sorted) {
-      if (t.journey_id == null) { standalone.push(t); continue; }
+      if (t.journey_id == null) { pending.push(t); continue; }
       const key = String(t.journey_id);
       let g = byId.get(key);
       if (!g) { g = { journey_id: t.journey_id, stages: [] }; byId.set(key, g); groups.push(g); }
       g.stages.push(t);
     }
+    if (pending.length > 1) groups.push({ journey_id: null, stages: pending, synthetic: true });
+    else standalone.push(...pending);
     for (const g of groups) {
       const s = g.stages;
       g.origin = s[0].start_address || s[0].origin || "?";
