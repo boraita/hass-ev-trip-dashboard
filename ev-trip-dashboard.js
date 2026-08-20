@@ -2764,11 +2764,12 @@ class EvTripHistoryCard extends HTMLElement {
         // duration + time actually spent charging, i.e. the real travel time
         // minus any leisure/rest stop (same concept as the calendar's chip).
         const charges = this._journeyCharges(D, stages);
+        const chargeMin = _chargeMinutesSum(charges);
         const chargeChip = charges.length
-          ? `<span class="chip"><ha-icon icon="mdi:ev-station"></ha-icon>${charges.length} ${charges.length === 1 ? L("charge", "carga") : L("charges", "cargas")}</span>`
+          ? `<span class="chip"><ha-icon icon="mdi:ev-station"></ha-icon>${charges.length} ${charges.length === 1 ? L("charge", "carga") : L("charges", "cargas")}${chargeMin > 0.5 ? ` · ${_fmtDur(chargeMin)}` : ""}</span>`
           : "";
         const drivingMin = stages.reduce((a, t) => a + (Number(t.duration_min) || 0), 0);
-        const tripMin = drivingMin + _chargeMinutesSum(charges);
+        const tripMin = drivingMin + chargeMin;
         const timeChip = tripMin > 0 ? `<span class="chip"><ha-icon icon="mdi:clock-check-outline"></ha-icon>${_fmtDur(tripMin)}</span>` : "";
 
         let detail = "";
@@ -2853,6 +2854,19 @@ class EvTripHistoryCard extends HTMLElement {
     }
     const avgSpeed = haveDur && totDur > 0 ? fmtNum(totDist / (totDur / 60), 1) : DASH;
 
+    // Battery used across the whole journey: first stage's starting % to the
+    // last stage's ending %, with the total percentage points used in between.
+    const socStart = stages.length && stages[0].soc_start != null ? Number(stages[0].soc_start) : null;
+    const lastStage = stages[stages.length - 1];
+    const socEnd = lastStage && lastStage.soc_end != null ? Number(lastStage.soc_end) : null;
+    const socUsed = stages.some((t) => t.soc_used_pct != null)
+      ? stages.reduce((a, t) => a + (Number(t.soc_used_pct) || 0), 0)
+      : null;
+    const socValue =
+      socStart != null && socEnd != null
+        ? `${Math.round(socStart)}→${Math.round(socEnd)}${socUsed != null ? ` (${Math.round(socUsed)})` : ""}`
+        : DASH;
+
     const stat = (label, value, unit) => `
       <div class="stat">
         <div class="stat-label">${_esc(label)}</div>
@@ -2877,6 +2891,7 @@ class EvTripHistoryCard extends HTMLElement {
           ${stat("Cost", j.cost != null ? fmtNum(j.cost, 2) : DASH, j.cost != null ? sym(j.currency) : "")}
           ${stat("Avg consumption", avgConsE.value, avgConsE.unit)}
           ${stat("Avg speed", avgSpeed, "km/h")}
+          ${stat("Battery", socValue, socValue !== DASH ? "%" : "")}
         </div>
         ${mapHtml}
         <div class="stages">${stagesHtml}</div>
