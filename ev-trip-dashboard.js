@@ -2930,6 +2930,8 @@ class EvTripHistoryCard extends HTMLElement {
         let haveKwh = false;
         let totCost = 0;
         let haveCost = false;
+        let totMin = 0;
+        let haveMin = false;
         let curSym = "€";
         for (const c of sessions) {
           if (c.kwh != null && !isNaN(c.kwh)) {
@@ -2940,10 +2942,15 @@ class EvTripHistoryCard extends HTMLElement {
             totCost += Number(c.total_cost);
             haveCost = true;
           }
+          if (c.started_at && c.ended_at) {
+            const d = (new Date(c.ended_at) - new Date(c.started_at)) / 60000;
+            if (!isNaN(d) && d >= 0) { totMin += d; haveMin = true; }
+          }
           if (c.currency) curSym = sym(c.currency);
         }
         const kwhStr = haveKwh ? `${fmtNum(totKwh, 2)} kWh` : DASH;
         const costStr = haveCost ? `${fmtNum(totCost, 2)} ${_esc(curSym)}` : DASH;
+        const durStr = haveMin ? _fmtDur(totMin) : null;
         const n = sessions.length;
         const isOpen = String(this._openId) === String(key);
         const hasLive = sessions.some((c) => c.in_progress);
@@ -2959,7 +2966,7 @@ class EvTripHistoryCard extends HTMLElement {
                 <span class="chip"><ha-icon icon="mdi:counter"></ha-icon>${n} ${L(n === 1 ? "charge" : "charges", n === 1 ? "carga" : "cargas")}</span>
                 ${hasLive ? `<span class="chip chip--live"><ha-icon icon="mdi:flash"></ha-icon>${L("charging", "cargando")}</span>` : ""}
               </div>
-              <div class="sub"><b>${kwhStr}</b> · <b>${costStr}</b></div>
+              <div class="sub"><b>${kwhStr}</b>${durStr ? ` · <b>${durStr}</b>` : ""} · <b>${costStr}</b></div>
             </div>
             <div class="caret"><ha-icon icon="mdi:chevron-down"></ha-icon></div>
           </div>
