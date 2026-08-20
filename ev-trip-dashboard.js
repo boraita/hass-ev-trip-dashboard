@@ -1149,7 +1149,7 @@ function cargasView(D, hass, V, cfg) {
   cfg = cfg || {};
   V = V || D;
   const cards = [];
-  const analytics = []; // charger-vs-battery section → RIGHT column when present
+  const analytics = []; // 30-day KPIs, insights, charger-vs-battery → RIGHT column
 
   cards.push(mushroomTitle("Charges", "Last 30 days", "mdi:battery-charging"));
 
@@ -1209,8 +1209,13 @@ function cargasView(D, hass, V, cfg) {
     ],
   });
 
-  cards.push(heading("Last 30 days", "mdi:chart-box-outline"));
-  cards.push({
+  // locationEntity → the cards that show WHERE a charge happened can geocode the
+  // street of an away charge (charges carry no coordinates of their own).
+  const locationEntity = (cfg && cfg.location_entity) || (hass ? pickVehicleEntity(hass, V, "location", cfg) : null);
+
+  // ---- Last 30 days KPIs + Charging insights (RIGHT column) -------------
+  analytics.push(heading("Last 30 days", "mdi:chart-box-outline"));
+  analytics.push({
     type: "grid",
     columns: 2,
     square: false,
@@ -1235,12 +1240,8 @@ function cargasView(D, hass, V, cfg) {
     ],
   });
 
-  // locationEntity → the cards that show WHERE a charge happened can geocode the
-  // street of an away charge (charges carry no coordinates of their own).
-  const locationEntity = (cfg && cfg.location_entity) || (hass ? pickVehicleEntity(hass, V, "location", cfg) : null);
-
   // ---- Charging insights (AC/DC split, prices, cheapest, avg session) --
-  cards.push({ type: "custom:ev-trip-charge-insights-card", device: D, locationEntity });
+  analytics.push({ type: "custom:ev-trip-charge-insights-card", device: D, locationEntity });
 
   // ---- Reactive charges history (custom element from this plugin) ------
   // Groups sessions by calendar day with expandable detail panels. Each charge
@@ -1257,9 +1258,9 @@ function cargasView(D, hass, V, cfg) {
     analytics.push({ type: "custom:ev-charge-summary-card", device: D });
   }
 
-  // Two columns when the analytics package is present: LEFT = the charge list
-  // (KPIs, insights, history), RIGHT = charger-vs-battery analytics. They
-  // stack on mobile.
+  // Two columns when the analytics package is present: LEFT = this-month
+  // totals + the charge history list, RIGHT = 30-day KPIs, charging insights
+  // and charger-vs-battery analytics. They stack on mobile.
   const sections = analytics.length ? [grid(cards), grid(analytics)] : [grid(cards)];
   return {
     title: "Charges",
