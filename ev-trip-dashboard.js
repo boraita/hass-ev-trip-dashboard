@@ -2288,6 +2288,7 @@ class EvTripHistoryCard extends HTMLElement {
     this._curves = this._curves || {}; // charge_id -> points | 'loading'
     this._streets = this._streets || {}; // charge_id -> {label,lat,lon} | 'loading'
     this._curveTap = this._curveTap || {}; // charge_id -> tapped x-fraction (0..1) in its power curve
+    this._jroutes = this._jroutes || {}; // journey_id -> [{lat,lon}] | 'loading'
   }
   set hass(hass) {
     this._hass = hass;
@@ -2530,6 +2531,109 @@ class EvTripHistoryCard extends HTMLElement {
     rows = rows.slice().sort(sorters[sort] || byDate(-1));
     return { rows: rows.map((e) => e.j), total, sort };
   }
+  // The full journey route, fetched per STAGE window (skipping the parked gap
+  // between legs) then concatenated — same approach as the Calendar's day
+  // route, just keyed by journey_id instead of a day's start|end. Lazy,
+  // cached; a no-op without config.locationEntity (a device_tracker).
+  _fetchJourneyRoute(journeyId, stages) {
+    const ent = this._config.locationEntity;
+    if (!ent || !this._hass || journeyId == null || !stages || !stages.length) return;
+    if (this._jroutes[journeyId] !== undefined) return;
+    this._jroutes[journeyId] = "loading";
+    const fetchWin = (win) => {
+      let start, end;
+      try {
+        start = new Date(new Date(win.start).getTime() - 60000).toISOString();
+        end = new Date(new Date(win.end).getTime() + 60000).toISOString();
+      } catch (_e) { return Promise.resolve([]); }
+      return Promise.resolve(this._hass.callApi("GET", `history/period/${start}?end_time=${end}&filter_entity_id=${ent}&significant_changes_only=0`))
+        .then((res) => {
+          const ser = Array.isArray(res) && res[0] ? res[0] : [];
+          const pts = [];
+          for (const x of ser) {
+            const a = x.attributes || {};
+            const lat = parseFloat(a.latitude), lon = parseFloat(a.longitude);
+            if (isNaN(lat) || isNaN(lon)) continue;
+            const last = pts[pts.length - 1];
+            if (!last || last.lat !== lat || last.lon !== lon) pts.push({ lat, lon });
+          }
+          return pts;
+        })
+        .catch(() => []);
+    };
+    const windows = stages.map((t) => ({ start: t.started_at, end: t.ended_at || t.started_at }));
+    Promise.all(windows.map(fetchWin))
+      .then((legs) => {
+        const pts = [];
+        for (const leg of legs) for (const p of leg) {
+          const last = pts[pts.length - 1];
+          if (!last || last.lat !== p.lat || last.lon !== p.lon) pts.push(p);
+        }
+        this._jroutes[journeyId] = pts;
+        this._render();
+      })
+      .catch(() => { this._jroutes[journeyId] = []; this._render(); });
+  }
+  // Charges that fall within this journey's span (home→home) — includes a
+  // stop charged mid-journey (e.g. a highway fast-charge between two legs).
+  _journeyCharges(D, stages) {
+    if (!stages.length) return [];
+    const chSt = this._hass.states[`sensor.${D}_recent_charges`];
+    const charges = (chSt && chSt.attributes && Array.isArray(chSt.attributes.charges) && chSt.attributes.charges) || [];
+    const start = new Date(stages[0].started_at).getTime();
+    const last = stages[stages.length - 1];
+    const end = new Date(last.ended_at || last.started_at).getTime();
+    if (isNaN(start) || isNaN(end)) return [];
+    return charges
+      .filter((c) => {
+        const cs = new Date(c.started_at || c.ended_at).getTime();
+        const ce = new Date(c.ended_at || c.started_at).getTime();
+        return !isNaN(cs) && !isNaN(ce) && cs <= end && ce >= start;
+      })
+      .sort((a, b) => new Date(a.started_at || a.ended_at) - new Date(b.started_at || b.ended_at));
+  }
+  // Resolve each embedded charge's location (charges carry no coords of their
+  // own) — same helpers/cache the Trips list uses, so "locating…" only shows
+  // once per charge regardless of which card asked first.
+  _fetchJourneyChargeStreets(charges) {
+    const ent = this._config.locationEntity;
+    if (!ent || !this._hass || !charges) return;
+    for (const c of charges) {
+      const id = _chargeKey(c);
+      if (id == null || !_chargeAway(c) || this._streets[id] !== undefined) continue;
+      this._streets[id] = "loading";
+      _chargeStreet(this._hass, ent, c).then((r) => { this._streets[id] = r; this._render(); });
+    }
+  }
+  // Same row style as the Trips list's charge rows, so a charge mid-journey
+  // reads identically whether you're looking at Trips or Journeys.
+  _chargeRowHtml(c) {
+    const cur = { EUR: "€", USD: "$", GBP: "£" };
+    const sym = cur[c.currency] || c.currency || "€";
+    const fmtNum = (v, dp) => (v == null || isNaN(v) ? "—" : dp == null ? String(v) : Number(v).toFixed(dp));
+    let durMin = null;
+    if (c.started_at && c.ended_at) { const d = (new Date(c.ended_at) - new Date(c.started_at)) / 60000; if (!isNaN(d) && d >= 0) durMin = d; }
+    const durStr = durMin == null ? null : durMin >= 60 ? `${Math.floor(durMin / 60)}h ${Math.round(durMin % 60)}m` : `${Math.round(durMin)} min`;
+    const avgKw = c.kwh != null && durMin && durMin > 0 ? Number(c.kwh) / (durMin / 60) : null;
+    const type = c.is_dcfc ? "DC" : "AC";
+    const place = _chargePlace(c, this._streets[_chargeKey(c)]);
+    const parts = [
+      `<b>${fmtNum(c.kwh, 2)}</b> kWh`,
+      `<b>${fmtNum(c.price_per_kwh, 3)}</b> ${_esc(sym)}/kWh`,
+      c.total_cost != null ? `<b>${fmtNum(c.total_cost, 2)}</b> ${_esc(sym)}` : null,
+      avgKw != null ? `${avgKw.toFixed(1)} kW` : null,
+      durStr,
+    ].filter(Boolean).join(" · ");
+    return `
+      <div class="charge-row">
+        <div class="cr-badge"><ha-icon icon="mdi:ev-station"></ha-icon></div>
+        <div class="cr-body">
+          <div class="cr-head">${L("Charged", "Cargado")}${place ? ` · ${_esc(place)}` : ""}<span class="cr-time">${_fmtDate(c.ended_at, true)}</span></div>
+          <div class="cr-metrics">${parts}</div>
+        </div>
+        <span class="cr-type cr-type--${type === "DC" ? "dc" : "ac"}">${type}</span>
+      </div>`;
+  }
   _render() {
     if (!this._hass) return;
     _setUiLang(this._hass);
@@ -2710,6 +2814,39 @@ class EvTripHistoryCard extends HTMLElement {
           .stat-value{font-size:1.2em;font-weight:800;color:var(--primary-text-color);
                       font-variant-numeric:tabular-nums;line-height:1.1;}
           .stat-unit{font-size:.55em;font-weight:600;color:var(--secondary-text-color);}
+
+          /* ---- charge row embedded in a journey's timeline (Trips-list style) ---- */
+          .charge-row{display:flex;align-items:center;gap:12px;
+                      background:linear-gradient(90deg, rgba(3,155,229,.10), transparent);
+                      border:1px dashed var(--info-color, #039be5);border-radius:14px;
+                      padding:10px 12px;}
+          .cr-badge{flex:0 0 auto;width:34px;height:34px;border-radius:50%;
+                    background:rgba(3,155,229,.16);display:flex;align-items:center;justify-content:center;}
+          .cr-badge ha-icon{--mdc-icon-size:19px;color:var(--info-color, #039be5);}
+          .cr-body{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;gap:2px;}
+          .cr-head{font-size:.78em;font-weight:700;text-transform:uppercase;letter-spacing:.04em;
+                   color:var(--info-color, #039be5);display:flex;gap:8px;align-items:baseline;}
+          .cr-time{margin-left:auto;font-weight:400;text-transform:none;letter-spacing:0;
+                   color:var(--secondary-text-color);font-variant-numeric:tabular-nums;}
+          .cr-metrics{font-size:.88em;color:var(--primary-text-color);
+                      font-variant-numeric:tabular-nums;}
+          .cr-type{flex:0 0 auto;font-size:.7em;font-weight:800;border-radius:6px;padding:2px 7px;}
+          .cr-type--ac{background:rgba(67,160,71,.16);color:var(--success-color,#43a047);}
+          .cr-type--dc{background:rgba(245,158,11,.18);color:var(--warning-color,#fb8c00);}
+
+          /* ---- full-journey route map ---- */
+          .jd-map{height:170px;border-radius:10px;overflow:hidden;border:1px solid var(--divider-color);
+                   background:var(--secondary-background-color);}
+          .jd-map-ph{height:100%;display:flex;align-items:center;justify-content:center;gap:6px;
+                     color:var(--secondary-text-color);font-size:.85em;}
+          .cal-rt-svg{display:block;width:100%;height:170px;}
+          .cal-rt-bg{fill:var(--secondary-background-color,#e8eaed);}
+          .cal-rt-svg image{image-rendering:auto;}
+          .cal-rt-halo{fill:none;stroke:#fff;stroke-width:5;stroke-linejoin:round;stroke-linecap:round;opacity:.8;}
+          .cal-rt-line{fill:none;stroke:#1565c0;stroke-width:3;stroke-linejoin:round;stroke-linecap:round;}
+          .cal-rt-start{fill:var(--success-color,#43a047);stroke:#fff;stroke-width:1.5;}
+          .cal-rt-end{fill:var(--error-color,#e53935);stroke:#fff;stroke-width:1.5;}
+          .cal-rt-attr{fill:#000;opacity:.5;font-size:7px;text-anchor:end;paint-order:stroke;stroke:#fff;stroke-width:2;}
         </style>
         <div class="head"><span>${_esc(this._config.title || (kind === "journeys" ? "Journeys" : "Charges"))}</span>
           <span class="count">${kind === "journeys" ? `${rows.length} of ${total}` : `${rows.length} ${rows.length === 1 ? kind.replace(/s$/, "") : kind}`}</span></div>
@@ -2738,7 +2875,7 @@ class EvTripHistoryCard extends HTMLElement {
           const stages = allTrips
             .filter((t) => t.journey_id != null && String(t.journey_id) === String(j.journey_id))
             .sort((a, b) => new Date(a.started_at) - new Date(b.started_at));
-          detail = this._journeyDetailHtml(j, stages, sym, DASH, fmtNum);
+          detail = this._journeyDetailHtml(D, j, stages, sym, DASH, fmtNum);
         }
 
         return `
@@ -2760,19 +2897,26 @@ class EvTripHistoryCard extends HTMLElement {
       .join("");
   }
 
-  _journeyDetailHtml(j, stages, sym, DASH, fmtNum) {
-    // Stages list.
+  _journeyDetailHtml(D, j, stages, sym, DASH, fmtNum) {
+    this._fetchJourneyRoute(j.journey_id, stages);
+    const charges = this._journeyCharges(D, stages);
+    this._fetchJourneyChargeStreets(charges);
+
+    // Timeline: stages and any charge that happened during/between them
+    // (e.g. a highway fast-charge mid-journey), interleaved chronologically —
+    // charges rendered exactly like the Trips list's charge rows.
     let stagesHtml;
     if (!stages.length) {
       stagesHtml = `<div class="stage-empty">Stage details not in recent window.</div>`;
     } else {
-      stagesHtml = stages
-        .map((t) => {
-          const score = t.score != null ? Number(t.score).toFixed(1) : DASH;
-          // Prefer the reverse-geocoded street address over the home/not_home label.
-          const origin = `<span class="chip">${_endpoint(t.start_address, t.origin)}</span>`;
-          const dest = `<span class="chip">${_endpoint(t.end_address, t.destination)}</span>`;
-          return `
+      const stageEntries = stages.map((t) => {
+        const score = t.score != null ? Number(t.score).toFixed(1) : DASH;
+        // Prefer the reverse-geocoded street address over the home/not_home label.
+        const origin = `<span class="chip">${_endpoint(t.start_address, t.origin)}</span>`;
+        const dest = `<span class="chip">${_endpoint(t.end_address, t.destination)}</span>`;
+        return {
+          at: t.started_at,
+          html: `
             <div class="stage">
               <div class="sbody">
                 <div class="swhen">${_fmtDate(t.started_at)}${_estChip(t)}</div>
@@ -2780,8 +2924,14 @@ class EvTripHistoryCard extends HTMLElement {
                 <div class="smetrics"><b>${fmtNum(t.distance_km)}</b> km · <b>${_fmtEff(t.consumption_kwh_100km)}</b></div>
               </div>
               <div class="score-pill" style="background:${_scoreColor(t.score)}">${score}</div>
-            </div>`;
-        })
+            </div>`,
+        };
+      });
+      const chargeEntries = charges.map((c) => ({ at: c.started_at || c.ended_at, html: this._chargeRowHtml(c) }));
+      stagesHtml = stageEntries
+        .concat(chargeEntries)
+        .sort((a, b) => new Date(a.at) - new Date(b.at))
+        .map((e) => e.html)
         .join("");
     }
 
@@ -2809,9 +2959,18 @@ class EvTripHistoryCard extends HTMLElement {
         <div class="stat-value">${value}<span class="stat-unit">${unit ? " " + _esc(unit) : ""}</span></div>
       </div>`;
 
+    // Full-journey GPS route (fetched per stage window, concatenated).
+    const jr = this._jroutes[j.journey_id];
+    let mapHtml = "";
+    if (jr === "loading") {
+      mapHtml = `<div class="jd-map jd-map-ph"><ha-icon icon="mdi:map-marker-path"></ha-icon>${L("Loading route…", "Cargando ruta…")}</div>`;
+    } else if (Array.isArray(jr) && jr.length >= 2) {
+      const svg = _routeSvg(jr);
+      mapHtml = svg ? `<div class="jd-map">${svg}</div>` : "";
+    }
+
     return `
       <div class="detail">
-        <div class="stages">${stagesHtml}</div>
         <div class="stats">
           ${stat("Distance", fmtNum(j.distance_km), "km")}
           ${stat("Energy", fmtNum(j.energy_kwh), "kWh")}
@@ -2819,6 +2978,8 @@ class EvTripHistoryCard extends HTMLElement {
           ${stat("Avg consumption", avgConsE.value, avgConsE.unit)}
           ${stat("Avg speed", avgSpeed, "km/h")}
         </div>
+        ${mapHtml}
+        <div class="stages">${stagesHtml}</div>
       </div>`;
   }
 
@@ -7624,7 +7785,9 @@ function tripsView(D, hass, V, cfg) {
 // ==========================================================================
 function journeysView(D, hass, V, cfg) {
   const hasFilter = hass && has(hass, `input_text.${D}_journey_search`);
-  const historyCard = { type: "custom:ev-trip-history-card", device: D, kind: "journeys", title: "Journeys" };
+  // locationEntity drives the journey's GPS route map (device_tracker history).
+  const locationEntity = (cfg && cfg.location_entity) || (hass ? pickVehicleEntity(hass, V, "location", cfg) : null);
+  const historyCard = { type: "custom:ev-trip-history-card", device: D, kind: "journeys", title: "Journeys", locationEntity };
   const sections = [];
   if (hasFilter) {
     sections.push(grid([heading("Journeys", "mdi:road-variant"), historyCard]));
