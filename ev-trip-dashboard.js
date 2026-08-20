@@ -1145,7 +1145,7 @@ function cargasView(D, hass, V, cfg) {
   cfg = cfg || {};
   V = V || D;
   const cards = [];
-  const analytics = []; // charger-vs-battery section → LEFT column when present
+  const analytics = []; // charger-vs-battery section → RIGHT column when present
 
   cards.push(mushroomTitle("Charges", "Last 30 days", "mdi:battery-charging"));
 
@@ -1314,7 +1314,7 @@ function cargasView(D, hass, V, cfg) {
   // replaces the old "fix last charge" helper+script editor entirely.
   cards.push({ type: "custom:ev-trip-history-card", device: D, kind: "charges", title: "Charge history", locationEntity, scrollRows: 5 });
 
-  // ---- Charged vs driving summary (LEFT column) -------------------------
+  // ---- Charged vs driving summary (RIGHT column) ------------------------
   // Icon tiles of REAL charged kWh (from recent_charges, so today's charges show)
   // vs driving kWh, per Today/Week/Month/Year. Uses the logger (the optional
   // byd_charge package meters read 0 because their wallbox source isn't flowing).
@@ -1322,9 +1322,10 @@ function cargasView(D, hass, V, cfg) {
     analytics.push({ type: "custom:ev-charge-summary-card", device: D });
   }
 
-  // Two columns when the analytics package is present: LEFT = charger-vs-battery
-  // analytics, RIGHT = the charge list (everything else). They stack on mobile.
-  const sections = analytics.length ? [grid(analytics), grid(cards)] : [grid(cards)];
+  // Two columns when the analytics package is present: LEFT = the charge list
+  // (KPIs, insights, history), RIGHT = charger-vs-battery analytics. They
+  // stack on mobile.
+  const sections = analytics.length ? [grid(cards), grid(analytics)] : [grid(cards)];
   return {
     title: "Charges",
     path: "charges",
