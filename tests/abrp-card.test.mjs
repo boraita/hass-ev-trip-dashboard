@@ -91,6 +91,39 @@ test("silent push with the car parked is not a problem", () => {
   assert.doesNotMatch(bare, /ab-pill warn/);
 });
 
+test("a rejected sample is named, and outranks any silence heuristic", () => {
+  // logger v0.8.20+: ABRP answers a rejected sample with HTTP 200 and an
+  // error body, so a push can look alive while ABRP stores nothing.
+  const { html } = rendered({
+    [SW]: st("on", {
+      last_sent_at: epochAgo(20),
+      interval_s: 40,
+      car_model: CAR,
+      last_error: "error: Unknown car_model 'byd:sealion'",
+    }),
+  });
+  assert.match(html, /ab-pill warn/);
+  assert.match(html, /rechazado/);
+  assert.match(html, /rechazó la última muestra/);
+  // The reason is shown, with the redundant "error:" prefix trimmed.
+  assert.match(html, /Unknown car_model &#39;byd:sealion&#39;/);
+  assert.doesNotMatch(html, />error: /);
+});
+
+test("no last_error attribute (older logger) changes nothing", () => {
+  const { html } = rendered({
+    [SW]: st("on", { last_sent_at: epochAgo(20), interval_s: 40, car_model: CAR }),
+  });
+  assert.match(html, /ab-pill ok/);
+  assert.doesNotMatch(html, /rechaz/);
+  // An explicit null must read the same as an absent attribute.
+  const { html: nulled } = rendered({
+    [SW]: st("on", { last_sent_at: epochAgo(20), interval_s: 40, last_error: null }),
+  });
+  assert.match(nulled, /ab-pill ok/);
+  assert.doesNotMatch(nulled, /rechaz/);
+});
+
 test("never sent yet says so instead of showing a bogus time", () => {
   const { html } = rendered({ [SW]: st("on", { interval_s: 40 }) });
   assert.match(html, /nunca ha enviado/);

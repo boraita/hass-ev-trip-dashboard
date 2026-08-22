@@ -7622,9 +7622,19 @@ class EvAbrpCard extends HTMLElement {
     const tripSt = tripEnt ? this._hass.states[tripEnt] : null;
     const driving = !!tripSt && parseFloat(tripSt.state) > 0;
     const silent = !!(lastSent && interval && Date.now() / 1000 - lastSent > interval * 4);
+    // logger v0.8.20+ — ABRP answers a REJECTED sample with HTTP 200 and
+    // {"status":"error"} in the body (usually an unrecognised car_model,
+    // which is a free-text field). The logger now reads that body and
+    // publishes the reason here, so a push that's "working" but being
+    // thrown away is nameable instead of just a frozen timestamp. Absent on
+    // older loggers, hence the plain truthiness check and no dependency on it.
+    const lastError = swAttr.last_error ? String(swAttr.last_error).replace(/^\s*error:\s*/i, "").trim() : null;
     let pillTxt, pillCls;
     if (!swEnt) { pillTxt = L("read-only", "solo lectura"); pillCls = "idle"; }
     else if (!on) { pillTxt = L("paused", "en pausa"); pillCls = "idle"; }
+    // A rejection outranks silence: it's a real fault whatever the car is
+    // doing, and unlike silence it doesn't need a trip open to be meaningful.
+    else if (lastError) { pillTxt = L("rejected", "rechazado"); pillCls = "warn"; }
     else if (silent && driving) { pillTxt = L("no data", "sin enviar"); pillCls = "warn"; }
     else if (silent) { pillTxt = L("car asleep", "coche en reposo"); pillCls = "idle"; }
     else { pillTxt = L("sending", "enviando"); pillCls = "ok"; }
@@ -7638,12 +7648,23 @@ class EvAbrpCard extends HTMLElement {
           : L(`last push at ${this._clock(lastSent)}`, `último envío a las ${this._clock(lastSent)}`);
       rows.push(
         `<button class="ab-row ab-tap" data-toggle="1" type="button">` +
-        `<ha-icon class="ab-i" icon="${on ? "mdi:cloud-upload" : "mdi:cloud-off-outline"}"></ha-icon>` +
+        `<ha-icon class="ab-i" icon="${on && !lastError ? "mdi:cloud-upload" : on ? "mdi:cloud-alert" : "mdi:cloud-off-outline"}"></ha-icon>` +
         `<span class="ab-l">${_esc(L("Telemetry push", "Envío de telemetría"))}` +
         `<span class="ab-s">${_esc(detail)}${interval && on ? _esc(L(` · every ${interval}s`, ` · cada ${interval} s`)) : ""}</span></span>` +
         `<ha-icon class="ab-c" icon="${on ? "mdi:toggle-switch" : "mdi:toggle-switch-off-outline"}"></ha-icon>` +
         `</button>`
       );
+      // The reason ABRP gave, verbatim, on its own line — it names the field
+      // to fix (almost always car_model) and there's nowhere else to see it.
+      if (lastError) {
+        rows.push(
+          `<div class="ab-row ab-err">` +
+          `<ha-icon class="ab-i ab-ierr" icon="mdi:alert-circle-outline"></ha-icon>` +
+          `<span class="ab-l">${_esc(L("ABRP rejected the last sample", "ABRP rechazó la última muestra"))}` +
+          `<span class="ab-s">${_esc(lastError)}</span></span>` +
+          `</div>`
+        );
+      }
     }
 
     // --- next charge stop -------------------------------------------------
@@ -7702,6 +7723,8 @@ class EvAbrpCard extends HTMLElement {
       `.ab-tap:hover{border-color:var(--primary-color);}` +
       `.ab-tap:focus-visible{outline:2px solid var(--primary-color);outline-offset:2px;}` +
       `.ab-i{--mdc-icon-size:22px;color:var(--primary-color);flex:0 0 auto;}` +
+      `.ab-err{border-color:var(--warning-color,#fb8c00);}` +
+      `.ab-ierr{color:var(--warning-color,#fb8c00);}` +
       `.ab-l{display:flex;flex-direction:column;gap:2px;font-size:.9em;font-weight:600;min-width:0;}` +
       `.ab-s{font-size:.78em;font-weight:500;color:var(--secondary-text-color);overflow-wrap:anywhere;}` +
       `.ab-v{margin-left:auto;font-size:1.35em;font-weight:800;font-variant-numeric:tabular-nums;}` +

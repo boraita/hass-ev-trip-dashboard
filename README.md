@@ -345,8 +345,11 @@ The status pill has three readings:
 | **paused** | push off — the last send is shown as a clock time |
 | **car asleep** | push on and silent, but no trip is open. Expected: the logger pushes off the car integration's own polls instead of its own timer, so a parked car stops producing them |
 | **no data** | push on and silent for more than 4 intervals **while a trip is open** — that's the real fault, usually a rejected token (the logger then backs off for 10 minutes) |
+| **rejected** | ABRP is answering, and refusing the data. The reason it gave is shown on its own line — almost always an unrecognised `car_model` |
 
 "While a trip is open" is what keeps the warning honest: it's read from `sensor.<device>_current_trip_distance`, or from a `trip_entity:` you set on the card.
+
+**rejected** needs logger v0.8.20+, which reads ABRP's response body: the Iternio API answers a *rejected sample* with HTTP 200 and `{"status": "error"}`, so before that fix a push could look perfectly healthy while ABRP stored nothing. The card reads the switch's `last_error` attribute when it exists and behaves exactly as before when it doesn't, so it works on either version.
 
 `abrp_next_charge_soc` sitting at `unknown` is normal, not a fault: ABRP only answers while a route is active in the app. The card says so instead of leaving a blank tile.
 
