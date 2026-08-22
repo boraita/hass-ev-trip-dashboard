@@ -335,7 +335,45 @@ When the logger is configured with ABRP credentials, the dashboard automatically
 - `switch.abrp_push` — toggle push on/off (default ON; survives restarts).
 - `sensor.<device>_abrp_next_charge_soc` — target SoC of the next stop while a route is active.
 
+Both are surfaced by **`ev-abrp-card`**, added to the Driving view. It shows whether telemetry is flowing, when the last push actually succeeded, the push interval, and the next stop's target SoC — plus a link that opens ABRP with your configured car model. Tapping the top row toggles the push.
+
+The status pill has three readings:
+
+| Pill | Meaning |
+|---|---|
+| **sending** | push on, last successful send within the last few intervals |
+| **paused** | push off — the last send is shown as a clock time |
+| **car asleep** | push on and silent, but no trip is open. Expected: the logger pushes off the car integration's own polls instead of its own timer, so a parked car stops producing them |
+| **no data** | push on and silent for more than 4 intervals **while a trip is open** — that's the real fault, usually a rejected token (the logger then backs off for 10 minutes) |
+
+"While a trip is open" is what keeps the warning honest: it's read from `sensor.<device>_current_trip_distance`, or from a `trip_entity:` you set on the card.
+
+`abrp_next_charge_soc` sitting at `unknown` is normal, not a fault: ABRP only answers while a route is active in the app. The card says so instead of leaving a blank tile.
+
+The card self-hides when neither entity exists, so it costs nothing if you don't use ABRP. With two logged cars it resolves the switch by matching its friendly name to the device slug — the logger names the switch after the config entry, not the device.
+
 Replicate the legacy "ABRP only while driving" pattern with the snippet in the [logger README](https://github.com/boraita/hass-ev-trip-logger#abrp-setup-optional).
+
+---
+
+## Development
+
+No build step: `ev-trip-dashboard.js` is what ships. Tests run on plain node (≥20), with no dependencies to install:
+
+```bash
+npm test          # or: node --test "tests/**/*.test.mjs"
+```
+
+`tests/harness.mjs` gives the script just enough DOM to run outside a browser and hands back the card registry, so a test can drive a card directly and assert on the HTML it builds:
+
+```js
+const { cards } = loadDashboard();
+const card = makeCard(cards, "ev-abrp-card", { device: "sealion_7" });
+card.hass = fakeHass({ "switch.abrp_push": st("on", { last_sent_at: Date.now() / 1000 }) });
+assert.match(card.innerHTML, /enviando/);
+```
+
+`tests/strategy.test.mjs` generates every view twice — once against a **fresh install** (all sensors `unknown`, empty list attributes) and once against populated data — and fails on a throw, a duplicate view path, a malformed card type, or `undefined`/`NaN` reaching the output. That first case is the one worth keeping green: most render bugs in this project's history were a view meeting a logger that hadn't recorded anything yet.
 
 ---
 

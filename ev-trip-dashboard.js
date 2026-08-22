@@ -7497,6 +7497,230 @@ customElements.define("ev-trip-glance-card", EvTripGlanceCard);
 window.customCards.push({ type: "ev-trip-glance-card", name: "EV Trip — glance", description: "Outside/cabin temperature + odometer with colored icon chips." });
 
 // ==========================================================================
+// Custom card: ABRP (A Better Route Planner) link status.
+//
+// The logger has pushed telemetry to ABRP and read back the next stop's
+// target SoC for a long time, but none of it was visible anywhere: you
+// couldn't tell whether the push was on, when it last succeeded, or why the
+// next-charge sensor reads "unknown" (by design — ABRP only answers while a
+// route is active). This card makes the whole link observable and lets you
+// flip the push from the dashboard.
+//
+// Entity resolution is defensive on purpose: the logger registers the switch
+// as `switch.abrp_push` — NOT device-prefixed, unlike its sensors — so we try
+// the prefixed id first, then the bare one, then scan. The card renders
+// nothing when the logger has no ABRP credentials configured, so it's safe to
+// place unconditionally in the Driving view.
+// ==========================================================================
+class EvAbrpCard extends HTMLElement {
+  setConfig(config) { this._config = config || {}; }
+  set hass(hass) {
+    this._hass = hass;
+    // Same dirty-check every other card here uses: set hass fires on EVERY
+    // state change in the house. _sig keys off last_updated, which HA bumps
+    // on attribute-only writes too — and last_sent_at, the value that moves
+    // most often on this card, IS an attribute.
+    const { swEnt, socEnt, tripEnt } = this._entities(hass);
+    const sig = _sig(hass, [swEnt, socEnt, tripEnt].filter(Boolean));
+    if (sig === this._abrpSig) return;
+    this._abrpSig = sig;
+    this._render();
+  }
+  getCardSize() { return 2; }
+  // Sections view: a compact status strip. 12 columns = the full width of
+  // whichever column it lands in (each section is its own 12-col grid), but
+  // it stays legible down to half that.
+  getGridOptions() { return { columns: 12, min_columns: 6, rows: 2, min_rows: 2 }; }
+  connectedCallback() {
+    // Lovelace detaches and re-attaches cards when a view re-renders, which
+    // drops our innerHTML while the signature still says "nothing changed".
+    // Force one render on re-attach so the card can't come back blank.
+    if (this._hass) { this._abrpSig = null; this._render(); }
+  }
+
+  // First existing entity among the candidates, else scan the domain for one
+  // matching `re`. On a scan, prefer the entity whose friendly_name matches
+  // this card's device — the logger names its ABRP switch after the entry
+  // ("Sealion 7"), so with two logged cars the naive first match is a coin
+  // flip between them.
+  _resolve(hass, candidates, domain, re, device) {
+    for (const c of candidates) if (c && has(hass, c)) return c;
+    const found = [];
+    for (const id in hass.states) if (id.startsWith(domain + ".") && re.test(id)) found.push(id);
+    if (found.length < 2 || !device) return found[0] || null;
+    const slug = (s) => String(s || "").toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "");
+    return found.find((id) => slug((hass.states[id].attributes || {}).friendly_name) === slug(device)) || found[0];
+  }
+
+  // Resolve both entities from a hass object — used by the dirty-check and
+  // the render, so they can never disagree about what the card is reading.
+  _entities(hass) {
+    const cfg = this._config || {};
+    const D = cfg.device;
+    return {
+      D,
+      swEnt: this._resolve(
+        hass,
+        [cfg.switchEntity, D && `switch.${D}_abrp_push`, "switch.abrp_push"],
+        "switch",
+        /^switch\..*abrp/,
+        D
+      ),
+      socEnt: this._resolve(
+        hass,
+        [cfg.socEntity, D && `sensor.${D}_abrp_next_charge_soc`],
+        "sensor",
+        /^sensor\..*abrp.*next.*charge/,
+        D
+      ),
+      // Used only to decide whether a silent push is a problem: the logger
+      // pushes off the car integration's own updates, so a parked car simply
+      // stops producing them. Silence while parked is expected.
+      tripEnt: (cfg.tripEntity && has(hass, cfg.tripEntity) && cfg.tripEntity)
+        || (D && has(hass, `sensor.${D}_current_trip_distance`) ? `sensor.${D}_current_trip_distance` : null),
+    };
+  }
+
+  // "hace 40 s" / "hace 3 min" / "hace 2 h" — the push interval is 40 s by
+  // default, so seconds matter here.
+  _ago(epochS) {
+    const d = Math.max(0, Math.round(Date.now() / 1000 - epochS));
+    if (d < 90) return L(`${d}s ago`, `hace ${d} s`);
+    if (d < 5400) return L(`${Math.round(d / 60)} min ago`, `hace ${Math.round(d / 60)} min`);
+    if (d < 172800) return L(`${Math.round(d / 3600)} h ago`, `hace ${Math.round(d / 3600)} h`);
+    return L(`${Math.round(d / 86400)} d ago`, `hace ${Math.round(d / 86400)} d`);
+  }
+
+  _clock(epochS) {
+    const dt = new Date(epochS * 1000);
+    return dt.toLocaleTimeString(_uiLang === "es" ? "es-ES" : undefined, { hour: "2-digit", minute: "2-digit" });
+  }
+
+  _render() {
+    if (!this._hass) return;
+    _setUiLang(this._hass);
+    const cfg = this._config || {};
+    const { swEnt, socEnt, tripEnt } = this._entities(this._hass);
+    // No ABRP credentials in the logger → neither entity exists → stay silent.
+    if (!swEnt && !socEnt) { this.innerHTML = ""; return; }
+
+    const sw = swEnt ? this._hass.states[swEnt] : null;
+    const swAttr = (sw && sw.attributes) || {};
+    const on = sw && String(sw.state).toLowerCase() === "on";
+    const lastSent = Number(swAttr.last_sent_at) || null;
+    const interval = Number(swAttr.interval_s) || null;
+    const carModel = swAttr.car_model || cfg.carModel || null;
+
+    // --- state line -------------------------------------------------------
+    // A push that's on but silent for several intervals is worth surfacing
+    // (a rejected token makes the logger back off for 10 min) — but ONLY
+    // while the car is actually moving. The logger piggybacks on the car
+    // integration's polls instead of running its own timer, so a parked car
+    // legitimately stops producing pushes; flagging that would cry wolf
+    // every night. A trip open with distance > 0 is the "car is awake and
+    // telemetry should be flowing" signal.
+    const tripSt = tripEnt ? this._hass.states[tripEnt] : null;
+    const driving = !!tripSt && parseFloat(tripSt.state) > 0;
+    const silent = !!(lastSent && interval && Date.now() / 1000 - lastSent > interval * 4);
+    let pillTxt, pillCls;
+    if (!swEnt) { pillTxt = L("read-only", "solo lectura"); pillCls = "idle"; }
+    else if (!on) { pillTxt = L("paused", "en pausa"); pillCls = "idle"; }
+    else if (silent && driving) { pillTxt = L("no data", "sin enviar"); pillCls = "warn"; }
+    else if (silent) { pillTxt = L("car asleep", "coche en reposo"); pillCls = "idle"; }
+    else { pillTxt = L("sending", "enviando"); pillCls = "ok"; }
+
+    const rows = [];
+    if (swEnt) {
+      const detail = !lastSent
+        ? L("never sent", "nunca ha enviado")
+        : on
+          ? L(`last push ${this._ago(lastSent)}`, `último envío ${this._ago(lastSent)}`)
+          : L(`last push at ${this._clock(lastSent)}`, `último envío a las ${this._clock(lastSent)}`);
+      rows.push(
+        `<button class="ab-row ab-tap" data-toggle="1" type="button">` +
+        `<ha-icon class="ab-i" icon="${on ? "mdi:cloud-upload" : "mdi:cloud-off-outline"}"></ha-icon>` +
+        `<span class="ab-l">${_esc(L("Telemetry push", "Envío de telemetría"))}` +
+        `<span class="ab-s">${_esc(detail)}${interval && on ? _esc(L(` · every ${interval}s`, ` · cada ${interval} s`)) : ""}</span></span>` +
+        `<ha-icon class="ab-c" icon="${on ? "mdi:toggle-switch" : "mdi:toggle-switch-off-outline"}"></ha-icon>` +
+        `</button>`
+      );
+    }
+
+    // --- next charge stop -------------------------------------------------
+    // The whole point of the explanatory subtitle: "unknown" here is the
+    // normal resting state, not a broken sensor.
+    if (socEnt) {
+      const s = this._hass.states[socEnt];
+      const v = parseFloat((s || {}).state);
+      const active = !isNaN(v);
+      rows.push(
+        `<div class="ab-row">` +
+        `<ha-icon class="ab-i" icon="mdi:map-marker-radius"></ha-icon>` +
+        `<span class="ab-l">${_esc(L("Next stop target", "SoC objetivo siguiente parada"))}` +
+        `<span class="ab-s">${_esc(active ? L("from the active ABRP route", "de la ruta activa en ABRP") : L("no active route in ABRP", "sin ruta activa en ABRP"))}</span></span>` +
+        `<span class="ab-v">${active ? Math.round(v) + "<span class=\"ab-u\">%</span>" : "—"}</span>` +
+        `</div>`
+      );
+    }
+
+    // --- open ABRP --------------------------------------------------------
+    // Deep link with the ONE parameter Iternio documents publicly for the web
+    // app: car_model (the ABRP typecode the logger already sends). Origin/SoC
+    // prefill exists in ABRP's deep-link collection but isn't verified against
+    // the current app — don't guess params here, they fail silently.
+    const url = "https://abetterrouteplanner.com/" + (carModel ? `?car_model=${encodeURIComponent(carModel)}` : "");
+    rows.push(
+      `<a class="ab-row ab-tap" href="${_esc(url)}" target="_blank" rel="noopener noreferrer">` +
+      `<ha-icon class="ab-i" icon="mdi:map-marker-path"></ha-icon>` +
+      `<span class="ab-l">${_esc(L("Plan a route in ABRP", "Planificar ruta en ABRP"))}` +
+      `<span class="ab-s">${_esc(carModel || L("car model not configured", "modelo de coche sin configurar"))}</span></span>` +
+      `<ha-icon class="ab-c" icon="mdi:open-in-new"></ha-icon>` +
+      `</a>`
+    );
+
+    this.innerHTML =
+      `<ha-card><div class="ab-wrap">` +
+      `<div class="ab-head"><ha-icon icon="mdi:map-marker-path"></ha-icon>` +
+      `<span class="ab-t">ABRP</span><span class="ab-pill ${pillCls}">${_esc(pillTxt)}</span></div>` +
+      rows.join("") +
+      `</div>` +
+      `<style>` +
+      `.ab-wrap{display:flex;flex-direction:column;gap:8px;padding:12px;}` +
+      `.ab-head{display:flex;align-items:center;gap:8px;}` +
+      `.ab-head ha-icon{--mdc-icon-size:20px;color:var(--secondary-text-color);}` +
+      `.ab-t{font-weight:800;letter-spacing:.04em;}` +
+      `.ab-pill{margin-left:auto;font-size:.66em;font-weight:700;letter-spacing:.06em;text-transform:uppercase;` +
+      `padding:3px 8px;border-radius:999px;border:1px solid currentColor;}` +
+      `.ab-pill.ok{color:var(--success-color,#43a047);}` +
+      `.ab-pill.warn{color:var(--warning-color,#fb8c00);}` +
+      `.ab-pill.idle{color:var(--secondary-text-color);}` +
+      `.ab-row{display:flex;align-items:center;gap:11px;width:100%;box-sizing:border-box;` +
+      `background:var(--secondary-background-color,var(--card-background-color));` +
+      `border:1px solid var(--divider-color);border-radius:12px;padding:10px 12px;` +
+      `color:var(--primary-text-color);text-align:left;text-decoration:none;font:inherit;}` +
+      `.ab-tap{cursor:pointer;}` +
+      `.ab-tap:hover{border-color:var(--primary-color);}` +
+      `.ab-tap:focus-visible{outline:2px solid var(--primary-color);outline-offset:2px;}` +
+      `.ab-i{--mdc-icon-size:22px;color:var(--primary-color);flex:0 0 auto;}` +
+      `.ab-l{display:flex;flex-direction:column;gap:2px;font-size:.9em;font-weight:600;min-width:0;}` +
+      `.ab-s{font-size:.78em;font-weight:500;color:var(--secondary-text-color);overflow-wrap:anywhere;}` +
+      `.ab-v{margin-left:auto;font-size:1.35em;font-weight:800;font-variant-numeric:tabular-nums;}` +
+      `.ab-u{font-size:.55em;font-weight:600;color:var(--secondary-text-color);margin-left:1px;}` +
+      `.ab-c{margin-left:auto;--mdc-icon-size:22px;color:var(--secondary-text-color);flex:0 0 auto;}` +
+      `</style></ha-card>`;
+
+    const btn = this.querySelector("[data-toggle]");
+    if (btn && swEnt) {
+      btn.addEventListener("click", () => {
+        this._hass.callService("switch", "toggle", { entity_id: swEnt });
+      });
+    }
+  }
+}
+customElements.define("ev-abrp-card", EvAbrpCard);
+window.customCards.push({ type: "ev-abrp-card", name: "EV Trip — ABRP link", description: "ABRP telemetry push state, last successful send, and the active route's next-stop target SoC." });
+
+// ==========================================================================
 // RESTORED from v1.5.0 (user favourites, pre-2.0): Driving + Trips views.
 // Additive — the 9-view equivalents stay until these are validated.
 // ==========================================================================
@@ -7545,6 +7769,11 @@ function drivingView(D, V, hass, cfg) {
       },
     });
   }
+
+  // ABRP link status — push on/off with the last successful send, plus the
+  // active route's next-stop target SoC. Self-hides when the logger has no
+  // ABRP credentials, so it costs nothing on installs that don't use it.
+  status.push({ type: "custom:ev-abrp-card", device: D });
 
   // The live charge card (tiles: SoC/Added/Power/Time) is placed ABOVE the
   // Charging(6h) chart in the RIGHT column (see rightCards). It self-hides when
