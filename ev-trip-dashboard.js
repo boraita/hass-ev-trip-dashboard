@@ -7176,6 +7176,7 @@ class EvChargeStatusCard extends HTMLElement {
                 font-size:.9em;font-variant-numeric:tabular-nums;}
         .cs-eta ha-icon{--mdc-icon-size:18px;flex:0 0 auto;}
         .cs-eta b{font-weight:800;}
+        .cs-eta-alt{opacity:.72;font-size:.88em;}
         .cs-svg{display:block;width:100%;height:120px;padding:0 10px;box-sizing:border-box;}
         .cs-axis{stroke:var(--divider-color);stroke-width:1;}
         .cs-area{fill:var(--info-color,#039be5);opacity:.13;}
@@ -7266,6 +7267,23 @@ class EvChargeStatusCard extends HTMLElement {
       const fullToggle = hasFullToggle
         ? `<button class="cs-full${fullOn ? " on" : ""}" data-full="${_esc(fullEnt)}"><ha-icon icon="${fullOn ? "mdi:battery-high" : "mdi:battery-80"}"></ha-icon>${fullOn ? "100%" : baseTarget + "%"}</button>`
         : "";
+      // The car's OWN remaining-time estimate, when the vehicle integration
+      // exposes one. Preferred over our need÷power arithmetic because the car
+      // knows its charge taper — ours assumes the current power holds to the
+      // end, which overshoots badly above ~80 % SoC on DC. Accepts either an
+      // "HH:MM" string (BYD `charge_remaining_time`) or a number of minutes
+      // (`time_until_full`); a zeroed or unknown value means "no estimate".
+      const carRemaining = (() => {
+        const ent = this._config.remainingEntity;
+        if (!ent || !has(this._hass, ent)) return null;
+        const raw = String((this._hass.states[ent] || {}).state || "").trim();
+        if (!raw || ["unknown", "unavailable", "none", "0", "00:00", "0:00"].includes(raw.toLowerCase())) return null;
+        const hm = raw.match(/^(\d{1,2}):(\d{2})$/);
+        const mins = hm ? Number(hm[1]) * 60 + Number(hm[2]) : Number(raw);
+        if (!isFinite(mins) || mins <= 0) return null;
+        return mins >= 60 ? `${Math.floor(mins / 60)}h ${Math.round(mins % 60)}m` : `${Math.round(mins)} min`;
+      })();
+
       let etaHtml = "";
       if (charging && st.power != null && st.power > 0.1) {
         let need = etf, label = "Full";
@@ -7279,12 +7297,25 @@ class EvChargeStatusCard extends HTMLElement {
           const etaStr = etaMin >= 60 ? `${Math.floor(etaMin / 60)}h ${Math.round(etaMin % 60)}m` : `${Math.round(etaMin)} min`;
           const ready = new Date(Date.now() + etaMin * 60000);
           const p2 = (n) => String(n).padStart(2, "0");
+          // Car's estimate leads when it has one, ours follows as "at this
+          // rate" — the two disagreeing is information, not noise: a big gap
+          // is the taper, and seeing both beats trusting the optimistic one.
           etaHtml =
             `<div class="cs-eta"><ha-icon icon="mdi:timer-sand"></ha-icon>` +
-            `<span>${label} in <b>~${etaStr}</b> · ${num(need, 1)} kWh left · ready ≈ <b>${p2(ready.getHours())}:${p2(ready.getMinutes())}</b></span></div>`;
+            (carRemaining
+              ? `<span>${label} in <b>${carRemaining}</b> <span class="cs-eta-alt">(${L("at this rate", "a este ritmo")} ~${etaStr})</span> · ${num(need, 1)} kWh left</span>`
+              : `<span>${label} in <b>~${etaStr}</b> · ${num(need, 1)} kWh left · ready ≈ <b>${p2(ready.getHours())}:${p2(ready.getMinutes())}</b></span>`) +
+            `</div>`;
         } else if (target < 100 && st.soc != null && st.soc >= target) {
           etaHtml = `<div class="cs-eta"><ha-icon icon="mdi:check-circle-outline"></ha-icon><span><b>${target}%</b> target reached</span></div>`;
         }
+      }
+      // Power too low to extrapolate (or SoC/pack figures missing) but the car
+      // still says how long it needs — show that rather than nothing.
+      if (!etaHtml && charging && carRemaining) {
+        etaHtml =
+          `<div class="cs-eta"><ha-icon icon="mdi:timer-sand"></ha-icon>` +
+          `<span>${L("Full in", "Completa en")} <b>${carRemaining}</b> <span class="cs-eta-alt">(${L("car's estimate", "estimación del coche")})</span></span></div>`;
       }
       this.innerHTML = `
         <ha-card>
@@ -7527,10 +7558,15 @@ class EvAbrpCard extends HTMLElement {
     this._render();
   }
   getCardSize() { return 2; }
-  // Sections view: a compact status strip. 12 columns = the full width of
-  // whichever column it lands in (each section is its own 12-col grid), but
-  // it stays legible down to half that.
-  getGridOptions() { return { columns: 12, min_columns: 6, rows: 2, min_rows: 2 }; }
+  // NO getGridOptions on purpose. It looked like the right thing — declare a
+  // compact size for the sections view — but `rows` is a hard height in that
+  // grid and the only accepted special value is `columns: "full"`; there is no
+  // `rows: "auto"`. This card is 3 rows tall normally and 4 with a reject
+  // reason, so any fixed number either clips the content (reported live: the
+  // ABRP block cut off on the first screen) or leaves a gap. Every other card
+  // here omits the method, which is what makes the grid ignore rows and use
+  // the natural height. Declaring grid options per card is worth doing, but it
+  // needs each card's real height measured in a browser, not guessed.
   connectedCallback() {
     // Lovelace detaches and re-attaches cards when a view re-renders, which
     // drops our innerHTML while the signature still says "nothing changed".
@@ -7774,7 +7810,26 @@ function drivingView(D, V, hass, cfg) {
     odoEntity: hasVal(hass, vOdo) ? vOdo : null,
   });
 
-  // Live trip in progress — right after the battery; self-hides when not driving.
+  // Charging now — second, right under the battery. Charging and driving are
+  // mutually exclusive, so this and the live-trip card below never compete for
+  // the spot; whichever applies is the first thing on the screen.
+  const chargeStatusCard = {
+    type: "custom:ev-charge-status-card",
+    device: D,
+    plugEntity: (cfg && cfg.plug_entity) || pickVehicleEntity(hass, V, "plug", cfg),
+    chargingEntity: pickVehicleEntity(hass, V, "charging", cfg),
+    powerEntity: resolveChargePower(hass, D, cfg),
+    chargeTarget: cfg && cfg.charge_target, // % to charge to (default 100)
+    // The car's own "time to full", when its integration publishes one. Beats
+    // extrapolating the current power, which ignores the charge taper.
+    remainingEntity:
+      (cfg && cfg.charge_remaining_entity) ||
+      [`sensor.${V}_charge_remaining_time`, `sensor.${V}_time_until_full`].find((e) => has(hass, e)) ||
+      null,
+  };
+  status.push(chargeStatusCard);
+
+  // Live trip in progress — self-hides when not driving.
   status.push({ type: "custom:ev-trip-active-card", device: D });
 
   // Live location map — shown ONLY while a trip is in progress, so you can see
@@ -7802,17 +7857,9 @@ function drivingView(D, V, hass, cfg) {
   // ABRP credentials, so it costs nothing on installs that don't use it.
   status.push({ type: "custom:ev-abrp-card", device: D });
 
-  // The live charge card (tiles: SoC/Added/Power/Time) is placed ABOVE the
-  // Charging(6h) chart in the RIGHT column (see rightCards). It self-hides when
-  // not charging.
-  const chargeStatusCard = {
-    type: "custom:ev-charge-status-card",
-    device: D,
-    plugEntity: (cfg && cfg.plug_entity) || pickVehicleEntity(hass, V, "plug", cfg),
-    chargingEntity: pickVehicleEntity(hass, V, "charging", cfg),
-    powerEntity: resolveChargePower(hass, D, cfg),
-    chargeTarget: cfg && cfg.charge_target, // % to charge to (default 100)
-  };
+  // (The live charge card was moved to the TOP of this column — it used to
+  // open the right column, which on a phone means after everything on the
+  // left, so you scrolled past the whole screen to see the car charging.)
 
   // (Battery · Range · Outside · Cabin · Odometer are all rendered by the
   // single ev-trip-glance-card placed near the top of the status column.)
@@ -7903,7 +7950,8 @@ function drivingView(D, V, hass, cfg) {
   //  • LEFT  = the sensor/status list, with Last trip below it.
   //  • RIGHT = the live charts (Charging, Driving).
   const leftCards = status.concat(now);
-  const rightCards = [chargeStatusCard].concat(chartCards);
+  // Charts only — the live charge card now opens the left column instead.
+  const rightCards = chartCards;
 
   const sections = [grid(leftCards), grid(rightCards)];
 

@@ -132,3 +132,40 @@ test("the ABRP card is wired into the Driving view", async () => {
   assert.equal(abrp.length, 1, "exactly one ABRP card, in Driving");
   assert.equal(abrp[0].device, D);
 });
+
+test("the live charge card opens the first column of the first view", async () => {
+  // It used to open the RIGHT column, which on a phone lands after the whole
+  // left column — you scrolled past everything to see the car charging.
+  const dash = await generate(populated());
+  const first = dash.views[0];
+  assert.equal(first.path, "driving", "Driving must stay the landing view");
+  const left = first.sections[0].cards.map((c) => c.type);
+  const idx = left.indexOf("custom:ev-charge-status-card");
+  assert.ok(idx >= 0, `charge card not in the left column: ${left.join(", ")}`);
+  // Positional numbers are brittle (a heading counts as a card), so assert the
+  // ordering that actually matters: right under the battery glance, and above
+  // everything else in the column.
+  assert.equal(left[idx - 1], "custom:ev-trip-glance-card", "must sit right under the glance");
+  for (const later of ["custom:ev-trip-active-card", "custom:ev-abrp-card", "custom:ev-trip-list-card"]) {
+    const li = left.indexOf(later);
+    if (li >= 0) assert.ok(idx < li, `charge card must come before ${later}`);
+  }
+  // And exactly once across the whole dashboard — it was duplicated while
+  // being moved, which renders two live cards side by side.
+  assert.equal(
+    allCards(dash).filter((c) => c.type === "custom:ev-charge-status-card").length,
+    1
+  );
+});
+
+test("the charge card gets the car's own time-to-full when it exists", async () => {
+  const withRemaining = { ...populated(), [`sensor.${D}_charge_remaining_time`]: st("01:24") };
+  const dash = await generate(withRemaining, { vehicle: D });
+  const card = allCards(dash).find((c) => c.type === "custom:ev-charge-status-card");
+  assert.equal(card.remainingEntity, `sensor.${D}_charge_remaining_time`);
+
+  // Absent → null, never a made-up entity id that would silently never resolve.
+  const without = await generate(populated(), { vehicle: D });
+  const card2 = allCards(without).find((c) => c.type === "custom:ev-charge-status-card");
+  assert.equal(card2.remainingEntity, null);
+});

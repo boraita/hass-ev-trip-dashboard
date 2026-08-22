@@ -24,12 +24,17 @@ function rendered(states, config = { device: "sealion_7" }) {
   return { card, hass, html: card.innerHTML };
 }
 
-test("is registered and advertises grid options", () => {
+test("does not pin its height in the sections grid", () => {
+  // Regression: it declared rows:2 and the content (3 rows, 4 with a reject
+  // reason) got clipped on the real dashboard. `rows` is a hard height there
+  // and there is no "auto", so the card must not declare one at all — that's
+  // what makes the grid fall back to the natural height.
   const card = makeCard(cards, TYPE, { device: "sealion_7" });
-  const grid = card.getGridOptions();
-  assert.ok(grid.columns, "must declare columns for the sections view");
-  assert.ok(grid.min_columns <= grid.columns);
-  assert.ok(grid.rows >= grid.min_rows);
+  const grid = card.getGridOptions ? card.getGridOptions() : null;
+  if (grid) {
+    assert.equal(grid.rows, undefined, "must not fix a row count");
+    assert.equal(grid.min_rows, undefined, "must not fix a minimum row count");
+  }
 });
 
 test("renders nothing when ABRP is not configured", () => {
