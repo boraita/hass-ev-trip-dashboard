@@ -99,15 +99,22 @@ test("a rejected sample is named, and outranks any silence heuristic", () => {
       last_sent_at: epochAgo(20),
       interval_s: 40,
       car_model: CAR,
-      last_error: "error: Unknown car_model 'byd:sealion'",
+      last_error: "Unknown car_model 'byd:sealion'",
     }),
   });
   assert.match(html, /ab-pill warn/);
   assert.match(html, /rechazado/);
   assert.match(html, /rechazó la última muestra/);
-  // The reason is shown, with the redundant "error:" prefix trimmed.
+  // Shown verbatim and escaped — the logger already normalises the prefix.
   assert.match(html, /Unknown car_model &#39;byd:sealion&#39;/);
-  assert.doesNotMatch(html, />error: /);
+});
+
+test("a reason whose prefix carries information keeps it", () => {
+  // The logger strips a bare "error:" but keeps prefixes like this one.
+  const { html } = rendered({
+    [SW]: st("on", { interval_s: 40, last_error: "rate_limited: slow down" }),
+  });
+  assert.match(html, /rate_limited: slow down/);
 });
 
 test("no last_error attribute (older logger) changes nothing", () => {

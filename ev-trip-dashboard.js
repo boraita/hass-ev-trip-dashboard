@@ -7628,7 +7628,11 @@ class EvAbrpCard extends HTMLElement {
     // publishes the reason here, so a push that's "working" but being
     // thrown away is nameable instead of just a frozen timestamp. Absent on
     // older loggers, hence the plain truthiness check and no dependency on it.
-    const lastError = swAttr.last_error ? String(swAttr.last_error).replace(/^\s*error:\s*/i, "").trim() : null;
+    //
+    // Shown verbatim: the logger already strips a bare "error:" prefix and
+    // keeps the ones that carry information ("rate_limited: slow down"), so
+    // trimming again here would only risk eating a meaningful word.
+    const lastError = swAttr.last_error ? String(swAttr.last_error).trim() : null;
     let pillTxt, pillCls;
     if (!swEnt) { pillTxt = L("read-only", "solo lectura"); pillCls = "idle"; }
     else if (!on) { pillTxt = L("paused", "en pausa"); pillCls = "idle"; }
