@@ -109,3 +109,84 @@ test("a locked HOME charge offers no editor — it uses the default tariff", () 
   const { html } = rendered([charge({ price_locked: true, location: "home" })]);
   assert.doesNotMatch(html, /cp-unlock/);
 });
+
+
+// ---------------------------------------------------------------------------
+// v2.132 — the charger's rated power, and the verdict it makes possible.
+// ---------------------------------------------------------------------------
+
+test("41 kW out of a 50 kW unit reads as charger-limited", () => {
+  const { html } = rendered([
+    charge({ peak_charge_power_kw: 41.1, charger_power_kw: 50 }),
+  ]);
+  assert.match(html, /41\/50 kW/);
+  assert.match(html, /82%/);
+  assert.match(html, /limitó el poste/);
+});
+
+test("the same 41 kW out of a 150 kW unit reads as the charger failing", () => {
+  // This is the whole reason charger_power_kw is a stored field: the peak is
+  // identical, the diagnosis is the opposite, and no inference from the peak
+  // alone can tell them apart.
+  const { html } = rendered([
+    charge({ peak_charge_power_kw: 41.1, charger_power_kw: 150, soc_start: 20 }),
+  ]);
+  assert.match(html, /41\/150 kW/);
+  assert.match(html, /27%/);
+  assert.match(html, /no dio lo que promete/);
+  assert.match(html, /lim--bad/);
+});
+
+test("a low peak with a HIGH starting SoC is taper, not a bad charger", () => {
+  // 41 of 150 starting at 80 % is the curve doing what curves do. Blaming
+  // the charger there would be a false accusation.
+  const { html } = rendered([
+    charge({ peak_charge_power_kw: 41.1, charger_power_kw: 150, soc_start: 80 }),
+  ]);
+  assert.doesNotMatch(html, /no dio lo que promete/);
+  assert.match(html, /taper/);
+});
+
+test("88 kW out of 150 is battery taper", () => {
+  const { html } = rendered([
+    charge({ peak_charge_power_kw: 88.1, charger_power_kw: 150 }),
+  ]);
+  assert.match(html, /59%/);
+  assert.match(html, /taper/);
+  assert.match(html, /lim--pack/);
+});
+
+test("with no rating recorded it falls back to how much was held", () => {
+  // avg/peak still separates "sat at its ceiling" from "tapered". It cannot
+  // spot an under-delivering charger, because then the ceiling held IS the
+  // low number — which is the limitation the rating removes.
+  const { html } = rendered([charge({ peak_charge_power_kw: 41.1 })]);
+  assert.doesNotMatch(html, /kW ·.*promete/);
+  assert.match(html, /sostuvo/);
+});
+
+test("the editor offers a charger-rating input", () => {
+  const { html } = rendered([charge({ price_locked: false })]);
+  assert.match(html, /cp-kw-input/);
+  assert.match(html, /Potencia del poste/);
+});
+
+test("the rating can be sent on its own, with no receipt", () => {
+  // The realistic flow: the charge auto-logged days ago and you are filling
+  // in what the unit said. Requiring a total first made that impossible.
+  const { card } = rendered([charge({ price_locked: false })]);
+  card.querySelector('.cp-kw-input[data-charge-id="67"]').value = "150";
+  card._applyPrice("67");
+  const call = card._hass.calls.at(-1);
+  assert.equal(call.service, "set_last_charge_price");
+  assert.equal(call.data.charger_power_kw, 150);
+  assert.equal(call.data.total_cost, undefined, "no price was typed, none must be sent");
+  assert.equal(call.data.charge_id, 67);
+});
+
+test("an empty editor fires no service call at all", () => {
+  const { card } = rendered([charge({ price_locked: false })]);
+  const before = card._hass.calls.length;
+  card._applyPrice("67");
+  assert.equal(card._hass.calls.length, before, "nothing filled in, nothing sent");
+});

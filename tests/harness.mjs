@@ -44,12 +44,31 @@ class FakeElement {
    *  Stable per selector: the card attaches its listener to the object it
    *  gets back, and a test clicking the same selector must reach it. */
   querySelector(sel) {
-    const key = String(sel).replace(/[[\]".]/g, "").split("=")[0];
-    if (!this._html.includes(key)) return null;
+    // Compound selectors (`.cls[attr="v"]:not(.other)`) are common in these
+    // cards, and matching only the first token confused two sibling inputs
+    // for each other. Require every positive token to appear in the markup;
+    // `:not(...)` parts are dropped, since absence cannot be checked in a
+    // string harness. Still crude, but crude in a direction that fails
+    // loudly rather than silently returning the wrong element.
+    const raw = String(sel).replace(/:not\([^)]*\)/g, "");
+    const tokens = [
+      ...raw.matchAll(/\.([A-Za-z0-9_-]+)/g),
+      ...raw.matchAll(/\[[^=\]]+="?([^"\]]+)"?\]/g),
+    ].map((m) => m[1]);
+    if (tokens.length && !tokens.every((t) => this._html.includes(t))) return null;
+    const key = raw.replace(/[[\]".]/g, "").split("=")[0];
+    if (!this._html.includes(tokens[0] || key)) return null;
     if (!this._stubs) this._stubs = new Map();
     if (!this._stubs.has(key)) {
       const el = new FakeElement();
       el._owner = this;
+      // A real empty <input> has value === "", not undefined; cards branch on
+      // `String(value).trim() !== ""` and the undefined default made every
+      // untouched field look like a typo. `focus()` exists for the same
+      // reason: cards call it to reject bad input, and a missing method threw
+      // instead of exercising the path.
+      el.value = "";
+      el.focus = () => {};
       this._stubs.set(key, el);
     }
     return this._stubs.get(key);
