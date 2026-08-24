@@ -356,3 +356,75 @@ test("tapping a sort chip switches the order", () => {
   });
   assert.equal(card._chargeSort, "rate");
 });
+
+
+// ---------------------------------------------------------------------------
+// v2.135 — the 0-10 score, and the two fastest stops.
+// ---------------------------------------------------------------------------
+
+test("the fastest session in the history scores 10 by construction", () => {
+  // The anchor IS a real session — the same idiom as the trip score, which
+  // anchors on the car's own best rather than a spec-sheet number.
+  const span = (min, kwh) => ({
+    started_at: "2026-08-23T10:00:00+02:00",
+    ended_at: new Date(Date.parse("2026-08-23T10:00:00+02:00") + min * 60000).toISOString(),
+    kwh,
+  });
+  const { html } = rendered([
+    charge({ id: 1, charge_id: 1, peak_charge_power_kw: 150, ...span(60, 88) }),
+    charge({ id: 2, charge_id: 2, peak_charge_power_kw: 50, ...span(60, 44) }),
+  ], "2026-08-23");
+  assert.match(html, />10\.0</, "88 kW is the best, so it anchors at 10");
+  assert.match(html, />5\.0</, "44 kW is half of it");
+});
+
+test("a home AC charge is not scored against a DC anchor", () => {
+  // 11 kW against an 88 kW anchor would read 1.2/10 and say nothing at all
+  // about the wallbox.
+  const { html } = rendered([
+    charge({ id: 1, charge_id: 1, peak_charge_power_kw: 150,
+             started_at: "2026-08-23T10:00:00+02:00",
+             ended_at: "2026-08-23T11:00:00+02:00", kwh: 88 }),
+    charge({ id: 2, charge_id: 2, is_dcfc: false, location: "home",
+             peak_charge_power_kw: 11,
+             started_at: "2026-08-23T12:00:00+02:00",
+             ended_at: "2026-08-23T16:00:00+02:00", kwh: 44 }),
+  ], "2026-08-23");
+  assert.doesNotMatch(html, />1\.[0-9]</, "the AC session gets no score at all");
+});
+
+test("the fastest stops are ranked by their best visit, not their average", () => {
+  // One slow visit should not demote a good charger: the question is where
+  // this car CAN go fast, not where it has always gone fast.
+  const card = makeCard(cards, "ev-fast-charge-card", { device: "sealion_7" });
+  const mk = (id, kw, la, lo, rated) => ({
+    id, charge_id: id, is_dcfc: true, location: "not_home",
+    peak_charge_power_kw: Math.max(kw, 26), avg_power_kw: kw,
+    charger_power_kw: rated, charge_lat: la, charge_lon: lo,
+    kwh: 40, ended_at: `2026-08-2${id}T10:00:00+02:00`,
+  });
+  card.hass = fakeHass({ [RC]: st("4", { charges: [
+    mk(1, 88.1, 43.24106, -5.77631, 160),   // one visit, best overall
+    mk(2, 87.9, 41.52119, -5.75497, 360),   // two visits, one weaker
+    mk(3, 60.0, 41.52119, -5.75497, 360),
+    mk(4, 39.4, 38.42443, -6.41494, 50),
+  ] }) });
+  const html = body(card.innerHTML);
+  assert.match(html, /Mejores paradas/);
+  assert.match(html, /88\.1 kW/);
+  assert.match(html, /87\.9 kW/, "ranked on its best visit, not the 74 kW mean");
+  assert.doesNotMatch(html, /39\.4 kW/, "only the top two");
+  assert.match(html, /2 visitas/);
+});
+
+test("stops with no recorded position are left out of the ranking", () => {
+  const card = makeCard(cards, "ev-fast-charge-card", { device: "sealion_7" });
+  card.hass = fakeHass({ [RC]: st("1", { charges: [{
+    id: 1, charge_id: 1, is_dcfc: true, location: "not_home",
+    peak_charge_power_kw: 150, avg_power_kw: 88, kwh: 40,
+    ended_at: "2026-08-20T10:00:00+02:00",
+  }] }) });
+  const html = body(card.innerHTML);
+  assert.doesNotMatch(html, /Mejores paradas/);
+  assert.match(html, /Carga rápida/, "the class summary still renders");
+});

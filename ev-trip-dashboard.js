@@ -2735,6 +2735,8 @@ class EvTripHistoryCard extends HTMLElement {
           .cs-btn{cursor:pointer;border:1px solid var(--divider-color,#444);background:none;
             color:var(--secondary-text-color);border-radius:12px;padding:2px 10px;font-size:.78em;}
           .cs-btn--on{color:var(--primary-color);border-color:var(--primary-color);font-weight:600;}
+          .pills{display:flex;flex-direction:column;align-items:flex-end;gap:4px;}
+          .score-pill--n{font-variant-numeric:tabular-nums;}
           .cp-locked{display:flex;align-items:center;gap:5px;font-size:.82em;padding:8px 4px 4px;
                      color:var(--success-color,#43a047);font-weight:600;font-variant-numeric:tabular-nums;}
           .cp-locked ha-icon{--mdc-icon-size:15px;}
@@ -3102,6 +3104,10 @@ class EvTripHistoryCard extends HTMLElement {
     const _allCharges = ((this._hass.states[
       `sensor.${this._device || detectDevice(this._hass)}_recent_charges`
     ] || {}).attributes || {}).charges || sessions;
+    // v2.135 — the 10/10 anchor, taken from the whole history rather than
+    // the day on screen: a score that changed when you expanded a different
+    // day would be worthless.
+    const _anchorKw = _scoreAnchorKw(_allCharges);
     const items = sessions
       .map((c) => {
         // Charge in progress: live row from current sensors — no end time,
@@ -3364,7 +3370,17 @@ class EvTripHistoryCard extends HTMLElement {
                 ${locHtml}
                 ${priceHtml}
               </div>
-              <div class="score-pill" style="background:var(--info-color, #039be5)">${total}</div>
+              <div class="pills">
+                ${(() => {
+                  // 0-10 against the best sustained power this car has
+                  // managed. Only fast DC away sessions are scored: a home
+                  // wallbox measured against an 88 kW anchor would read
+                  // 1.2/10 and say nothing about the wallbox.
+                  const sc = _chargeScore(c, _anchorKw);
+                  return sc == null ? "" : `<div class="score-pill score-pill--n" style="background:${_scoreColor(sc)}" title="${L("vs the best sustained power this car has managed", "sobre la mejor media sostenida de este coche")}">${sc.toFixed(1)}</div>`;
+                })()}
+                <div class="score-pill" style="background:var(--info-color, #039be5)">${total}</div>
+              </div>
             </div>
             <div class="s-curve">${curve}</div>
           </div>`;
@@ -6779,6 +6795,44 @@ const _SAME_SITE_M = 40;
 // other puts rows in an order the numbers on screen contradict, so this
 // prefers the same span the collapsed row uses and falls back to the
 // logger's figure.
+// A fast DC session away from home: the population the score is anchored on.
+// Home AC is excluded on purpose — scoring an 11 kW wallbox against an 88 kW
+// anchor would read 1.2/10, which says nothing about the wallbox.
+function _isScorableCharge(c) {
+  return !!c && c.is_dcfc === true
+    && String(c.location || "").toLowerCase() !== "home"
+    && Number(c.peak_charge_power_kw) >= _FAST_FLOOR_KW;
+}
+
+// 0-10, anchored to the best sustained power this car has ever managed —
+// the same idiom as the trip score, which anchors on the car's own best
+// efficiency rather than a number from a spec sheet. So one charge always
+// scores 10 by construction: the anchor IS a real session.
+//
+// It mostly reflects which charger was chosen, and that is the finding, not
+// a flaw. Over 15 real sessions the top six were every charger >=160 kW and
+// the bottom nine every charger <=60 kW, with no overlap: picking the post
+// is the decision, worth more than double the rate, and nothing else came
+// close. Two anchors were tried and discarded first — the charger-class
+// mean (range 88-106 %, no spread) and the achievable ceiling (which
+// inverts the ranking, scoring an 88 kW session below a 39 kW one).
+function _chargeScore(c, anchorKw) {
+  if (!_isScorableCharge(c) || !(anchorKw > 0)) return null;
+  const kw = _chargeRateKw(c);
+  if (kw == null || kw <= 0) return null;
+  return Math.max(0, Math.min(10, (kw / anchorKw) * 10));
+}
+
+function _scoreAnchorKw(charges) {
+  let best = 0;
+  for (const c of charges || []) {
+    if (!_isScorableCharge(c)) continue;
+    const kw = _chargeRateKw(c);
+    if (kw != null && kw > best) best = kw;
+  }
+  return best > 0 ? best : null;
+}
+
 function _chargeRateKw(c) {
   if (!c) return null;
   if (c.started_at && c.ended_at && c.kwh != null) {
@@ -6840,6 +6894,38 @@ class EvFastChargeCard extends HTMLElement {
     if (basis >= 60) return { key: "100", label: "60-110 kW" };
     return { key: "50", label: `${_FAST_FLOOR_KW}-60 kW` };
   }
+  // v2.135 — the two stops that actually charged fastest. Grouped by
+  // position at 40 m (see _SAME_SITE_M) and ranked by the best sustained
+  // power reached there, not the average: one bad visit to a good charger
+  // should not demote it, and the question being answered is "where can
+  // this car go fast", not "where has it always gone fast".
+  _bestStopsHtml(fast) {
+    const sites = [];
+    for (const c of fast) {
+      const la = Number(c.charge_lat), lo = Number(c.charge_lon);
+      if (!isFinite(la) || !isFinite(lo)) continue;
+      const hit = sites.find((x) => _metresBetween(la, lo, x.la, x.lo) <= _SAME_SITE_M);
+      (hit || sites[sites.push({ la, lo, rows: [] }) - 1]).rows.push(c);
+    }
+    const ranked = sites
+      .map((x) => ({
+        ...x,
+        best: Math.max(...x.rows.map((c) => Number(c.avg_power_kw) || 0)),
+        rated: [...new Set(x.rows.map((c) => Number(c.charger_power_kw)).filter((v) => v > 0))],
+      }))
+      .filter((x) => x.best > 0)
+      .sort((a, b) => b.best - a.best)
+      .slice(0, 2);
+    if (!ranked.length) return "";
+    const rows = ranked.map((x, i) => `
+      <div class="fc-best">
+        <span class="fc-rank">${i + 1}</span>
+        <a class="fc-place" href="https://www.google.com/maps/search/?api=1&query=${x.la},${x.lo}" target="_blank" rel="noopener">${x.la.toFixed(4)}, ${x.lo.toFixed(4)}</a>
+        <span class="fc-bmeta">${x.rated.length === 1 ? `${x.rated[0].toFixed(0)} kW · ` : ""}${x.rows.length} ${L(x.rows.length === 1 ? "visit" : "visits", x.rows.length === 1 ? "visita" : "visitas")}</span>
+        <b class="fc-bkw">${x.best.toFixed(1)} kW</b>
+      </div>`).join("");
+    return `<div class="fc-sub fc-sub--t">${L("Fastest stops", "Mejores paradas")}</div>${rows}`;
+  }
   _render() {
     if (!this._hass) return;
     const D = this._device || detectDevice(this._hass);
@@ -6882,6 +6968,7 @@ class EvFastChargeCard extends HTMLElement {
         <div class="fc-head"><ha-icon icon="mdi:ev-station"></ha-icon> ${L("Fast charging", "Carga rápida")}</div>
         <div class="fc-sub">${L("Average sustained power per charger class", "Potencia media sostenida por clase de poste")}</div>
         <div class="fc-body">${rows}</div>
+        ${this._bestStopsHtml(fast)}
         <div class="fc-foot">${fast.length} ${L("fast sessions", "sesiones rápidas")} · ${rated} ${L("with the charger rating recorded", "con la potencia del poste apuntada")}${
           rated < fast.length ? ` · ${L("the rest classed by observed peak", "el resto clasificadas por el pico observado")}` : ""
         }</div>
@@ -6897,6 +6984,14 @@ class EvFastChargeCard extends HTMLElement {
           .fc-bf{display:block;height:100%;border-radius:6px;background:var(--info-color,#039be5);}
           .fc-val{font-variant-numeric:tabular-nums;white-space:nowrap;}
           .fc-rng{font-size:.72em;color:var(--secondary-text-color);margin-left:5px;}
+          .fc-sub--t{padding-top:10px;font-weight:600;color:var(--primary-text-color);}
+          .fc-best{display:grid;grid-template-columns:auto 1fr auto auto;align-items:center;
+            gap:8px;padding:2px 16px;font-size:.84em;}
+          .fc-rank{width:1.3em;height:1.3em;border-radius:50%;background:var(--divider-color);
+            display:inline-flex;align-items:center;justify-content:center;font-size:.8em;font-weight:700;}
+          .fc-place{color:var(--primary-color);text-decoration:none;font-variant-numeric:tabular-nums;}
+          .fc-bmeta{font-size:.85em;color:var(--secondary-text-color);white-space:nowrap;}
+          .fc-bkw{font-variant-numeric:tabular-nums;white-space:nowrap;}
           .fc-foot{padding:2px 16px 14px;font-size:.7em;color:var(--secondary-text-color);}
         </style>
       </ha-card>`;
