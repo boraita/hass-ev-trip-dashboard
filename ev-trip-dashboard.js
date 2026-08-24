@@ -1256,6 +1256,10 @@ function cargasView(D, hass, V, cfg) {
   // byd_charge package meters read 0 because their wallbox source isn't flowing).
   if (has(hass, `sensor.${D}_recent_charges`)) {
     analytics.push({ type: "custom:ev-charge-summary-card", device: D });
+    // v2.132 — fast DC only, grouped by charger class. Self-hides until
+    // there is at least one qualifying session, so a home-only install
+    // never sees an empty card.
+    analytics.push({ type: "custom:ev-fast-charge-card", device: D });
   }
 
   // Two columns when the analytics package is present: LEFT = this-month
@@ -2329,17 +2333,23 @@ class EvTripHistoryCard extends HTMLElement {
   _applyPrice(chargeId) {
     const id = parseInt(chargeId, 10);
     if (isNaN(id)) return;
-    const input = this.querySelector(`.cp-input[data-charge-id="${chargeId}"]:not(.cp-kwh-input)`);
-    if (!input) return;
-    const total = parseFloat(String(input.value).replace(",", "."));
-    if (isNaN(total) || total < 0) { input.focus(); return; }
+    // v2.132 — the three inputs are independent. The charger's rating in
+    // particular is the field you fill in from memory days later, with no
+    // receipt in hand, so requiring a total before accepting anything
+    // (which this did) made that case impossible. Any one filled field is
+    // a valid call; the backend leaves the others alone.
+    const input = this.querySelector(`.cp-input[data-charge-id="${chargeId}"]:not(.cp-kwh-input):not(.cp-kw-input)`);
+    const raw = input ? String(input.value).trim() : "";
+    const total = raw === "" ? null : parseFloat(raw.replace(",", "."));
+    if (total != null && (isNaN(total) || total < 0)) { input.focus(); return; }
     this._editing = false;
     // v0.8.10 — the user knows what they PAID (a receipt total), not the
     // €/kWh rate; asking for €/kWh directly produced real mistakes (a
     // total of 9.49€ typed into a €/kWh field priced an 18.7 kWh charge
     // at 177.44€). Send total_cost and let the backend divide by the
     // charge's own kWh — set_last_charge_price already supports this.
-    const data = { charge_id: id, total_cost: total };
+    const data = { charge_id: id };
+    if (total != null) data.total_cost = total;
     // v-next — optional kWh-on-invoice, sent alongside price in the same
     // "Set" action (see cp-kwh-input above). Reuses evse_energy_kwh, the
     // same field the home EVSE sensor writes, so the efficiency chip
@@ -2348,6 +2358,18 @@ class EvTripHistoryCard extends HTMLElement {
     if (kwhInput && String(kwhInput.value).trim() !== "") {
       const invoiceKwh = parseFloat(String(kwhInput.value).replace(",", "."));
       if (!isNaN(invoiceKwh) && invoiceKwh > 0) data.evse_energy_kwh = invoiceKwh;
+    }
+    // v2.132 — the charger's rated power. Nothing publishes it, so this
+    // input is the only way it ever gets recorded.
+    const kwInput = this.querySelector(`.cp-kw-input[data-charge-id="${chargeId}"]`);
+    if (kwInput && String(kwInput.value).trim() !== "") {
+      const ratedKw = parseFloat(String(kwInput.value).replace(",", "."));
+      if (!isNaN(ratedKw) && ratedKw > 0 && ratedKw <= 700) data.charger_power_kw = ratedKw;
+    }
+    // Nothing filled in: don't fire a call the backend would reject.
+    if (data.total_cost == null && data.evse_energy_kwh == null && data.charger_power_kw == null) {
+      if (input) input.focus();
+      return;
     }
     if (this._config.entry_id) data.entry_id = this._config.entry_id;
     // ev_trip_logger.set_last_charge_price targets a specific charge when
@@ -2712,6 +2734,14 @@ class EvTripHistoryCard extends HTMLElement {
              competing with them for attention. */
           .chip--ctx{color:var(--secondary-text-color);border-color:var(--divider-color,#444);}
           .chip--ctx ha-icon{--mdc-icon-size:13px;}
+          /* v2.132 — what limited the session. Colour carries the verdict:
+             charger-limited is normal (neutral), taper is expected on a big
+             charger (info), a charger under-delivering is the one worth
+             noticing (warning). */
+          .chip--limit ha-icon{--mdc-icon-size:13px;}
+          .lim--charger{color:var(--secondary-text-color);border-color:var(--divider-color,#444);}
+          .lim--pack{color:var(--info-color,#039be5);border-color:var(--info-color,#039be5);}
+          .lim--bad{color:var(--warning-color,#fb8c00);border-color:var(--warning-color,#fb8c00);}
           .chip--live{color:var(--success-color,#43a047);border-color:var(--success-color,#43a047);
                       font-weight:700;animation:evpulse 1.6s ease-in-out infinite;}
           .chip--live ha-icon{--mdc-icon-size:13px;}
@@ -3156,6 +3186,8 @@ class EvTripHistoryCard extends HTMLElement {
                <input class="cp-input" data-charge-id="${_esc(cid)}" type="number" inputmode="decimal" step="0.01" min="0" placeholder="${fmtNum(c.total_cost, 2)}" />
                <span class="cp-lbl">${L("kWh on invoice", "kWh en factura")}</span>
                <input class="cp-input cp-kwh-input" data-charge-id="${_esc(cid)}" type="number" inputmode="decimal" step="0.01" min="0" placeholder="${fmtNum(c.evse_energy_kwh)}" />
+               <span class="cp-lbl">${L("Charger rating (kW)", "Potencia del poste (kW)")}</span>
+               <input class="cp-input cp-kw-input" data-charge-id="${_esc(cid)}" type="number" inputmode="numeric" step="1" min="0" max="700" placeholder="${fmtNum(c.charger_power_kw, 0)}" />
                <button class="cp-apply" data-charge-id="${_esc(cid)}"><ha-icon icon="mdi:check"></ha-icon>${L("Set", "Fijar")}</button>
              </div>`;
         }
@@ -3198,6 +3230,46 @@ class EvTripHistoryCard extends HTMLElement {
         const ctxChip = ctxParts.length
           ? `<span class="chip chip--ctx"><ha-icon icon="mdi:thermometer"></ha-icon>${_esc(ctxParts.join(" · "))}</span>`
           : "";
+        // v2.132 — what actually limited the session. `peak / rated` is the
+        // only ratio that can tell "pegged at a 50 kW unit's ceiling" from
+        // "a 150 kW unit gave me a quarter of what it promises": both show
+        // the same 41 kW peak, and without the rating the second case looks
+        // like the first. Needs logger >= v0.8.33 and the rating entered.
+        const ratedKw = c.charger_power_kw != null && !isNaN(Number(c.charger_power_kw)) && Number(c.charger_power_kw) > 0
+          ? Number(c.charger_power_kw)
+          : null;
+        let limitChip = "";
+        if (peakKw != null && ratedKw != null) {
+          const got = (peakKw / ratedKw) * 100;
+          // 80 %, not 90: no charger delivers its nameplate. A 50 kW unit is
+          // current-limited to about 110 A, which on a ~380 V LFP pack is
+          // ~42 kW — 84 % of its rating, and that session is pegged at the
+          // ceiling by any honest reading. The same 80 % holds at the top
+          // end (120 kW out of 150).
+          let verdict, cls;
+          if (got >= 80) {
+            verdict = L("charger was the limit", "te limitó el poste"); cls = "lim--charger";
+          } else if (got >= 40) {
+            verdict = L("battery taper", "taper de batería"); cls = "lim--pack";
+          } else {
+            // Under 40 % of the rating is either a pack that could not take
+            // it or a charger not delivering. A low starting SoC rules the
+            // taper out, which leaves the charger. 88 kW of 150 is NOT this
+            // case — that is a curve behaving normally, and calling it a
+            // broken charger would be a false accusation.
+            verdict = (ss0 != null && ss0 < 50)
+              ? L("charger under-delivered", "el poste no dio lo que promete")
+              : L("battery taper", "taper de batería");
+            cls = (ss0 != null && ss0 < 50) ? "lim--bad" : "lim--pack";
+          }
+          limitChip = `<span class="chip chip--limit ${cls}"><ha-icon icon="mdi:speedometer"></ha-icon>${peakKw.toFixed(0)}/${ratedKw.toFixed(0)} kW · ${got.toFixed(0)}% · ${_esc(verdict)}</span>`;
+        } else if (peakKw != null && avgKw != null && peakKw > 0) {
+          // No rating recorded: avg/peak still separates "held its ceiling"
+          // from "tapered". It cannot spot a charger under-delivering,
+          // because then the ceiling it held IS the low number.
+          const held = (avgKw / peakKw) * 100;
+          limitChip = `<span class="chip chip--limit ${held >= 90 ? "lim--charger" : "lim--pack"}"><ha-icon icon="mdi:speedometer"></ha-icon>${L("held", "sostuvo")} ${held.toFixed(0)}% · ${_esc(held >= 90 ? L("charger was the limit", "te limitó el poste") : L("battery taper", "taper de batería"))}</span>`;
+        }
         return `
           <div class="csession">
             <div class="session">
@@ -3208,6 +3280,7 @@ class EvTripHistoryCard extends HTMLElement {
                   ${typeChip}
                   ${socChip}
                   ${effChip}
+                  ${limitChip}
                   ${ctxChip}
                 </div>
                 <div class="smetrics"><b>${fmtNum(c.kwh)}</b> kWh · <b>${fmtNum(c.price_per_kwh)}</b> ${_esc(sym(c.currency))}/kWh${extra}</div>
@@ -6598,6 +6671,107 @@ class EvTripCostCard extends HTMLElement {
   }
 }
 customElements.define("ev-trip-cost-card", EvTripCostCard);
+
+// ==========================================================================
+// Custom card: fast DC charging, grouped by charger class.
+//
+// Only DC sessions away from home with a peak of >= FAST_FLOOR kW. Home AC
+// and the odd 10 kW session mislabelled DC are excluded, because mixing
+// them makes every average meaningless.
+//
+// The grouping is the entire point. Measured over the author's 15 fast
+// sessions, the pack averaged 40.0 kW on 50 kW-class chargers and 85.9 kW
+// on 150 kW-class ones. Correlating rate against temperature or against
+// km-driven-before ACROSS that split produced rho = +0.43 and +0.75 and
+// both were artefacts: road trips use big chargers, errands use small
+// ones. Within a class both collapse to noise (the temperature coefficient
+// even flips sign), so this card reports the class averages and refuses to
+// report a correlation it cannot support.
+// ==========================================================================
+const _FAST_FLOOR_KW = 25;
+
+class EvFastChargeCard extends HTMLElement {
+  setConfig(config) { this._config = config || {}; this._device = this._config.device || null; }
+  set hass(hass) { this._hass = hass; this._render(); }
+  getCardSize() { return 3; }
+  // Class from the rating when it was entered, else from the observed peak.
+  // The fallback is the weaker of the two: a 150 kW charger that only ever
+  // delivered 41 kW lands in the 50 kW bucket, which is exactly the case
+  // charger_power_kw exists to rescue.
+  _class(c) {
+    const rated = Number(c.charger_power_kw);
+    const basis = rated > 0 ? rated : Number(c.peak_charge_power_kw);
+    if (!(basis > 0)) return null;
+    if (basis >= 250) return { key: "350", label: "≥250 kW" };
+    if (basis >= 110) return { key: "150", label: "110-250 kW" };
+    if (basis >= 60) return { key: "100", label: "60-110 kW" };
+    return { key: "50", label: `${_FAST_FLOOR_KW}-60 kW` };
+  }
+  _render() {
+    if (!this._hass) return;
+    const D = this._device || detectDevice(this._hass);
+    this._device = D;
+    const all = ((this._hass.states[`sensor.${D}_recent_charges`] || {}).attributes || {}).charges || [];
+    const fast = all.filter((c) =>
+      c && c.is_dcfc === true
+      && String(c.location || "").toLowerCase() !== "home"
+      && Number(c.peak_charge_power_kw) >= _FAST_FLOOR_KW
+      && Number(c.avg_power_kw) > 0
+    );
+    if (!fast.length) { this.innerHTML = ""; return; }
+    const groups = new Map();
+    for (const c of fast) {
+      const cl = this._class(c);
+      if (!cl) continue;
+      if (!groups.has(cl.key)) groups.set(cl.key, { label: cl.label, rows: [] });
+      groups.get(cl.key).rows.push(c);
+    }
+    const order = ["350", "150", "100", "50"];
+    const rated = fast.filter((c) => Number(c.charger_power_kw) > 0).length;
+    const rows = order
+      .filter((k) => groups.has(k))
+      .map((k) => {
+        const g = groups.get(k);
+        const avgs = g.rows.map((c) => Number(c.avg_power_kw));
+        const mean = avgs.reduce((a, b) => a + b, 0) / avgs.length;
+        const lo = Math.min(...avgs), hi = Math.max(...avgs);
+        const w = Math.max(2, Math.min(100, (mean / 150) * 100));
+        return `
+          <div class="fc-row">
+            <div class="fc-lbl">${_esc(g.label)}<span class="fc-n">${g.rows.length}</span></div>
+            <div class="fc-bar"><span class="fc-bf" style="width:${w.toFixed(0)}%"></span></div>
+            <div class="fc-val"><b>${mean.toFixed(1)}</b> kW${avgs.length > 1 ? `<span class="fc-rng">${lo.toFixed(0)}-${hi.toFixed(0)}</span>` : ""}</div>
+          </div>`;
+      })
+      .join("");
+    this.innerHTML = `
+      <ha-card>
+        <div class="fc-head"><ha-icon icon="mdi:ev-station"></ha-icon> ${L("Fast charging", "Carga rápida")}</div>
+        <div class="fc-sub">${L("Average sustained power per charger class", "Potencia media sostenida por clase de poste")}</div>
+        <div class="fc-body">${rows}</div>
+        <div class="fc-foot">${fast.length} ${L("fast sessions", "sesiones rápidas")} · ${rated} ${L("with the charger rating recorded", "con la potencia del poste apuntada")}${
+          rated < fast.length ? ` · ${L("the rest classed by observed peak", "el resto clasificadas por el pico observado")}` : ""
+        }</div>
+        <style>
+          .fc-head{display:flex;align-items:center;gap:6px;padding:14px 16px 2px;font-weight:600;font-size:1.05em;}
+          .fc-head ha-icon{--mdc-icon-size:20px;color:var(--info-color,#039be5);}
+          .fc-sub{padding:0 16px 8px;font-size:.76em;color:var(--secondary-text-color);}
+          .fc-body{padding:0 16px 6px;display:flex;flex-direction:column;gap:7px;}
+          .fc-row{display:grid;grid-template-columns:5.5em 1fr auto;align-items:center;gap:8px;font-size:.85em;}
+          .fc-lbl{color:var(--secondary-text-color);display:flex;align-items:baseline;gap:4px;}
+          .fc-n{font-size:.8em;opacity:.7;}
+          .fc-bar{height:9px;border-radius:6px;background:var(--divider-color);overflow:hidden;}
+          .fc-bf{display:block;height:100%;border-radius:6px;background:var(--info-color,#039be5);}
+          .fc-val{font-variant-numeric:tabular-nums;white-space:nowrap;}
+          .fc-rng{font-size:.72em;color:var(--secondary-text-color);margin-left:5px;}
+          .fc-foot{padding:2px 16px 14px;font-size:.7em;color:var(--secondary-text-color);}
+        </style>
+      </ha-card>`;
+  }
+}
+customElements.define("ev-fast-charge-card", EvFastChargeCard);
+window.customCards.push({ type: "ev-fast-charge-card", name: "EV Trip — fast charging by charger class", description: "Average sustained DC power grouped by charger class, from recent_charges." });
+
 window.customCards.push({ type: "ev-trip-cost-card", name: "EV Trip — cost per 100km", description: "Cost per 100 km and projected month-end cost." });
 
 // ==========================================================================
