@@ -2230,6 +2230,7 @@ class EvTripHistoryCard extends HTMLElement {
     this._streets = this._streets || {}; // charge_id -> {label,lat,lon} | 'loading'
     this._curveTap = this._curveTap || {}; // charge_id -> tapped x-fraction (0..1) in its power curve
     this._unlocked = this._unlocked || {}; // charge_id -> price editor re-opened on an already-set row
+    this._chargeSort = this._chargeSort || "date"; // date | rate | kwh | cost
     this._jroutes = this._jroutes || {}; // journey_id -> [{lat,lon}] | 'loading'
   }
   set hass(hass) {
@@ -2283,6 +2284,14 @@ class EvTripHistoryCard extends HTMLElement {
           this._unlocked[id] = !this._unlocked[id];
           this._render();
         }
+        return;
+      }
+      // v2.134 — sort selector for the charges list.
+      const sortBtn = tgt.closest(".cs-btn[data-sort]");
+      if (sortBtn && this.contains(sortBtn)) {
+        ev.stopPropagation();
+        this._chargeSort = sortBtn.getAttribute("data-sort") || "date";
+        this._render();
         return;
       }
       // Inline price editor: Apply button sets THIS charge's €/kWh.
@@ -2719,6 +2728,13 @@ class EvTripHistoryCard extends HTMLElement {
             color:var(--secondary-text-color);display:inline-flex;align-items:center;}
           .cp-unlock ha-icon{--mdc-icon-size:14px;}
           .cp-hint{font-style:normal;opacity:.7;font-size:.85em;}
+          /* v2.134 — sort selector. */
+          .cs-bar{display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding:0 4px 8px;}
+          .cs-lbl{font-size:.72em;text-transform:uppercase;letter-spacing:.04em;
+            color:var(--secondary-text-color);margin-right:2px;}
+          .cs-btn{cursor:pointer;border:1px solid var(--divider-color,#444);background:none;
+            color:var(--secondary-text-color);border-radius:12px;padding:2px 10px;font-size:.78em;}
+          .cs-btn--on{color:var(--primary-color);border-color:var(--primary-color);font-weight:600;}
           .cp-locked{display:flex;align-items:center;gap:5px;font-size:.82em;padding:8px 4px 4px;
                      color:var(--success-color,#43a047);font-weight:600;font-variant-numeric:tabular-nums;}
           .cp-locked ha-icon{--mdc-icon-size:15px;}
@@ -2998,7 +3014,34 @@ class EvTripHistoryCard extends HTMLElement {
     }
     order.sort((a, b) => (a < b ? 1 : a > b ? -1 : 0)); // newest day first
 
-    return order
+    // v2.134 — sorting by anything but the date flattens the list. Day
+    // grouping and a global ranking cannot both hold: a "fastest first"
+    // list broken into days is neither. The chips are always rendered so
+    // the way back to the grouped view is visible.
+    const SORTS = [
+      ["date", L("date", "fecha")],
+      ["rate", L("rate", "ritmo")],
+      ["kwh", "kWh"],
+      ["cost", L("cost", "coste")],
+    ];
+    const chips = SORTS.map(([k, lbl]) =>
+      `<button class="cs-btn${this._chargeSort === k ? " cs-btn--on" : ""}" data-sort="${k}">${_esc(lbl)}</button>`
+    ).join("");
+    const bar = `<div class="cs-bar"><span class="cs-lbl">${L("sort by", "ordenar por")}</span>${chips}</div>`;
+
+    if (this._chargeSort !== "date") {
+      const key = {
+        rate: (c) => { const v = _chargeRateKw(c); return v == null ? -1 : v; },
+        kwh: (c) => Number(c.kwh) || 0,
+        cost: (c) => Number(c.total_cost) || 0,
+      }[this._chargeSort];
+      const flat = [...charges].sort((a, b) => key(b) - key(a));
+      // Reuse the per-charge renderer by handing it the whole list as one
+      // group; every row renders expanded, which is what a ranking wants.
+      return bar + this._chargeDayDetailHtml(flat, sym, DASH, fmtNum, timeOf);
+    }
+
+    return bar + order
       .map((key) => {
         const sessions = byDay[key];
         // Day totals.
@@ -3129,9 +3172,17 @@ class EvTripHistoryCard extends HTMLElement {
           ? Number(c.peak_charge_power_kw)
           : null;
         const showPeak = peakKw != null && (avgKw == null || peakKw > avgKw * 1.1);
+        // v2.134 — kWh per minute alongside the average kW. Same quantity in
+        // two units on purpose: kW is what chargers are sold in and what the
+        // rest of this card compares, kWh/min is how long the stop actually
+        // costs you.
+        const kwhPerMin = durMin && durMin > 0 && c.kwh != null
+          ? Number(c.kwh) / durMin
+          : null;
         const extra =
           (durStr ? ` · <ha-icon class="s-mini" icon="mdi:timer-outline"></ha-icon>${durStr}` : "") +
           (avgKw != null ? ` · <b>${avgKw.toFixed(1)}</b> kW avg` : "") +
+          (kwhPerMin != null ? ` · <b>${kwhPerMin.toFixed(2)}</b> kWh/min` : "") +
           (showPeak ? ` · <b>${peakKw.toFixed(0)}</b> kW peak` : "");
         let curve;
         if (cv == null || cv === "loading") curve = `<div class="cv-msg">Loading power curve…</div>`;
@@ -6721,6 +6772,22 @@ const _FAST_FLOOR_KW = 25;
 // while seven sessions at a single home spot spanned only 9 m. 150 merged
 // the pair and would have inherited the wrong number onto both.
 const _SAME_SITE_M = 40;
+
+// Sustained power for sorting. The row derives its own "kW avg" from the
+// timestamps (and, once open, from the power curve, which excludes pauses);
+// the logger also ships `avg_power_kw`. Sorting by one while displaying the
+// other puts rows in an order the numbers on screen contradict, so this
+// prefers the same span the collapsed row uses and falls back to the
+// logger's figure.
+function _chargeRateKw(c) {
+  if (!c) return null;
+  if (c.started_at && c.ended_at && c.kwh != null) {
+    const min = (new Date(c.ended_at) - new Date(c.started_at)) / 60000;
+    if (isFinite(min) && min > 0) return Number(c.kwh) / (min / 60);
+  }
+  const v = Number(c.avg_power_kw);
+  return isFinite(v) ? v : null;
+}
 
 function _metresBetween(a, b, c, d) {
   const R = 6371000, r = Math.PI / 180;

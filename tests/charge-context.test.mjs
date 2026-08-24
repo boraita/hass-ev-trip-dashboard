@@ -296,3 +296,63 @@ test("a charge with no position inherits nothing", () => {
   ]);
   assert.doesNotMatch(html, /mismo sitio/);
 });
+
+
+// ---------------------------------------------------------------------------
+// v2.134 — ranking the list by rate, and the rate in both units.
+// ---------------------------------------------------------------------------
+
+test("the row shows the rate as kW and as kWh/min", () => {
+  // Same quantity twice on purpose: kW is what chargers are sold in, kWh/min
+  // is how long the stop actually costs you.
+  const { html } = rendered([charge()]);   // 13.23 kWh over 21 min
+  assert.match(html, /<b>37\.8<\/b> kW avg/);
+  assert.match(html, /<b>0\.63<\/b> kWh\/min/);
+});
+
+test("sorting by rate flattens the list and ranks fastest first", () => {
+  // Day grouping and a global ranking cannot both hold — a "fastest first"
+  // list broken into days is neither.
+  const card = makeCard(cards, TYPE, { device: "sealion_7", kind: "charges" });
+  // Each row's rate comes from its OWN span: 20 kWh in 60/30/15 min is
+  // 20 / 40 / 80 kW. Deliberately the reverse of date order, so a list that
+  // merely stayed chronological would fail this.
+  const span = (startIso, minutes, kwh) => ({
+    started_at: startIso,
+    ended_at: new Date(new Date(startIso).getTime() + minutes * 60000).toISOString(),
+    kwh,
+  });
+  const rows = [
+    charge({ id: 1, charge_id: 1, ...span("2026-08-24T22:00:00+02:00", 60, 20) }),
+    charge({ id: 2, charge_id: 2, ...span("2026-08-20T11:00:00+02:00", 15, 20) }),
+    charge({ id: 3, charge_id: 3, ...span("2026-08-18T10:44:00+02:00", 30, 20) }),
+  ];
+  card.hass = fakeHass({ [RC]: st("3", { charges: rows }) });
+  card._chargeSort = "rate";
+  card._render();
+  const html = body(card.innerHTML);
+  assert.doesNotMatch(html, /class="chargeday/, "no day grouping while ranked");
+  const order = [...html.matchAll(/<b>([\d.]+)<\/b> kW avg/g)].map((m) => m[1]);
+  assert.deepEqual(order, ["80.0", "40.0", "20.0"]);
+});
+
+test("the sort chips are always shown, including on the grouped view", () => {
+  // Otherwise there is no way back to the date view once you leave it.
+  const { html } = rendered([charge()]);
+  assert.match(html, /cs-bar/);
+  assert.match(html, /data-sort="date"/);
+  assert.match(html, /data-sort="rate"/);
+  assert.match(html, /cs-btn--on/);
+});
+
+test("tapping a sort chip switches the order", () => {
+  const { card } = rendered([charge()]);
+  assert.equal(card._chargeSort, "date");
+  const stub = card.querySelector('.cs-btn[data-sort]');
+  stub.getAttribute = () => "rate";
+  card._listeners.find((l) => l.type === "click").fn({
+    target: { closest: (sel) => (sel.includes("cs-btn") ? stub : null) },
+    stopPropagation() {},
+  });
+  assert.equal(card._chargeSort, "rate");
+});
