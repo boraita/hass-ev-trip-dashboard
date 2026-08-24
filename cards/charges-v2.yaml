@@ -16,7 +16,14 @@
 #
 # Each item in recent_charges.attributes.charges:
 #   { charge_id, started_at, ended_at, kwh, price_per_kwh, total_cost,
-#     currency, soc_start, soc_end, location, notes, is_dcfc }
+#     currency, soc_start, soc_end, location, notes, is_dcfc,
+#     evse_energy_kwh, charging_efficiency_pct, energy_source,
+#     duration_min, avg_power_kw, peak_charge_power_kw, temperature_c,
+#     km_before }
+#
+# The last five need ev_trip_logger >= v0.8.32. Every read below is
+# guarded, so on an older integration the row simply drops those lines
+# instead of rendering "None".
 #
 # Requires HACS:
 #   custom:mushroom-template-card
@@ -167,11 +174,39 @@ cards:
       {% set cur = c.currency or '€' %}
       {% set s0 = c.soc_start | int(0) %}
       {% set s1 = c.soc_end | int(0) %}
+      {#- v0.8.32 rate + context. `is not none` rather than a truthiness
+          test: 0 km driven before a charge is a real answer (the pack had
+          no chance to warm up) and must not be hidden as if missing. -#}
+      {#- `.get()`, not attribute access: HA renders templates with strict
+          undefined, so `c.duration_min` raises outright on a pre-v0.8.32
+          integration instead of degrading. -#}
+      {% set mins = c.get('duration_min') %}
+      {% set avg_kw = c.get('avg_power_kw') %}
+      {% set peak_kw = c.get('peak_charge_power_kw') %}
+      {% set temp = c.get('temperature_c') %}
+      {% set km_b = c.get('km_before') %}
+      {#- A start SoC above 60 % is reason enough on its own for a slow
+          session — the curve tapers there — so flag it inline rather than
+          leaving the user to infer it. DC only: on a 10 kW AC charge the
+          wallbox is the limit, not the pack, and the same SoC explains
+          nothing. -#}
+      {% set soc_hot = dcfc is true and s0 >= 60 %}
 
       ### {{ date_s }} · {{ time_s }}
-      **{{ kwh }} kWh** · {{ src }}
+      **{{ kwh }} kWh**{% if mins is not none %} en {{ mins | round(0) | int }} min{% endif %} · {{ src }}
+      {%- if avg_kw is not none %}
 
-      {{ cost }} {{ cur }} · {{ s0 }}% → {{ s1 }}%
+      {{ avg_kw | round(1) }} kW media{% if peak_kw is not none %} · pico {{ peak_kw | round(1) }} kW{% endif %}
+      {%- endif %}
+
+      {{ cost }} {{ cur }} · {{ s0 }}%{% if soc_hot %} ⚠{% endif %} → {{ s1 }}%
+      {%- set ctx = [] %}
+      {%- if temp is not none %}{% set ctx = ctx + ['🌡 ' ~ (temp | round(0) | int) ~ '°C'] %}{% endif %}
+      {%- if km_b is not none %}{% set ctx = ctx + ['🚗 ' ~ (km_b | round(0) | int) ~ ' km antes'] %}{% endif %}
+      {%- if ctx | length > 0 %}
+
+      _{{ ctx | join(' · ') }}{% if soc_hot %} · empezó al {{ s0 }}%, la curva ya baja{% endif %}_
+      {%- endif %}
 
       ---
       {% endfor %}

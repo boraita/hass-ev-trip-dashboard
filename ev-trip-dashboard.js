@@ -2225,6 +2225,7 @@ class EvTripHistoryCard extends HTMLElement {
     this._curves = this._curves || {}; // charge_id -> points | 'loading'
     this._streets = this._streets || {}; // charge_id -> {label,lat,lon} | 'loading'
     this._curveTap = this._curveTap || {}; // charge_id -> tapped x-fraction (0..1) in its power curve
+    this._unlocked = this._unlocked || {}; // charge_id -> price editor re-opened on an already-set row
     this._jroutes = this._jroutes || {}; // journey_id -> [{lat,lon}] | 'loading'
   }
   set hass(hass) {
@@ -2265,6 +2266,21 @@ class EvTripHistoryCard extends HTMLElement {
     this.addEventListener("click", (ev) => {
       const tgt = ev.target;
       if (!tgt || !tgt.closest) return;
+      // v2.131 — re-open the editor on a charge whose price is already set.
+      // `price_locked` exists to stop AUTO-DETECT overwriting a figure the
+      // user typed; it was never meant to lock the user out, but the row
+      // rendered a padlock and nothing else, so a wrong price could only be
+      // fixed from Developer Tools.
+      const unlock = tgt.closest(".cp-unlock[data-charge-id]");
+      if (unlock && this.contains(unlock)) {
+        ev.stopPropagation();
+        const id = unlock.getAttribute("data-charge-id");
+        if (id != null) {
+          this._unlocked[id] = !this._unlocked[id];
+          this._render();
+        }
+        return;
+      }
       // Inline price editor: Apply button sets THIS charge's €/kWh.
       const apply = tgt.closest(".cp-apply[data-charge-id]");
       if (apply && this.contains(apply)) {
@@ -2675,6 +2691,11 @@ class EvTripHistoryCard extends HTMLElement {
                     border-radius:8px;padding:6px 12px;font-size:.85em;font-weight:700;
                     background:var(--primary-color);color:#fff;}
           .cp-apply ha-icon{--mdc-icon-size:16px;}
+          /* v2.131 — the "correct this price" pencil on an already-set row.
+             Deliberately quiet: re-editing is the exception, not the path. */
+          .cp-unlock{background:none;border:none;padding:0 0 0 6px;cursor:pointer;
+            color:var(--secondary-text-color);display:inline-flex;align-items:center;}
+          .cp-unlock ha-icon{--mdc-icon-size:14px;}
           .cp-locked{display:flex;align-items:center;gap:5px;font-size:.82em;padding:8px 4px 4px;
                      color:var(--success-color,#43a047);font-weight:600;font-variant-numeric:tabular-nums;}
           .cp-locked ha-icon{--mdc-icon-size:15px;}
@@ -2686,6 +2707,11 @@ class EvTripHistoryCard extends HTMLElement {
           .chip--soc ha-icon{--mdc-icon-size:13px;}
           .chip--eff{color:var(--success-color,#43a047);border-color:var(--success-color,#43a047);}
           .chip--eff ha-icon{--mdc-icon-size:13px;}
+          /* v2.131 — charge context (temperature / km before / SoC taper).
+             Muted on purpose: it explains the numbers above it rather than
+             competing with them for attention. */
+          .chip--ctx{color:var(--secondary-text-color);border-color:var(--divider-color,#444);}
+          .chip--ctx ha-icon{--mdc-icon-size:13px;}
           .chip--live{color:var(--success-color,#43a047);border-color:var(--success-color,#43a047);
                       font-weight:700;animation:evpulse 1.6s ease-in-out infinite;}
           .chip--live ha-icon{--mdc-icon-size:13px;}
@@ -3056,9 +3082,19 @@ class EvTripHistoryCard extends HTMLElement {
         const durStr =
           durMin == null ? null : durMin >= 60 ? `${Math.floor(durMin / 60)}h ${Math.round(durMin % 60)}m` : `${Math.round(durMin)} min`;
         const avgKw = c.kwh != null && durMin && durMin > 0 ? Number(c.kwh) / (durMin / 60) : null;
+        // v2.131 — peak alongside the average. The two together are the
+        // charge's shape: 96 kW peak against a 38 kW average says the
+        // session tapered or paused, which one number alone cannot.
+        // Only shown when it actually beats the average — a peak equal to
+        // the mean is a flat AC charge and repeating it adds nothing.
+        const peakKw = c.peak_charge_power_kw != null && !isNaN(Number(c.peak_charge_power_kw))
+          ? Number(c.peak_charge_power_kw)
+          : null;
+        const showPeak = peakKw != null && (avgKw == null || peakKw > avgKw * 1.1);
         const extra =
           (durStr ? ` · <ha-icon class="s-mini" icon="mdi:timer-outline"></ha-icon>${durStr}` : "") +
-          (avgKw != null ? ` · <b>${avgKw.toFixed(1)}</b> kW avg` : "");
+          (avgKw != null ? ` · <b>${avgKw.toFixed(1)}</b> kW avg` : "") +
+          (showPeak ? ` · <b>${peakKw.toFixed(0)}</b> kW peak` : "");
         let curve;
         if (cv == null || cv === "loading") curve = `<div class="cv-msg">Loading power curve…</div>`;
         else if (!Array.isArray(cv) || cv.length < 2) curve = `<div class="cv-msg">No power history for this charge.</div>`;
@@ -3103,8 +3139,11 @@ class EvTripHistoryCard extends HTMLElement {
         // 177.44€). The kWh for this charge is shown right above (in
         // .smetrics) so the total-to-rate split is easy to sanity-check.
         let priceHtml = "";
-        if (locked) {
-          priceHtml = `<div class="cp-locked"><ha-icon icon="mdi:lock-check"></ha-icon>${fmtNum(c.total_cost, 2)} ${_esc(sym(c.currency))} · ${fmtNum(c.price_per_kwh, 3)} ${_esc(sym(c.currency))}/kWh · ${L("set", "fijado")}</div>`;
+        const reopened = this._unlocked[cid] === true;
+        if (locked && !reopened) {
+          priceHtml = `<div class="cp-locked"><ha-icon icon="mdi:lock-check"></ha-icon>${fmtNum(c.total_cost, 2)} ${_esc(sym(c.currency))} · ${fmtNum(c.price_per_kwh, 3)} ${_esc(sym(c.currency))}/kWh · ${L("set", "fijado")}${
+            isHome ? "" : `<button class="cp-unlock" data-charge-id="${_esc(cid)}" title="${L("Correct this price", "Corregir este precio")}"><ha-icon icon="mdi:pencil"></ha-icon></button>`
+          }</div>`;
         } else if (!isHome) {
           // v-next — a second, optional input for the kWh figure on the
           // operator's invoice. Away chargers have no EVSE sensor, so this
@@ -3132,6 +3171,33 @@ class EvTripHistoryCard extends HTMLElement {
         const effChip = effV != null && !isNaN(Number(effV))
           ? `<span class="chip chip--eff"><ha-icon icon="mdi:gauge"></ha-icon>${Number(effV).toFixed(0)}%${c.evse_energy_kwh != null && !isNaN(Number(c.evse_energy_kwh)) ? ` · ${Number(c.evse_energy_kwh).toFixed(1)} kWh AC` : ""}</span>`
           : "";
+        // v2.131 — why this charge went at the rate it did. Driving warms
+        // the pack and a warm pack accepts more power, so km-since-the-last-
+        // charge plus ambient temperature is most of the explanation for a
+        // fast or slow DC session. Needs logger >= v0.8.32 for km_before and
+        // temperature_c; each part is independently guarded, so an older
+        // logger just renders fewer of them.
+        const tempV = c.temperature_c != null && !isNaN(Number(c.temperature_c))
+          ? Number(c.temperature_c)
+          : null;
+        // `!= null` deliberately, not truthiness: 0 km before a charge is a
+        // real answer — the pack had no chance to warm up — and hiding it
+        // would lose exactly the diagnosis the chip exists to give.
+        const kmBefore = c.km_before != null && !isNaN(Number(c.km_before))
+          ? Number(c.km_before)
+          : null;
+        const ctxParts = [];
+        if (tempV != null) ctxParts.push(`${tempV.toFixed(0)}°C`);
+        if (kmBefore != null) ctxParts.push(`${kmBefore.toFixed(0)} km ${L("before", "antes")}`);
+        // A DC session that started above 60 % was slow because of the taper,
+        // full stop — say so rather than leaving the user hunting. Meaningless
+        // on AC, where the wallbox is the limit and not the pack.
+        if (c.is_dcfc === true && ss0 != null && ss0 >= 60) {
+          ctxParts.push(L(`from ${ss0}% — curve tapering`, `desde ${ss0}% — la curva ya baja`));
+        }
+        const ctxChip = ctxParts.length
+          ? `<span class="chip chip--ctx"><ha-icon icon="mdi:thermometer"></ha-icon>${_esc(ctxParts.join(" · "))}</span>`
+          : "";
         return `
           <div class="csession">
             <div class="session">
@@ -3142,6 +3208,7 @@ class EvTripHistoryCard extends HTMLElement {
                   ${typeChip}
                   ${socChip}
                   ${effChip}
+                  ${ctxChip}
                 </div>
                 <div class="smetrics"><b>${fmtNum(c.kwh)}</b> kWh · <b>${fmtNum(c.price_per_kwh)}</b> ${_esc(sym(c.currency))}/kWh${extra}</div>
                 ${locHtml}

@@ -76,7 +76,17 @@ export function loadDashboard() {
   const ctx = {
     HTMLElement: FakeElement,
     customElements: { define: (n, c) => cards.set(n, c), get: (n) => cards.get(n) },
-    window: { customCards },
+    // Cards that listen for cross-card events (the unit toggle broadcast on
+    // `window`) need these to exist. Listeners are recorded rather than
+    // dispatched: no test needs to fire one yet, and a silent no-op would
+    // hide it if one did.
+    window: {
+      customCards,
+      _listeners: [],
+      addEventListener: (...a) => ctx.window._listeners.push(a),
+      removeEventListener: () => {},
+      dispatchEvent: () => true,
+    },
     console: { ...console, info: () => {}, log: () => {} },
     Date, Math, JSON, Intl, URL, URLSearchParams,
     navigator: { language: "es-ES" },
@@ -102,15 +112,30 @@ export function st(state, attributes = {}, ts = new Date().toISOString()) {
   return { state: String(state), attributes, last_updated: ts, last_changed: ts };
 }
 
-/** Build a fake hass. `calls` collects every callService invocation. */
-export function fakeHass(states = {}, { language = "es" } = {}) {
+/** Build a fake hass. `calls` collects every callService invocation, `apiCalls`
+ *  every callApi one.
+ *
+ *  `callApi` answers with `api` — pass `{ "history/period/...": [...] }` keyed
+ *  by any substring of the path, or a function of the path. Unmatched paths
+ *  resolve to `[]`, which is what a card sees when the recorder has nothing:
+ *  cards must degrade, not throw, so the default is data-shaped rather than a
+ *  rejection. */
+export function fakeHass(states = {}, { language = "es", api = {} } = {}) {
   const calls = [];
+  const apiCalls = [];
   return {
     states,
     language,
     locale: { language },
     callService: (domain, service, data) => { calls.push({ domain, service, data }); },
+    callApi: (method, path) => {
+      apiCalls.push({ method, path });
+      if (typeof api === "function") return Promise.resolve(api(path) ?? []);
+      const hit = Object.keys(api).find((k) => String(path).includes(k));
+      return Promise.resolve(hit ? api[hit] : []);
+    },
     calls,
+    apiCalls,
   };
 }
 
