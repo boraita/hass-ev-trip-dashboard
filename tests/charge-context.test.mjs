@@ -428,3 +428,69 @@ test("stops with no recorded position are left out of the ranking", () => {
   assert.doesNotMatch(html, /Mejores paradas/);
   assert.match(html, /Carga rápida/, "the class summary still renders");
 });
+
+
+// ---------------------------------------------------------------------------
+// v2.136 — does anything other than the charger move the rate?
+// ---------------------------------------------------------------------------
+
+/** A fast DC session with a given class, factor value and resulting rate. */
+const fc = (id, ratedKw, temp, rateKw) => ({
+  id, charge_id: id, is_dcfc: true, location: "not_home",
+  charger_power_kw: ratedKw, peak_charge_power_kw: Math.max(rateKw, 26),
+  temperature_c: temp, km_before: 100, soc_start: 20,
+  started_at: "2026-08-20T12:00:00+02:00",
+  ended_at: new Date(Date.parse("2026-08-20T12:00:00+02:00") + 3600000).toISOString(),
+  kwh: rateKw,   // one hour, so kwh == kW
+  ended: null,
+});
+
+function factorsHtml(rows) {
+  const card = makeCard(cards, "ev-fast-charge-card", { device: "sealion_7" });
+  card.hass = fakeHass({ [RC]: st(String(rows.length), { charges: rows }) });
+  return body(card.innerHTML);
+}
+
+test("a factor pushing opposite ways in the two classes is called noise", () => {
+  // The real shape of this data: temperature came out at -1.9 kW among big
+  // chargers and +4.9 among small ones. Averaging those into "+1.5 kW" would
+  // manufacture a finding out of two contradictory measurements.
+  const html = factorsHtml([
+    fc(1, 150, 10, 88), fc(2, 150, 20, 87), fc(3, 150, 30, 82), fc(4, 150, 40, 81),
+    fc(5, 50, 10, 34), fc(6, 50, 20, 36), fc(7, 50, 30, 40), fc(8, 50, 40, 41),
+  ]);
+  assert.match(html, /temperatura[\s\S]*?ruido/);
+});
+
+test("a factor that moves the rate the same way in both classes is reported", () => {
+  const html = factorsHtml([
+    fc(1, 150, 10, 95), fc(2, 150, 20, 92), fc(3, 150, 30, 80), fc(4, 150, 40, 78),
+    fc(5, 50, 10, 46), fc(6, 50, 20, 44), fc(7, 50, 30, 34), fc(8, 50, 40, 33),
+  ]);
+  assert.match(html, /temperatura[\s\S]*?-\d+\.\d kW/);
+  assert.match(html, /fv--real/);
+});
+
+test("a class with too few sessions reports missing data, not a verdict", () => {
+  // Fewer than two per half is not a comparison. Saying "no effect" there
+  // would be a claim the sample cannot support.
+  const html = factorsHtml([
+    fc(1, 150, 10, 88), fc(2, 150, 20, 87), fc(3, 150, 30, 82), fc(4, 150, 40, 81),
+    fc(5, 50, 10, 34),
+  ]);
+  assert.match(html, /faltan datos/);
+});
+
+test("factors are compared within a class, never across it", () => {
+  // Across classes every factor looks real: here the big chargers happen to
+  // be the cold ones, so a naive comparison would report cold = +50 kW. The
+  // within-class split has to see through that.
+  // Within each class the temperature is deliberately unrelated to the rate;
+  // only the class boundary lines up with it.
+  const html = factorsHtml([
+    fc(1, 150, 10, 88), fc(2, 150, 11, 85), fc(3, 150, 12, 87), fc(4, 150, 13, 86),
+    fc(5, 50, 40, 38), fc(6, 50, 41, 37), fc(7, 50, 42, 38), fc(8, 50, 43, 37),
+  ]);
+  assert.doesNotMatch(html, /\+4[0-9]\.\d kW/, "no cross-class effect invented");
+  assert.match(html, /temperatura[\s\S]*?(sin efecto|ruido)/);
+});
