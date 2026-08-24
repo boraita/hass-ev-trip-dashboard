@@ -6894,6 +6894,100 @@ class EvFastChargeCard extends HTMLElement {
     if (basis >= 60) return { key: "100", label: "60-110 kW" };
     return { key: "50", label: `${_FAST_FLOOR_KW}-60 kW` };
   }
+  // v2.136 — does any factor other than the charger actually move the rate?
+  //
+  // Every factor is measured WITHIN a charger class, never across. Across
+  // classes the answer is always "yes" and always wrong: long drives end at
+  // motorway chargers and errands end at slow ones, so km-driven-before,
+  // arrival SoC and the charger's rating all move together and any one of
+  // them appears to explain the rate. Splitting each class at its own median
+  // and comparing halves removes that.
+  //
+  // A factor is only reported as real when it pushes the SAME WAY in both
+  // classes. Measured here: temperature came out at -1.9 kW among big
+  // chargers and +4.9 kW among small ones, arrival SoC at -0.4 and +4.8.
+  // Opposite signs are the signature of noise, and with three sessions per
+  // half that is what they are. Reporting either as a finding would be
+  // inventing physics out of a sample too small to have any.
+  _factorVerdicts(fast) {
+    const classOf = (c) => ((Number(c.charger_power_kw) || Number(c.peak_charge_power_kw)) >= 110 ? "big" : "small");
+    const hourOf = (c) => {
+      const d = new Date(c.started_at || c.ended_at);
+      return isNaN(d) ? null : d.getHours();
+    };
+    const FACTORS = [
+      { key: "temperature_c", label: L("temperature", "temperatura"), get: (c) => c.temperature_c },
+      { key: "km_before", label: L("km before", "km antes"), get: (c) => c.km_before },
+      { key: "soc_start", label: L("arrival SoC", "SoC de llegada"), get: (c) => c.soc_start },
+      { key: "hour", label: L("time of day", "hora del día"), get: hourOf },
+    ];
+    const groups = { big: [], small: [] };
+    for (const c of fast) groups[classOf(c)].push(c);
+    const MIN_N = 4;   // fewer than two per half is not a comparison
+    const NOISE = 0.15; // under 15 % of a class's own spread is indistinguishable
+
+    return FACTORS.map((f) => {
+      const effects = {};
+      for (const k of ["big", "small"]) {
+        const pairs = groups[k]
+          .map((c) => [f.get(c), _chargeRateKw(c)])
+          .filter(([v, r]) => v != null && isFinite(v) && r != null);
+        if (pairs.length < MIN_N) { effects[k] = null; continue; }
+        pairs.sort((a, b) => a[0] - b[0]);
+        const h = Math.floor(pairs.length / 2);
+        const mean = (arr) => arr.reduce((s, x) => s + x[1], 0) / arr.length;
+        const rates = pairs.map((x) => x[1]);
+        const spread = Math.max(...rates) - Math.min(...rates);
+        effects[k] = {
+          delta: mean(pairs.slice(-h)) - mean(pairs.slice(0, h)),
+          spread,
+          n: pairs.length,
+        };
+      }
+      const a = effects.big, b = effects.small;
+      let verdict, cls;
+      if (!a || !b) {
+        verdict = L("not enough data yet", "faltan datos"); cls = "fv--unknown";
+      } else if (a.delta * b.delta < 0) {
+        verdict = L("contradicts itself — noise", "se contradice — ruido"); cls = "fv--none";
+      } else if (
+        (a.spread > 0 && Math.abs(a.delta) / a.spread < NOISE) &&
+        (b.spread > 0 && Math.abs(b.delta) / b.spread < NOISE)
+      ) {
+        verdict = L("no effect", "sin efecto"); cls = "fv--none";
+      } else {
+        const avg = (a.delta + b.delta) / 2;
+        verdict = `${avg > 0 ? "+" : ""}${avg.toFixed(1)} kW`; cls = "fv--real";
+      }
+      return { label: f.label, verdict, cls, a, b };
+    });
+  }
+
+  _factorsHtml(fast) {
+    const v = this._factorVerdicts(fast);
+    if (!v.length) return "";
+    const rows = v.map((x) => `
+      <div class="fv-row">
+        <span class="fv-lbl">${_esc(x.label)}</span>
+        <span class="fv-num">${x.a ? `${x.a.delta > 0 ? "+" : ""}${x.a.delta.toFixed(1)}` : "—"}</span>
+        <span class="fv-num">${x.b ? `${x.b.delta > 0 ? "+" : ""}${x.b.delta.toFixed(1)}` : "—"}</span>
+        <span class="fv-v ${x.cls}">${_esc(x.verdict)}</span>
+      </div>`).join("");
+    return `
+      <div class="fc-sub fc-sub--t">${L("Does anything else matter?", "¿Manda algo más?")}</div>
+      <div class="fv-head">
+        <span class="fv-lbl"></span>
+        <span class="fv-num">${L("big", "grandes")}</span>
+        <span class="fv-num">${L("small", "pequeños")}</span>
+        <span class="fv-v"></span>
+      </div>
+      ${rows}
+      <div class="fc-foot">${L(
+        "Each factor measured inside a charger class, never across — across classes every factor looks real, because long drives end at fast chargers.",
+        "Cada factor medido dentro de una clase de poste, nunca entre clases — entre clases todos parecen reales, porque los viajes largos acaban en postes rápidos."
+      )}</div>`;
+  }
+
   // v2.135 — the two stops that actually charged fastest. Grouped by
   // position at 40 m (see _SAME_SITE_M) and ranked by the best sustained
   // power reached there, not the average: one bad visit to a good charger
@@ -6910,7 +7004,7 @@ class EvFastChargeCard extends HTMLElement {
     const ranked = sites
       .map((x) => ({
         ...x,
-        best: Math.max(...x.rows.map((c) => Number(c.avg_power_kw) || 0)),
+        best: Math.max(...x.rows.map((c) => _chargeRateKw(c) || 0)),
         rated: [...new Set(x.rows.map((c) => Number(c.charger_power_kw)).filter((v) => v > 0))],
       }))
       .filter((x) => x.best > 0)
@@ -6931,12 +7025,10 @@ class EvFastChargeCard extends HTMLElement {
     const D = this._device || detectDevice(this._hass);
     this._device = D;
     const all = ((this._hass.states[`sensor.${D}_recent_charges`] || {}).attributes || {}).charges || [];
-    const fast = all.filter((c) =>
-      c && c.is_dcfc === true
-      && String(c.location || "").toLowerCase() !== "home"
-      && Number(c.peak_charge_power_kw) >= _FAST_FLOOR_KW
-      && Number(c.avg_power_kw) > 0
-    );
+    // v2.136 — rate via _chargeRateKw, the same derivation the row displays
+    // and the sort orders by. Requiring the logger's `avg_power_kw` attribute
+    // instead meant this card and the list could disagree about a session.
+    const fast = all.filter((c) => _isScorableCharge(c) && _chargeRateKw(c) > 0);
     if (!fast.length) { this.innerHTML = ""; return; }
     const groups = new Map();
     for (const c of fast) {
@@ -6951,7 +7043,7 @@ class EvFastChargeCard extends HTMLElement {
       .filter((k) => groups.has(k))
       .map((k) => {
         const g = groups.get(k);
-        const avgs = g.rows.map((c) => Number(c.avg_power_kw));
+        const avgs = g.rows.map((c) => _chargeRateKw(c));
         const mean = avgs.reduce((a, b) => a + b, 0) / avgs.length;
         const lo = Math.min(...avgs), hi = Math.max(...avgs);
         const w = Math.max(2, Math.min(100, (mean / 150) * 100));
@@ -6969,6 +7061,7 @@ class EvFastChargeCard extends HTMLElement {
         <div class="fc-sub">${L("Average sustained power per charger class", "Potencia media sostenida por clase de poste")}</div>
         <div class="fc-body">${rows}</div>
         ${this._bestStopsHtml(fast)}
+        ${this._factorsHtml(fast)}
         <div class="fc-foot">${fast.length} ${L("fast sessions", "sesiones rápidas")} · ${rated} ${L("with the charger rating recorded", "con la potencia del poste apuntada")}${
           rated < fast.length ? ` · ${L("the rest classed by observed peak", "el resto clasificadas por el pico observado")}` : ""
         }</div>
@@ -6992,6 +7085,17 @@ class EvFastChargeCard extends HTMLElement {
           .fc-place{color:var(--primary-color);text-decoration:none;font-variant-numeric:tabular-nums;}
           .fc-bmeta{font-size:.85em;color:var(--secondary-text-color);white-space:nowrap;}
           .fc-bkw{font-variant-numeric:tabular-nums;white-space:nowrap;}
+          .fv-head,.fv-row{display:grid;grid-template-columns:1fr 3.2em 3.2em 8.5em;
+            align-items:center;gap:6px;padding:1px 16px;font-size:.82em;}
+          .fv-head{font-size:.68em;text-transform:uppercase;letter-spacing:.04em;
+            color:var(--secondary-text-color);}
+          .fv-lbl{color:var(--secondary-text-color);}
+          .fv-num{text-align:right;font-variant-numeric:tabular-nums;font-size:.9em;
+            color:var(--secondary-text-color);}
+          .fv-v{text-align:right;font-size:.85em;}
+          .fv--real{color:var(--success-color,#43a047);font-weight:600;}
+          .fv--none{color:var(--secondary-text-color);}
+          .fv--unknown{color:var(--disabled-text-color);font-style:italic;}
           .fc-foot{padding:2px 16px 14px;font-size:.7em;color:var(--secondary-text-color);}
         </style>
       </ha-card>`;
