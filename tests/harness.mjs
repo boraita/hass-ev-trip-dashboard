@@ -74,6 +74,16 @@ class FakeElement {
     return this._stubs.get(key);
   }
   querySelectorAll() { return []; }
+  /** Cards guard delegated clicks with `this.contains(target)`. A stub only
+   *  exists because it was found in this element's own markup, so it is by
+   *  construction inside it. Without this the guard threw and every
+   *  delegated-click path was untestable. */
+  contains(node) {
+    if (!node) return false;
+    if (node === this) return true;
+    return !!this._stubs && [...this._stubs.values()].includes(node);
+  }
+
   addEventListener(type, fn) { this._listeners.push({ type, fn }); }
   removeEventListener() {}
   appendChild(child) { this.children.push(child); return child; }
