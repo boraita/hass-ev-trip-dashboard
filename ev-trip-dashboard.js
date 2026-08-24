@@ -2718,6 +2718,7 @@ class EvTripHistoryCard extends HTMLElement {
           .cp-unlock{background:none;border:none;padding:0 0 0 6px;cursor:pointer;
             color:var(--secondary-text-color);display:inline-flex;align-items:center;}
           .cp-unlock ha-icon{--mdc-icon-size:14px;}
+          .cp-hint{font-style:normal;opacity:.7;font-size:.85em;}
           .cp-locked{display:flex;align-items:center;gap:5px;font-size:.82em;padding:8px 4px 4px;
                      color:var(--success-color,#43a047);font-weight:600;font-variant-numeric:tabular-nums;}
           .cp-locked ha-icon{--mdc-icon-size:15px;}
@@ -3051,6 +3052,13 @@ class EvTripHistoryCard extends HTMLElement {
   }
 
   _chargeDayDetailHtml(sessions, sym, DASH, fmtNum, timeOf) {
+    // v2.133 — the "same charger" lookup has to span the whole history, not
+    // just the day being expanded: you rated the site on a previous visit,
+    // which is the entire point. Read the full list rather than threading it
+    // through two call sites.
+    const _allCharges = ((this._hass.states[
+      `sensor.${this._device || detectDevice(this._hass)}_recent_charges`
+    ] || {}).attributes || {}).charges || sessions;
     const items = sessions
       .map((c) => {
         // Charge in progress: live row from current sensors — no end time,
@@ -3168,6 +3176,12 @@ class EvTripHistoryCard extends HTMLElement {
         // mistakes (a 9.49€ total typed as €/kWh priced 18.7 kWh at
         // 177.44€). The kWh for this charge is shown right above (in
         // .smetrics) so the total-to-rate split is easy to sanity-check.
+        // v2.133 — offer the rating already recorded at this exact spot, so
+        // it is typed once per charger rather than once per session.
+        // Suppressed when the site's charges disagree (see _ratingAtSameSite):
+        // a service area with a slow unit and a fast one is precisely where
+        // a confident wrong guess costs the most.
+        const suggestKw = c.charger_power_kw != null ? null : _ratingAtSameSite(c, _allCharges);
         let priceHtml = "";
         const reopened = this._unlocked[cid] === true;
         if (locked && !reopened) {
@@ -3186,8 +3200,8 @@ class EvTripHistoryCard extends HTMLElement {
                <input class="cp-input" data-charge-id="${_esc(cid)}" type="number" inputmode="decimal" step="0.01" min="0" placeholder="${fmtNum(c.total_cost, 2)}" />
                <span class="cp-lbl">${L("kWh on invoice", "kWh en factura")}</span>
                <input class="cp-input cp-kwh-input" data-charge-id="${_esc(cid)}" type="number" inputmode="decimal" step="0.01" min="0" placeholder="${fmtNum(c.evse_energy_kwh)}" />
-               <span class="cp-lbl">${L("Charger rating (kW)", "Potencia del poste (kW)")}</span>
-               <input class="cp-input cp-kw-input" data-charge-id="${_esc(cid)}" type="number" inputmode="numeric" step="1" min="0" max="700" placeholder="${fmtNum(c.charger_power_kw, 0)}" />
+               <span class="cp-lbl">${L("Charger rating (kW)", "Potencia del poste (kW)")}${suggestKw != null ? ` <i class="cp-hint">${L("same spot", "mismo sitio")}</i>` : ""}</span>
+               <input class="cp-input cp-kw-input" data-charge-id="${_esc(cid)}" type="number" inputmode="numeric" step="1" min="0" max="700" value="${c.charger_power_kw != null ? fmtNum(c.charger_power_kw, 0) : (suggestKw != null ? suggestKw.toFixed(0) : "")}" placeholder="${fmtNum(c.charger_power_kw, 0)}" />
                <button class="cp-apply" data-charge-id="${_esc(cid)}"><ha-icon icon="mdi:check"></ha-icon>${L("Set", "Fijar")}</button>
              </div>`;
         }
@@ -3240,7 +3254,16 @@ class EvTripHistoryCard extends HTMLElement {
           : null;
         let limitChip = "";
         if (peakKw != null && ratedKw != null) {
-          const got = (peakKw / ratedKw) * 100;
+          // v2.133 — the real ceiling is whichever gives out first, the
+          // charger or the car. Measured on this vehicle: 148, 149 and
+          // 150 kW peaks on 160, 180 and 360 kW units respectively, and an
+          // all-time best of 149.88. Dividing by the charger's rating alone
+          // reported every 360 kW stop as a battery taper at 41 % when the
+          // car was flat out.
+          const carKw = _carCeilingKw(this._hass, this._device || detectDevice(this._hass));
+          const ceilingKw = carKw != null ? Math.min(ratedKw, carKw) : ratedKw;
+          const carBound = carKw != null && carKw < ratedKw;
+          const got = (peakKw / ceilingKw) * 100;
           // 80 %, not 90: no charger delivers its nameplate. A 50 kW unit is
           // current-limited to about 110 A, which on a ~380 V LFP pack is
           // ~42 kW — 84 % of its rating, and that session is pegged at the
@@ -3248,7 +3271,10 @@ class EvTripHistoryCard extends HTMLElement {
           // end (120 kW out of 150).
           let verdict, cls;
           if (got >= 80) {
-            verdict = L("charger was the limit", "te limitó el poste"); cls = "lim--charger";
+            verdict = carBound
+              ? L("the car's own limit", "límite del coche")
+              : L("charger was the limit", "te limitó el poste");
+            cls = "lim--charger";
           } else if (got >= 40) {
             verdict = L("battery taper", "taper de batería"); cls = "lim--pack";
           } else {
@@ -3262,7 +3288,7 @@ class EvTripHistoryCard extends HTMLElement {
               : L("battery taper", "taper de batería");
             cls = (ss0 != null && ss0 < 50) ? "lim--bad" : "lim--pack";
           }
-          limitChip = `<span class="chip chip--limit ${cls}"><ha-icon icon="mdi:speedometer"></ha-icon>${peakKw.toFixed(0)}/${ratedKw.toFixed(0)} kW · ${got.toFixed(0)}% · ${_esc(verdict)}</span>`;
+          limitChip = `<span class="chip chip--limit ${cls}"><ha-icon icon="mdi:speedometer"></ha-icon>${peakKw.toFixed(0)}/${ceilingKw.toFixed(0)} kW${carBound ? ` (${L("car", "coche")})` : ""} · ${got.toFixed(0)}% · ${_esc(verdict)}</span>`;
         } else if (peakKw != null && avgKw != null && peakKw > 0) {
           // No rating recorded: avg/peak still separates "held its ceiling"
           // from "tapered". It cannot spot a charger under-delivering,
@@ -6689,6 +6715,46 @@ customElements.define("ev-trip-cost-card", EvTripCostCard);
 // report a correlation it cannot support.
 // ==========================================================================
 const _FAST_FLOOR_KW = 25;
+// Two charges belong to the same charger within this many metres. 40, not
+// 150: a measurement over 17 real positions found two units 56 m apart at
+// one motorway service area carrying DIFFERENT ratings (60 kW and 180 kW),
+// while seven sessions at a single home spot spanned only 9 m. 150 merged
+// the pair and would have inherited the wrong number onto both.
+const _SAME_SITE_M = 40;
+
+function _metresBetween(a, b, c, d) {
+  const R = 6371000, r = Math.PI / 180;
+  const p1 = a * r, p2 = c * r, dp = (c - a) * r, dl = (d - b) * r;
+  const h = Math.sin(dp / 2) ** 2 + Math.cos(p1) * Math.cos(p2) * Math.sin(dl / 2) ** 2;
+  return 2 * R * Math.asin(Math.min(1, Math.sqrt(h)));
+}
+
+// The rating already recorded at this charge's location, or null.
+// Returns null when the site's charges disagree: a service area with a slow
+// unit and a fast one is exactly where guessing costs the most.
+function _ratingAtSameSite(charge, all) {
+  const la = Number(charge && charge.charge_lat), lo = Number(charge && charge.charge_lon);
+  if (!isFinite(la) || !isFinite(lo)) return null;
+  const seen = new Set();
+  for (const o of all || []) {
+    if (!o || o === charge || o.id === charge.id) continue;
+    const kw = Number(o.charger_power_kw);
+    const ola = Number(o.charge_lat), olo = Number(o.charge_lon);
+    if (!(kw > 0) || !isFinite(ola) || !isFinite(olo)) continue;
+    if (_metresBetween(la, lo, ola, olo) <= _SAME_SITE_M) seen.add(kw);
+  }
+  return seen.size === 1 ? [...seen][0] : null;
+}
+
+// The car's own DC ceiling, from the best peak it has ever pulled. Without
+// it the verdict is nonsense on a big charger: a car that tops out at
+// 150 kW can never reach 80 % of a 360 kW unit's rating, so every Ionity
+// stop would be reported as a battery taper when the car is simply maxed.
+function _carCeilingKw(hass, D) {
+  const v = parseFloat((hass.states[`sensor.${D}_peak_charge_power_best_ever`] || {}).state);
+  return isFinite(v) && v > 0 ? v : null;
+}
+
 
 class EvFastChargeCard extends HTMLElement {
   setConfig(config) { this._config = config || {}; this._device = this._config.device || null; }
