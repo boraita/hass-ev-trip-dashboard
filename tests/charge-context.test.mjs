@@ -411,10 +411,19 @@ test("the fastest stops are ranked by their best visit, not their average", () =
   ] }) });
   const html = body(card.innerHTML);
   assert.match(html, /Mejores paradas/);
+  // One decimal on purpose: this figure IS the ranking key, and rounding
+  // 88.1 and 87.9 both to "88" hides why one is above the other.
   assert.match(html, /88\.1 kW/);
   assert.match(html, /87\.9 kW/, "ranked on its best visit, not the 74 kW mean");
-  assert.doesNotMatch(html, /39\.4 kW/, "only the top two");
-  assert.match(html, /2 visitas/);
+  assert.match(html, /2×/, "the visit count survives, the coordinates do not");
+  // The visible label is the session, never the coordinates. They survive
+  // only as the map pin's tooltip, which is a place to hover, not to read.
+  const labels = [...html.matchAll(/class="fc-place">([^<]*)</g)].map((m) => m[1]);
+  assert.ok(labels.length >= 2);
+  for (const t of labels) {
+    assert.doesNotMatch(t, /-?\d+\.\d{4}/, `coordinates leaked into a label: ${t}`);
+    assert.match(t, /\d{2}\/\d{2}/, "labelled by date and what it delivered");
+  }
 });
 
 test("stops with no recorded position are left out of the ranking", () => {
@@ -431,66 +440,51 @@ test("stops with no recorded position are left out of the ranking", () => {
 
 
 // ---------------------------------------------------------------------------
-// v2.136 — does anything other than the charger move the rate?
+// v2.137 — the comparison shown as real charges, not as a method.
 // ---------------------------------------------------------------------------
 
-/** A fast DC session with a given class, factor value and resulting rate. */
-const fc = (id, ratedKw, temp, rateKw) => ({
+/** A fast DC session: given charger rating, factor value and resulting rate. */
+const fc = (id, ratedKw, temp, rateKw, day) => ({
   id, charge_id: id, is_dcfc: true, location: "not_home",
   charger_power_kw: ratedKw, peak_charge_power_kw: Math.max(rateKw, 26),
   temperature_c: temp, km_before: 100, soc_start: 20,
-  started_at: "2026-08-20T12:00:00+02:00",
-  ended_at: new Date(Date.parse("2026-08-20T12:00:00+02:00") + 3600000).toISOString(),
-  kwh: rateKw,   // one hour, so kwh == kW
-  ended: null,
+  started_at: `2026-08-${String(day).padStart(2, "0")}T12:00:00+02:00`,
+  ended_at: new Date(Date.parse(`2026-08-${String(day).padStart(2, "0")}T12:00:00+02:00`) + 3600000).toISOString(),
+  kwh: rateKw,   // one hour, so kwh equals the average kW
 });
 
-function factorsHtml(rows) {
+function fastCard(rows) {
   const card = makeCard(cards, "ev-fast-charge-card", { device: "sealion_7" });
   card.hass = fakeHass({ [RC]: st(String(rows.length), { charges: rows }) });
   return body(card.innerHTML);
 }
 
-test("a factor pushing opposite ways in the two classes is called noise", () => {
-  // The real shape of this data: temperature came out at -1.9 kW among big
-  // chargers and +4.9 among small ones. Averaging those into "+1.5 kW" would
-  // manufacture a finding out of two contradictory measurements.
-  const html = factorsHtml([
-    fc(1, 150, 10, 88), fc(2, 150, 20, 87), fc(3, 150, 30, 82), fc(4, 150, 40, 81),
-    fc(5, 50, 10, 34), fc(6, 50, 20, 36), fc(7, 50, 30, 40), fc(8, 50, 40, 41),
+test("the fastest and slowest sessions are listed by what they did", () => {
+  // Not by method, and not by coordinates: a date and "52 kWh in 60 min" is
+  // the stop as the driver remembers it.
+  const html = fastCard([
+    fc(1, 150, 20, 88, 20), fc(2, 150, 25, 87, 21), fc(3, 150, 30, 86, 22),
+    fc(4, 50, 20, 39, 23), fc(5, 50, 25, 38, 24), fc(6, 50, 30, 34, 25),
   ]);
-  assert.match(html, /temperatura[\s\S]*?ruido/);
+  assert.match(html, /Las más rápidas/);
+  assert.match(html, /Las más lentas/);
+  assert.match(html, /20\/08/);
+  assert.match(html, /88\.0 kWh · 60 min/);
+  assert.match(html, /34\.0 kWh · 60 min/);
 });
 
-test("a factor that moves the rate the same way in both classes is reported", () => {
-  const html = factorsHtml([
-    fc(1, 150, 10, 95), fc(2, 150, 20, 92), fc(3, 150, 30, 80), fc(4, 150, 40, 78),
-    fc(5, 50, 10, 46), fc(6, 50, 20, 44), fc(7, 50, 30, 34), fc(8, 50, 40, 33),
+test("the fastest block never explains its own method", () => {
+  // The previous version reported per-class deltas and verdicts, which is how
+  // the answer was reached rather than the answer.
+  const html = fastCard([
+    fc(1, 150, 20, 88, 20), fc(2, 150, 25, 87, 21),
+    fc(3, 50, 20, 39, 22), fc(4, 50, 25, 38, 23),
   ]);
-  assert.match(html, /temperatura[\s\S]*?-\d+\.\d kW/);
-  assert.match(html, /fv--real/);
+  assert.doesNotMatch(html, /ruido|sin efecto|faltan datos/);
+  assert.doesNotMatch(html, /mitad|median/i);
 });
 
-test("a class with too few sessions reports missing data, not a verdict", () => {
-  // Fewer than two per half is not a comparison. Saying "no effect" there
-  // would be a claim the sample cannot support.
-  const html = factorsHtml([
-    fc(1, 150, 10, 88), fc(2, 150, 20, 87), fc(3, 150, 30, 82), fc(4, 150, 40, 81),
-    fc(5, 50, 10, 34),
-  ]);
-  assert.match(html, /faltan datos/);
-});
-
-test("factors are compared within a class, never across it", () => {
-  // Across classes every factor looks real: here the big chargers happen to
-  // be the cold ones, so a naive comparison would report cold = +50 kW. The
-  // within-class split has to see through that.
-  // Within each class the temperature is deliberately unrelated to the rate;
-  // only the class boundary lines up with it.
-  const html = factorsHtml([
-    fc(1, 150, 10, 88), fc(2, 150, 11, 85), fc(3, 150, 12, 87), fc(4, 150, 13, 86),
-    fc(5, 50, 40, 38), fc(6, 50, 41, 37), fc(7, 50, 42, 38), fc(8, 50, 43, 37),
-  ]);
-  assert.doesNotMatch(html, /\+4[0-9]\.\d kW/, "no cross-class effect invented");
-  assert.match(html, /temperatura[\s\S]*?(sin efecto|ruido)/);
+test("too few sessions to compare renders no comparison at all", () => {
+  const html = fastCard([fc(1, 150, 20, 88, 20), fc(2, 50, 20, 39, 21)]);
+  assert.doesNotMatch(html, /Las más rápidas/);
 });
