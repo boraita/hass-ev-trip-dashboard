@@ -6894,97 +6894,45 @@ class EvFastChargeCard extends HTMLElement {
     if (basis >= 60) return { key: "100", label: "60-110 kW" };
     return { key: "50", label: `${_FAST_FLOOR_KW}-60 kW` };
   }
-  // v2.136 — does any factor other than the charger actually move the rate?
-  //
-  // Every factor is measured WITHIN a charger class, never across. Across
-  // classes the answer is always "yes" and always wrong: long drives end at
-  // motorway chargers and errands end at slow ones, so km-driven-before,
-  // arrival SoC and the charger's rating all move together and any one of
-  // them appears to explain the rate. Splitting each class at its own median
-  // and comparing halves removes that.
-  //
-  // A factor is only reported as real when it pushes the SAME WAY in both
-  // classes. Measured here: temperature came out at -1.9 kW among big
-  // chargers and +4.9 kW among small ones, arrival SoC at -0.4 and +4.8.
-  // Opposite signs are the signature of noise, and with three sessions per
-  // half that is what they are. Reporting either as a finding would be
-  // inventing physics out of a sample too small to have any.
-  _factorVerdicts(fast) {
-    const classOf = (c) => ((Number(c.charger_power_kw) || Number(c.peak_charge_power_kw)) >= 110 ? "big" : "small");
-    const hourOf = (c) => {
+  // v2.137 — the comparison as actual charges, not as a method. The previous
+  // version reported per-class deltas and verdicts, which is how the answer
+  // was reached rather than the answer: the reader had to be taught the
+  // technique before the table meant anything. Three real fast sessions
+  // against three real slow ones puts the same finding on screen without
+  // any of that — the charger column is the only one that separates them.
+  _fastestSlowestHtml(fast) {
+    if (fast.length < 4) return "";
+    const srt = [...fast].sort((a, b) => _chargeRateKw(b) - _chargeRateKw(a));
+    const n = Math.min(3, Math.floor(srt.length / 2));
+    const line = (c) => {
+      const kw = _chargeRateKw(c);
+      const min = c.started_at && c.ended_at
+        ? (new Date(c.ended_at) - new Date(c.started_at)) / 60000 : null;
       const d = new Date(c.started_at || c.ended_at);
-      return isNaN(d) ? null : d.getHours();
+      const when = isNaN(d)
+        ? "—"
+        : `${String(d.getDate()).padStart(2, "0")}/${String(d.getMonth() + 1).padStart(2, "0")}`;
+      const rated = Number(c.charger_power_kw);
+      const bits = [
+        c.kwh != null ? `${Number(c.kwh).toFixed(1)} kWh` : null,
+        min != null && min > 0 ? `${Math.round(min)} min` : null,
+      ].filter(Boolean).join(" · ");
+      return `
+        <div class="fs-row">
+          <span class="fs-when">${_esc(when)}</span>
+          <span class="fs-did">${_esc(bits)}</span>
+          <span class="fs-post">${rated > 0 ? `${rated.toFixed(0)} kW` : L("post ?", "poste ?")}</span>
+          <b class="fs-kw">${kw.toFixed(0)} kW</b>
+        </div>`;
     };
-    const FACTORS = [
-      { key: "temperature_c", label: L("temperature", "temperatura"), get: (c) => c.temperature_c },
-      { key: "km_before", label: L("km before", "km antes"), get: (c) => c.km_before },
-      { key: "soc_start", label: L("arrival SoC", "SoC de llegada"), get: (c) => c.soc_start },
-      { key: "hour", label: L("time of day", "hora del día"), get: hourOf },
-    ];
-    const groups = { big: [], small: [] };
-    for (const c of fast) groups[classOf(c)].push(c);
-    const MIN_N = 4;   // fewer than two per half is not a comparison
-    const NOISE = 0.15; // under 15 % of a class's own spread is indistinguishable
-
-    return FACTORS.map((f) => {
-      const effects = {};
-      for (const k of ["big", "small"]) {
-        const pairs = groups[k]
-          .map((c) => [f.get(c), _chargeRateKw(c)])
-          .filter(([v, r]) => v != null && isFinite(v) && r != null);
-        if (pairs.length < MIN_N) { effects[k] = null; continue; }
-        pairs.sort((a, b) => a[0] - b[0]);
-        const h = Math.floor(pairs.length / 2);
-        const mean = (arr) => arr.reduce((s, x) => s + x[1], 0) / arr.length;
-        const rates = pairs.map((x) => x[1]);
-        const spread = Math.max(...rates) - Math.min(...rates);
-        effects[k] = {
-          delta: mean(pairs.slice(-h)) - mean(pairs.slice(0, h)),
-          spread,
-          n: pairs.length,
-        };
-      }
-      const a = effects.big, b = effects.small;
-      let verdict, cls;
-      if (!a || !b) {
-        verdict = L("not enough data yet", "faltan datos"); cls = "fv--unknown";
-      } else if (a.delta * b.delta < 0) {
-        verdict = L("contradicts itself — noise", "se contradice — ruido"); cls = "fv--none";
-      } else if (
-        (a.spread > 0 && Math.abs(a.delta) / a.spread < NOISE) &&
-        (b.spread > 0 && Math.abs(b.delta) / b.spread < NOISE)
-      ) {
-        verdict = L("no effect", "sin efecto"); cls = "fv--none";
-      } else {
-        const avg = (a.delta + b.delta) / 2;
-        verdict = `${avg > 0 ? "+" : ""}${avg.toFixed(1)} kW`; cls = "fv--real";
-      }
-      return { label: f.label, verdict, cls, a, b };
-    });
-  }
-
-  _factorsHtml(fast) {
-    const v = this._factorVerdicts(fast);
-    if (!v.length) return "";
-    const rows = v.map((x) => `
-      <div class="fv-row">
-        <span class="fv-lbl">${_esc(x.label)}</span>
-        <span class="fv-num">${x.a ? `${x.a.delta > 0 ? "+" : ""}${x.a.delta.toFixed(1)}` : "—"}</span>
-        <span class="fv-num">${x.b ? `${x.b.delta > 0 ? "+" : ""}${x.b.delta.toFixed(1)}` : "—"}</span>
-        <span class="fv-v ${x.cls}">${_esc(x.verdict)}</span>
-      </div>`).join("");
     return `
-      <div class="fc-sub fc-sub--t">${L("Does anything else matter?", "¿Manda algo más?")}</div>
-      <div class="fv-head">
-        <span class="fv-lbl"></span>
-        <span class="fv-num">${L("big", "grandes")}</span>
-        <span class="fv-num">${L("small", "pequeños")}</span>
-        <span class="fv-v"></span>
-      </div>
-      ${rows}
+      <div class="fc-sub fc-sub--t">${L("Fastest", "Las más rápidas")}</div>
+      ${srt.slice(0, n).map(line).join("")}
+      <div class="fc-sub fc-sub--t">${L("Slowest", "Las más lentas")}</div>
+      ${srt.slice(-n).map(line).join("")}
       <div class="fc-foot">${L(
-        "Each factor measured inside a charger class, never across — across classes every factor looks real, because long drives end at fast chargers.",
-        "Cada factor medido dentro de una clase de poste, nunca entre clases — entre clases todos parecen reales, porque los viajes largos acaban en postes rápidos."
+        "Only the charger column separates them.",
+        "Lo único que las separa es la columna del poste."
       )}</div>`;
   }
 
@@ -7011,13 +6959,30 @@ class EvFastChargeCard extends HTMLElement {
       .sort((a, b) => b.best - a.best)
       .slice(0, 2);
     if (!ranked.length) return "";
-    const rows = ranked.map((x, i) => `
+    // v2.137 — named by what the best session there DID, not by its
+    // coordinates. "43.2411, -5.7763" identifies a place to a database and
+    // to nobody else; "20/08 · 52.1 kWh in 36 min" is the same stop as the
+    // driver remembers it. The map link survives as an icon.
+    const rows = ranked.map((x, i) => {
+      const top = x.rows.reduce((a, b) => (_chargeRateKw(b) > _chargeRateKw(a) ? b : a));
+      const d = new Date(top.started_at || top.ended_at);
+      const when = isNaN(d)
+        ? "—"
+        : `${String(d.getDate()).padStart(2, "0")}/${String(d.getMonth() + 1).padStart(2, "0")}`;
+      const min = top.started_at && top.ended_at
+        ? (new Date(top.ended_at) - new Date(top.started_at)) / 60000 : null;
+      const did = [
+        top.kwh != null ? `${Number(top.kwh).toFixed(1)} kWh` : null,
+        min != null && min > 0 ? `${Math.round(min)} min` : null,
+      ].filter(Boolean).join(" · ");
+      return `
       <div class="fc-best">
         <span class="fc-rank">${i + 1}</span>
-        <a class="fc-place" href="https://www.google.com/maps/search/?api=1&query=${x.la},${x.lo}" target="_blank" rel="noopener">${x.la.toFixed(4)}, ${x.lo.toFixed(4)}</a>
-        <span class="fc-bmeta">${x.rated.length === 1 ? `${x.rated[0].toFixed(0)} kW · ` : ""}${x.rows.length} ${L(x.rows.length === 1 ? "visit" : "visits", x.rows.length === 1 ? "visita" : "visitas")}</span>
+        <span class="fc-place">${_esc(when)} · ${_esc(did)}</span>
+        <span class="fc-bmeta">${x.rated.length === 1 ? `${x.rated[0].toFixed(0)} kW · ` : ""}${x.rows.length}×<a class="fc-map" href="https://www.google.com/maps/search/?api=1&query=${x.la},${x.lo}" target="_blank" rel="noopener" title="${x.la.toFixed(5)}, ${x.lo.toFixed(5)}"><ha-icon icon="mdi:map-marker"></ha-icon></a></span>
         <b class="fc-bkw">${x.best.toFixed(1)} kW</b>
-      </div>`).join("");
+      </div>`;
+    }).join("");
     return `<div class="fc-sub fc-sub--t">${L("Fastest stops", "Mejores paradas")}</div>${rows}`;
   }
   _render() {
@@ -7061,7 +7026,7 @@ class EvFastChargeCard extends HTMLElement {
         <div class="fc-sub">${L("Average sustained power per charger class", "Potencia media sostenida por clase de poste")}</div>
         <div class="fc-body">${rows}</div>
         ${this._bestStopsHtml(fast)}
-        ${this._factorsHtml(fast)}
+        ${this._fastestSlowestHtml(fast)}
         <div class="fc-foot">${fast.length} ${L("fast sessions", "sesiones rápidas")} · ${rated} ${L("with the charger rating recorded", "con la potencia del poste apuntada")}${
           rated < fast.length ? ` · ${L("the rest classed by observed peak", "el resto clasificadas por el pico observado")}` : ""
         }</div>
@@ -7082,7 +7047,15 @@ class EvFastChargeCard extends HTMLElement {
             gap:8px;padding:2px 16px;font-size:.84em;}
           .fc-rank{width:1.3em;height:1.3em;border-radius:50%;background:var(--divider-color);
             display:inline-flex;align-items:center;justify-content:center;font-size:.8em;font-weight:700;}
-          .fc-place{color:var(--primary-color);text-decoration:none;font-variant-numeric:tabular-nums;}
+          .fc-place{font-variant-numeric:tabular-nums;}
+          .fc-map{color:var(--primary-color);text-decoration:none;margin-left:3px;}
+          .fc-map ha-icon{--mdc-icon-size:14px;vertical-align:-3px;}
+          .fs-row{display:grid;grid-template-columns:2.9em 1fr auto auto;align-items:center;
+            gap:8px;padding:1px 16px;font-size:.84em;}
+          .fs-when{color:var(--secondary-text-color);font-variant-numeric:tabular-nums;}
+          .fs-did{font-variant-numeric:tabular-nums;}
+          .fs-post{font-size:.85em;color:var(--secondary-text-color);white-space:nowrap;}
+          .fs-kw{font-variant-numeric:tabular-nums;white-space:nowrap;min-width:3.6em;text-align:right;}
           .fc-bmeta{font-size:.85em;color:var(--secondary-text-color);white-space:nowrap;}
           .fc-bkw{font-variant-numeric:tabular-nums;white-space:nowrap;}
           .fv-head,.fv-row{display:grid;grid-template-columns:1fr 3.2em 3.2em 8.5em;
