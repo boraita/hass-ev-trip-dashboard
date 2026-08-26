@@ -6876,6 +6876,37 @@ function _carCeilingKw(hass, D) {
   return isFinite(v) && v > 0 ? v : null;
 }
 
+// Median, not mean: with three to eight sessions in a charger class one bad
+// visit (a cabinet shared with the car next to it, a session cut short) moves
+// a mean by several kW and a median by almost nothing. The projection this
+// feeds is read as a promise, so it should be the typical outcome.
+function _median(xs) {
+  const v = xs.filter((x) => isFinite(x)).sort((a, b) => a - b);
+  if (!v.length) return null;
+  const m = v.length >> 1;
+  return v.length % 2 ? v[m] : (v[m - 1] + v[m]) / 2;
+}
+
+function _hoursMins(min) {
+  if (!isFinite(min) || min <= 0) return null;
+  const h = Math.floor(min / 60), m = Math.round(min % 60);
+  return h ? `${h} h ${m} min` : `${m} min`;
+}
+
+// The three factors this card is asked about but does not use. Rendered as a
+// tooltip on every session row so they can be read off the real charges,
+// which is a different job from feeding them into an estimate.
+function _chargeContextTitle(c) {
+  const drive = _hoursMins(Number(c.min_before));
+  return [
+    c.km_before != null
+      ? `${Number(c.km_before).toFixed(0)} km ${L("before", "antes")}` : null,
+    drive ? `${drive} ${L("driving", "conduciendo")}` : null,
+    c.soc_start != null
+      ? `${L("arrived at", "llegó al")} ${Number(c.soc_start).toFixed(0)} %` : null,
+  ].filter(Boolean).join(" · ");
+}
+
 
 class EvFastChargeCard extends HTMLElement {
   setConfig(config) { this._config = config || {}; this._device = this._config.device || null; }
@@ -6894,6 +6925,97 @@ class EvFastChargeCard extends HTMLElement {
     if (basis >= 60) return { key: "100", label: "60-110 kW" };
     return { key: "50", label: `${_FAST_FLOOR_KW}-60 kW` };
   }
+  // v2.138 — the predictive half of this card. Everything else here is a
+  // record of what already happened; this is the only part that answers the
+  // question actually being asked at a motorway exit with 34 % in the pack,
+  // which is "how long will I be standing here, and does a different post
+  // change that enough to be worth the detour".
+  //
+  // The estimate per class is the MEDIAN sustained rate this car has really
+  // reached there. Not a spec-sheet figure — a 50 kW unit current-limited to
+  // 110 A tops out near 42 kW on this pack, and a 360 kW unit is wasted on a
+  // car that caps at ~150 — and not a fitted curve either: with three to
+  // eight sessions per class, the typical past outcome is the most an honest
+  // projection can claim. Minutes then come from the pack's own capacity and
+  // the gap to the target, so what appears on screen is time, not an
+  // abstract kW the driver has to convert.
+  //
+  // Deliberately NOT inputs: temperature, kilometres and minutes driven
+  // before, and arrival SoC. All four were measured over these same sessions
+  // and none of them ordered the rates — inside the big-charger class the
+  // temperature coefficient even flips sign against the small-charger one.
+  // They are shown on every row below, because reading them off real charges
+  // is worth doing; they stay out of the arithmetic because including them
+  // would dress noise up as a prediction.
+  _expectHtml(fast, D) {
+    const num = (id) => parseFloat((this._hass.states[id] || {}).state);
+    const soc = num(`sensor.${D}_battery_percent`);
+    const batt = num(`sensor.${D}_battery_energy`);
+    const etf = num(`sensor.${D}_energy_to_full_charge`);
+    // Capacity from the two live figures rather than a configured nominal:
+    // they already reflect whatever the logger has calibrated.
+    const cap = isFinite(batt) && isFinite(etf) && batt + etf > 0 ? batt + etf : null;
+    // 80 by default, and on purpose. Above it the taper decides the rate, so
+    // minutes projected from a flat median would be optimistic exactly where
+    // the driver is most tempted to wait.
+    const target = Math.min(100, Math.max(1, Number(this._config.chargeTarget) || 80));
+    const need = cap != null && isFinite(soc) && soc < target
+      ? (cap * (target - soc)) / 100 : null;
+
+    const byClass = new Map();
+    for (const c of fast) {
+      const cl = this._class(c);
+      if (!cl) continue;
+      if (!byClass.has(cl.key)) byClass.set(cl.key, { label: cl.label, kws: [] });
+      byClass.get(cl.key).kws.push(_chargeRateKw(c));
+    }
+    const est = [...byClass.values()]
+      .map((g) => ({ label: g.label, n: g.kws.length, kw: _median(g.kws) }))
+      .filter((x) => x.kw > 0)
+      .sort((a, b) => b.kw - a.kw);
+    if (est.length < 2) return "";
+
+    // Every row is compared against the slowest class on offer, because that
+    // is the choice being made: the alternative to the detour is the post
+    // already in front of you.
+    const worstMin = need != null ? (need / est[est.length - 1].kw) * 60 : null;
+    const rows = est.map((x, i) => {
+      const mins = need != null ? (need / x.kw) * 60 : null;
+      const saved = mins != null && i < est.length - 1 ? worstMin - mins : null;
+      return `
+        <div class="fx-row">
+          <span class="fx-lbl">${_esc(x.label)}<span class="fc-n">${x.n}</span></span>
+          <b class="fx-kw">${x.kw.toFixed(0)}</b>
+          <span class="fx-min">${mins != null ? _hoursMins(mins) : "—"}</span>
+          <span class="fx-gain">${
+            saved != null && saved >= 1 ? `−${Math.round(saved)} min` : ""
+          }</span>
+        </div>`;
+    }).join("");
+
+    const head = need != null
+      ? `${L("You have", "Tienes")} ${soc.toFixed(0)} % · ${need.toFixed(0)} kWh ${
+          L(`to ${target} %`, `hasta el ${target} %`)}`
+      : isFinite(soc) && soc >= target
+        ? L(`Already at ${soc.toFixed(0)} %, above the ${target} % target.`,
+            `Ya vas al ${soc.toFixed(0)} %, por encima del objetivo del ${target} %.`)
+        : L("Live charge level unavailable — power only.",
+            "Sin nivel de batería en vivo — solo potencia.");
+
+    return `
+      <div class="fc-sub fc-sub--t">${L("What to expect", "Qué esperar")}</div>
+      <div class="fc-sub">${_esc(head)}</div>
+      <div class="fx-head">
+        <span></span><span>kW</span>
+        <span>${L("time", "tiempo")}</span><span>${L("saves", "ahorras")}</span>
+      </div>
+      ${rows}
+      <div class="fc-foot">${L(
+        `From the post and your own charge level. Temperature, and the km and minutes driven before, were measured across these ${fast.length} sessions and ordered nothing.`,
+        `Sale del poste y de tu nivel de batería. La temperatura y los km y minutos previos se midieron en estas ${fast.length} sesiones y no ordenaron nada.`
+      )}</div>`;
+  }
+
   // v2.137 — the comparison as actual charges, not as a method. The previous
   // version reported per-class deltas and verdicts, which is how the answer
   // was reached rather than the answer: the reader had to be taught the
@@ -6904,22 +7026,25 @@ class EvFastChargeCard extends HTMLElement {
     if (fast.length < 4) return "";
     const srt = [...fast].sort((a, b) => _chargeRateKw(b) - _chargeRateKw(a));
     const n = Math.min(3, Math.floor(srt.length / 2));
+    // v2.138 — the leading column is the temperature, not the date. A date
+    // says which session this was; the temperature is one of the conditions
+    // the driver wants to weigh, and it sits next to the kWh and the minutes
+    // so a good charge can be recognised from what it did under what
+    // conditions. The km and minutes driven before, and the SoC on arrival,
+    // ride along as the row's tooltip.
     const line = (c) => {
       const kw = _chargeRateKw(c);
       const min = c.started_at && c.ended_at
         ? (new Date(c.ended_at) - new Date(c.started_at)) / 60000 : null;
-      const d = new Date(c.started_at || c.ended_at);
-      const when = isNaN(d)
-        ? "—"
-        : `${String(d.getDate()).padStart(2, "0")}/${String(d.getMonth() + 1).padStart(2, "0")}`;
+      const t = Number(c.temperature_c);
       const rated = Number(c.charger_power_kw);
       const bits = [
         c.kwh != null ? `${Number(c.kwh).toFixed(1)} kWh` : null,
         min != null && min > 0 ? `${Math.round(min)} min` : null,
       ].filter(Boolean).join(" · ");
       return `
-        <div class="fs-row">
-          <span class="fs-when">${_esc(when)}</span>
+        <div class="fs-row" title="${_esc(_chargeContextTitle(c))}">
+          <span class="fs-when">${isFinite(t) ? `${t.toFixed(0)} °C` : "—"}</span>
           <span class="fs-did">${_esc(bits)}</span>
           <span class="fs-post">${rated > 0 ? `${rated.toFixed(0)} kW` : L("post ?", "poste ?")}</span>
           <b class="fs-kw">${kw.toFixed(0)} kW</b>
@@ -6965,20 +7090,21 @@ class EvFastChargeCard extends HTMLElement {
     // driver remembers it. The map link survives as an icon.
     const rows = ranked.map((x, i) => {
       const top = x.rows.reduce((a, b) => (_chargeRateKw(b) > _chargeRateKw(a) ? b : a));
-      const d = new Date(top.started_at || top.ended_at);
-      const when = isNaN(d)
-        ? "—"
-        : `${String(d.getDate()).padStart(2, "0")}/${String(d.getMonth() + 1).padStart(2, "0")}`;
       const min = top.started_at && top.ended_at
         ? (new Date(top.ended_at) - new Date(top.started_at)) / 60000 : null;
+      const t = Number(top.temperature_c);
+      // v2.138 — the conditions, not the calendar. The date identified the
+      // session and nothing else; temperature + kWh + minutes is what makes
+      // a stop recognisable as a good one.
       const did = [
+        isFinite(t) ? `${t.toFixed(0)} °C` : null,
         top.kwh != null ? `${Number(top.kwh).toFixed(1)} kWh` : null,
         min != null && min > 0 ? `${Math.round(min)} min` : null,
       ].filter(Boolean).join(" · ");
       return `
-      <div class="fc-best">
+      <div class="fc-best" title="${_esc(_chargeContextTitle(top))}">
         <span class="fc-rank">${i + 1}</span>
-        <span class="fc-place">${_esc(when)} · ${_esc(did)}</span>
+        <span class="fc-place">${_esc(did)}</span>
         <span class="fc-bmeta">${x.rated.length === 1 ? `${x.rated[0].toFixed(0)} kW · ` : ""}${x.rows.length}×<a class="fc-map" href="https://www.google.com/maps/search/?api=1&query=${x.la},${x.lo}" target="_blank" rel="noopener" title="${x.la.toFixed(5)}, ${x.lo.toFixed(5)}"><ha-icon icon="mdi:map-marker"></ha-icon></a></span>
         <b class="fc-bkw">${x.best.toFixed(1)} kW</b>
       </div>`;
@@ -7025,6 +7151,7 @@ class EvFastChargeCard extends HTMLElement {
         <div class="fc-head"><ha-icon icon="mdi:ev-station"></ha-icon> ${L("Fast charging", "Carga rápida")}</div>
         <div class="fc-sub">${L("Average sustained power per charger class", "Potencia media sostenida por clase de poste")}</div>
         <div class="fc-body">${rows}</div>
+        ${this._expectHtml(fast, D)}
         ${this._bestStopsHtml(fast)}
         ${this._fastestSlowestHtml(fast)}
         <div class="fc-foot">${fast.length} ${L("fast sessions", "sesiones rápidas")} · ${rated} ${L("with the charger rating recorded", "con la potencia del poste apuntada")}${
@@ -7058,17 +7185,16 @@ class EvFastChargeCard extends HTMLElement {
           .fs-kw{font-variant-numeric:tabular-nums;white-space:nowrap;min-width:3.6em;text-align:right;}
           .fc-bmeta{font-size:.85em;color:var(--secondary-text-color);white-space:nowrap;}
           .fc-bkw{font-variant-numeric:tabular-nums;white-space:nowrap;}
-          .fv-head,.fv-row{display:grid;grid-template-columns:1fr 3.2em 3.2em 8.5em;
-            align-items:center;gap:6px;padding:1px 16px;font-size:.82em;}
-          .fv-head{font-size:.68em;text-transform:uppercase;letter-spacing:.04em;
+          .fx-head,.fx-row{display:grid;grid-template-columns:1fr 3em 5.2em 4.6em;
+            align-items:center;gap:8px;padding:1px 16px;font-size:.84em;}
+          .fx-head{font-size:.66em;text-transform:uppercase;letter-spacing:.04em;
             color:var(--secondary-text-color);}
-          .fv-lbl{color:var(--secondary-text-color);}
-          .fv-num{text-align:right;font-variant-numeric:tabular-nums;font-size:.9em;
-            color:var(--secondary-text-color);}
-          .fv-v{text-align:right;font-size:.85em;}
-          .fv--real{color:var(--success-color,#43a047);font-weight:600;}
-          .fv--none{color:var(--secondary-text-color);}
-          .fv--unknown{color:var(--disabled-text-color);font-style:italic;}
+          .fx-head span:not(:first-child){text-align:right;}
+          .fx-lbl{color:var(--secondary-text-color);display:flex;align-items:baseline;gap:4px;}
+          .fx-kw{text-align:right;font-variant-numeric:tabular-nums;}
+          .fx-min{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap;}
+          .fx-gain{text-align:right;font-size:.8em;white-space:nowrap;
+            color:var(--success-color,#43a047);}
           .fc-foot{padding:2px 16px 14px;font-size:.7em;color:var(--secondary-text-color);}
         </style>
       </ha-card>`;
