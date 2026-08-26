@@ -416,13 +416,15 @@ test("the fastest stops are ranked by their best visit, not their average", () =
   assert.match(html, /88\.1 kW/);
   assert.match(html, /87\.9 kW/, "ranked on its best visit, not the 74 kW mean");
   assert.match(html, /2×/, "the visit count survives, the coordinates do not");
-  // The visible label is the session, never the coordinates. They survive
-  // only as the map pin's tooltip, which is a place to hover, not to read.
+  // v2.138 — the label is the conditions the stop happened under, never the
+  // coordinates and no longer the date either. A date identifies a session;
+  // temperature, kWh and minutes are what make one recognisable as good.
   const labels = [...html.matchAll(/class="fc-place">([^<]*)</g)].map((m) => m[1]);
   assert.ok(labels.length >= 2);
   for (const t of labels) {
     assert.doesNotMatch(t, /-?\d+\.\d{4}/, `coordinates leaked into a label: ${t}`);
-    assert.match(t, /\d{2}\/\d{2}/, "labelled by date and what it delivered");
+    assert.doesNotMatch(t, /\d{2}\/\d{2}/, `a date leaked into a label: ${t}`);
+    assert.match(t, /kWh/, "labelled by what it delivered");
   }
 });
 
@@ -460,17 +462,25 @@ function fastCard(rows) {
 }
 
 test("the fastest and slowest sessions are listed by what they did", () => {
-  // Not by method, and not by coordinates: a date and "52 kWh in 60 min" is
-  // the stop as the driver remembers it.
+  // Not by method, and not by coordinates. v2.138 also drops the date in
+  // favour of the temperature: the driver is comparing conditions, and the
+  // calendar is not one of them.
   const html = fastCard([
     fc(1, 150, 20, 88, 20), fc(2, 150, 25, 87, 21), fc(3, 150, 30, 86, 22),
     fc(4, 50, 20, 39, 23), fc(5, 50, 25, 38, 24), fc(6, 50, 30, 34, 25),
   ]);
   assert.match(html, /Las más rápidas/);
   assert.match(html, /Las más lentas/);
-  assert.match(html, /20\/08/);
   assert.match(html, /88\.0 kWh · 60 min/);
   assert.match(html, /34\.0 kWh · 60 min/);
+  const lead = [...html.matchAll(/class="fs-when">([^<]*)</g)].map((m) => m[1]);
+  assert.equal(lead.length, 6);
+  for (const t of lead) {
+    assert.match(t, /^\d+ °C$/, `the leading column must be the temperature: ${t}`);
+  }
+  // The factors the estimate refuses to use are still readable, as the
+  // row's tooltip rather than a column.
+  assert.match(html, /title="100 km antes · llegó al 20 %"/);
 });
 
 test("the fastest block never explains its own method", () => {
@@ -487,4 +497,127 @@ test("the fastest block never explains its own method", () => {
 test("too few sessions to compare renders no comparison at all", () => {
   const html = fastCard([fc(1, 150, 20, 88, 20), fc(2, 50, 20, 39, 21)]);
   assert.doesNotMatch(html, /Las más rápidas/);
+});
+
+
+// ---------------------------------------------------------------------------
+// v2.138 — "Qué esperar": the predictive half. Everything above this point in
+// the card is a record of what happened; these tests are about the only part
+// that projects forward, and about what it refuses to use to do so.
+// ---------------------------------------------------------------------------
+
+function fastCardWith(rows, states = {}) {
+  const card = makeCard(cards, "ev-fast-charge-card", { device: "sealion_7" });
+  card.hass = fakeHass({ [RC]: st(String(rows.length), { charges: rows }), ...states });
+  return body(card.innerHTML);
+}
+
+/** The three live figures the projection needs: charge level, and the two
+ *  halves of the pack capacity the logger already publishes. */
+const live = (soc, batt, etf) => ({
+  "sensor.sealion_7_battery_percent": st(String(soc)),
+  "sensor.sealion_7_battery_energy": st(String(batt)),
+  "sensor.sealion_7_energy_to_full_charge": st(String(etf)),
+});
+
+/** The estimate table, parsed back out of the markup. */
+const estimate = (html) => [...html.matchAll(
+  /class="fx-lbl">([^<]*)<span class="fc-n">(\d+)<\/span><\/span>\s*<b class="fx-kw">(\d+)<\/b>\s*<span class="fx-min">([^<]*)<\/span>\s*<span class="fx-gain">([^<]*)<\/span>/g
+)].map((m) => ({ label: m[1], n: Number(m[2]), kw: Number(m[3]), time: m[4], saves: m[5] }));
+
+test("the estimate answers in minutes, from the pack and the gap to the target", () => {
+  // 24 + 56 = 80 kWh of capacity, 30 % in the pack, 80 % wanted: 40 kWh to
+  // put in. At 80 kW that is half an hour; at 50 kW it is 48 minutes. Minutes
+  // are the point — a driver at a motorway exit is deciding how long to
+  // stand there, not comparing kW.
+  const html = fastCardWith([
+    fc(1, 150, 20, 80, 20), fc(2, 150, 25, 80, 21),
+    fc(3, 50, 20, 50, 22), fc(4, 50, 25, 50, 23),
+  ], live(30, 24, 56));
+  assert.match(html, /Qué esperar/);
+  assert.match(html, /Tienes 30 % · 40 kWh hasta el 80 %/);
+  const est = estimate(html);
+  assert.equal(est.length, 2);
+  assert.deepEqual(est.map((x) => x.kw), [80, 50], "best option first");
+  assert.equal(est[0].time, "30 min");
+  assert.equal(est[1].time, "48 min");
+  // Measured against the slowest post on offer, because that is the real
+  // alternative: the one already in front of you.
+  assert.equal(est[0].saves, "−18 min");
+  assert.equal(est[1].saves, "", "the slowest row has nothing to save against");
+});
+
+test("one cut-short visit does not drag a class's estimate down", () => {
+  // 88, 87 and a 20 kW session that ended early. The median says 87, which
+  // is what this post typically does; the mean would say 65 and promise a
+  // stop half again as long as reality.
+  const html = fastCardWith([
+    fc(1, 150, 20, 88, 20), fc(2, 150, 25, 87, 21), fc(3, 150, 30, 20, 22),
+    fc(4, 50, 20, 38, 23), fc(5, 50, 25, 38, 24),
+  ], live(30, 24, 56));
+  const est = estimate(html);
+  assert.equal(est[0].kw, 87);
+  assert.equal(est[0].n, 3, "the bad visit is still counted, just not averaged in");
+});
+
+test("temperature and the kilometres before do not move the estimate", () => {
+  // The same sessions at 5 °C and at 40 °C, after 3 km and after 400. If any
+  // of those ever leaks into the projection, these two tables stop matching.
+  // They were measured across the real history and ordered nothing, so a
+  // number that shifted with them would be noise wearing a prediction's
+  // clothes.
+  const rows = (temp, km) => [
+    { ...fc(1, 150, temp, 80, 20), km_before: km, min_before: km },
+    { ...fc(2, 150, temp, 80, 21), km_before: km, min_before: km },
+    { ...fc(3, 50, temp, 50, 22), km_before: km, min_before: km },
+    { ...fc(4, 50, temp, 50, 23), km_before: km, min_before: km },
+  ];
+  const cold = estimate(fastCardWith(rows(5, 3), live(30, 24, 56)));
+  const hot = estimate(fastCardWith(rows(40, 400), live(30, 24, 56)));
+  assert.deepEqual(cold, hot);
+  assert.equal(cold[0].time, "30 min");
+});
+
+test("without a live charge level it offers power and no invented minutes", () => {
+  const html = fastCardWith([
+    fc(1, 150, 20, 80, 20), fc(2, 150, 25, 80, 21),
+    fc(3, 50, 20, 50, 22), fc(4, 50, 25, 50, 23),
+  ]);
+  const est = estimate(html);
+  assert.deepEqual(est.map((x) => x.kw), [80, 50]);
+  for (const x of est) {
+    assert.equal(x.time, "—");
+    assert.equal(x.saves, "", "no minutes means nothing to compare");
+  }
+  assert.match(html, /Sin nivel de batería en vivo/);
+});
+
+test("already past the target, it says so instead of projecting a stop", () => {
+  const html = fastCardWith([
+    fc(1, 150, 20, 80, 20), fc(2, 150, 25, 80, 21),
+    fc(3, 50, 20, 50, 22), fc(4, 50, 25, 50, 23),
+  ], live(88, 70, 10));
+  assert.match(html, /Ya vas al 88 %, por encima del objetivo del 80 %/);
+  for (const x of estimate(html)) assert.equal(x.time, "—");
+});
+
+test("one charger class is not a choice, so no estimate is offered", () => {
+  // With nothing to compare against, a table of one row would be a number
+  // dressed up as a decision.
+  const html = fastCardWith([
+    fc(1, 50, 20, 38, 20), fc(2, 50, 25, 39, 21),
+  ], live(30, 24, 56));
+  assert.doesNotMatch(html, /Qué esperar/);
+  assert.match(html, /Carga rápida/, "the class summary still renders");
+});
+
+test("the estimate names the factors it leaves out", () => {
+  // Silence would read as "these were considered". They were measured, and
+  // they ordered nothing; saying which ones is what makes the estimate
+  // honest rather than merely short.
+  const html = fastCardWith([
+    fc(1, 150, 20, 80, 20), fc(2, 150, 25, 80, 21),
+    fc(3, 50, 20, 50, 22), fc(4, 50, 25, 50, 23),
+  ], live(30, 24, 56));
+  assert.match(html, /La temperatura y los km y minutos previos se midieron en estas 4 sesiones y no ordenaron nada/);
 });
