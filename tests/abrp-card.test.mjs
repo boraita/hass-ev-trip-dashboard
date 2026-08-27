@@ -63,8 +63,11 @@ test("push off: paused, and the last send shown as a clock time", () => {
   assert.match(html, /ab-pill idle/);
   assert.match(html, /en pausa/);
   assert.match(html, /último envío a las \d{1,2}[:.]\d{2}/);
-  // The resting state of the sensor must be explained, not left blank.
-  assert.match(html, /sin ruta activa/);
+  // v2.139 — the resting state must still be explained, but a bare
+  // `unknown` with no `status` attribute means we have not asked yet, and
+  // saying "no active route" there was a claim about the planner that
+  // nothing had checked.
+  assert.match(html, /todavía sin consultar/);
   assert.match(html, /ab-v">—/);
   assert.doesNotMatch(html, /cada 40 s/, "interval is noise while paused");
 });
@@ -163,16 +166,15 @@ test("tapping the push row toggles the resolved switch", () => {
   assert.equal(hass.calls[0].data.entity_id, SW);
 });
 
-test("the deep link carries the configured car model", () => {
+// v2.139 — the two deep-link tests are gone with the link. It carried one
+// parameter, opened a generic planner in a new tab, and told the driver
+// nothing they could not get from the app already on their phone. The row
+// it freed up now shows the pack we report, which is information that
+// exists nowhere else — see "the card shows the pack it reports to ABRP".
+test("the card no longer offers to open ABRP", () => {
   const { html } = rendered({ [SW]: st("on", { car_model: CAR, interval_s: 40 }) });
-  assert.match(html, /abetterrouteplanner\.com\/\?car_model=byd%3Asealion%3A25%3A82%3Arwd/);
-  assert.match(html, /rel="noopener noreferrer"/);
-});
-
-test("no car model configured: the link still works and says why it's bare", () => {
-  const { html } = rendered({ [SW]: st("on", { interval_s: 40 }) });
-  assert.match(html, /abetterrouteplanner\.com\/"/);
-  assert.match(html, /modelo de coche sin configurar/);
+  assert.doesNotMatch(html, /abetterrouteplanner/);
+  assert.doesNotMatch(html, /Planificar ruta/);
 });
 
 test("re-renders when only an attribute moved (last_sent_at)", () => {
@@ -222,4 +224,64 @@ test("never leaks undefined or NaN into the markup", () => {
     const { html } = rendered(states);
     assert.doesNotMatch(html, /undefined|NaN|Invalid Date/, JSON.stringify(states));
   }
+});
+
+
+// ---------------------------------------------------------------------------
+// v2.139 — the card stops guessing why there is no next-stop target, and
+// starts showing what we tell ABRP.
+// ---------------------------------------------------------------------------
+
+function v139Card(states) {
+  const card = makeCard(cards, "ev-abrp-card", { device: "sealion_7" });
+  card.hass = fakeHass(states);
+  return String(card.innerHTML).replace(/<style>[\s\S]*?<\/style>/g, "");
+}
+
+const v139 = (socState, socAttrs = {}, swAttrs = {}) => ({
+  [SW]: st("on", { last_sent_at: 1787775783, car_model: "byd:sealion:25:82:rwd",
+                   sent_capacity_kwh: 82.5, sent_soh_pct: 100, ...swAttrs }),
+  [SOC]: st(socState, socAttrs),
+});
+
+test("a dead token is not reported as 'no active route'", () => {
+  // The defect this replaces: every blank rendered "sin ruta activa en
+  // ABRP", so an expired token sent the driver looking at their route
+  // planner instead of at their credentials.
+  const html = v139Card(v139("unknown", { status: "http_401" }));
+  assert.match(html, /ABRP respondió 401/);
+  assert.doesNotMatch(html, /sin ruta activa/);
+});
+
+test("a network drop says so, and an idle planner still says no route", () => {
+  assert.match(v139Card(v139("unknown", { status: "network" })),
+               /no se pudo conectar con ABRP/);
+  const idle = v139Card(v139("unknown", { status: "no_route" }));
+  assert.match(idle, /sin ruta activa en ABRP/);
+  assert.doesNotMatch(idle, /ab-err/, "an idle planner is not an error");
+});
+
+test("before the first check it admits it has not looked", () => {
+  // Previously indistinguishable from a confirmed absence of route.
+  assert.match(v139Card(v139("unknown", {})), /todavía sin consultar/);
+});
+
+test("an active route shows its target", () => {
+  const html = v139Card(v139("23", { status: "ok" }));
+  assert.match(html, /de la ruta activa en ABRP/);
+  assert.match(html, />23</);
+});
+
+test("the card shows the pack it reports to ABRP", () => {
+  // The 2026-08-26 defect in one row: a 103.23 % SoH went to ABRP for four
+  // days and nothing on screen said what we were sending.
+  const html = v139Card(v139("unknown", { status: "no_route" }));
+  assert.match(html, /Batería que le decimos/);
+  assert.match(html, /82\.5 kWh · SoH 100 %/);
+});
+
+test("the deep link to abetterrouteplanner.com is gone", () => {
+  const html = v139Card(v139("unknown", { status: "no_route" }));
+  assert.doesNotMatch(html, /abetterrouteplanner/);
+  assert.doesNotMatch(html, /Planificar ruta/);
 });

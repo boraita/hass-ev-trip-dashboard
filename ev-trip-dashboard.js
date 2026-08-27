@@ -8380,36 +8380,65 @@ class EvAbrpCard extends HTMLElement {
     }
 
     // --- next charge stop -------------------------------------------------
-    // The whole point of the explanatory subtitle: "unknown" here is the
-    // normal resting state, not a broken sensor.
+    // v2.139 — the subtitle now comes from the logger's `status` attribute
+    // instead of being inferred from a blank state. It used to read "no
+    // active route in ABRP" whenever there was no number, which is a claim
+    // about the planner that nothing had verified: a rejected token and a
+    // dropped connection produced exactly the same blank. Saying "no route"
+    // to someone whose token expired sends them looking in the wrong place.
     if (socEnt) {
-      const s = this._hass.states[socEnt];
-      const v = parseFloat((s || {}).state);
+      const s = this._hass.states[socEnt] || {};
+      const v = parseFloat(s.state);
       const active = !isNaN(v);
+      const st = (s.attributes || {}).status;
+      let why;
+      if (active) why = L("from the active ABRP route", "de la ruta activa en ABRP");
+      else if (st === "no_route") why = L("no active route in ABRP", "sin ruta activa en ABRP");
+      else if (st === "network") why = L("could not reach ABRP", "no se pudo conectar con ABRP");
+      else if (typeof st === "string" && st.startsWith("http_"))
+        why = L(`ABRP answered ${st.slice(5)}`, `ABRP respondió ${st.slice(5)}`);
+      else if (st === "suppressed") why = L("paused after repeated failures", "pausado tras fallos repetidos");
+      else if (st === "unparsed") why = L("unrecognised answer from ABRP", "respuesta no reconocida de ABRP");
+      else why = L("not checked yet", "todavía sin consultar");
+      const bad = !active && st != null && st !== "no_route";
       rows.push(
-        `<div class="ab-row">` +
-        `<ha-icon class="ab-i" icon="mdi:map-marker-radius"></ha-icon>` +
+        `<div class="ab-row${bad ? " ab-err" : ""}">` +
+        `<ha-icon class="ab-i${bad ? " ab-ierr" : ""}" icon="mdi:map-marker-radius"></ha-icon>` +
         `<span class="ab-l">${_esc(L("Next stop target", "SoC objetivo siguiente parada"))}` +
-        `<span class="ab-s">${_esc(active ? L("from the active ABRP route", "de la ruta activa en ABRP") : L("no active route in ABRP", "sin ruta activa en ABRP"))}</span></span>` +
+        `<span class="ab-s">${_esc(why)}</span></span>` +
         `<span class="ab-v">${active ? Math.round(v) + "<span class=\"ab-u\">%</span>" : "—"}</span>` +
         `</div>`
       );
     }
 
-    // --- open ABRP --------------------------------------------------------
-    // Deep link with the ONE parameter Iternio documents publicly for the web
-    // app: car_model (the ABRP typecode the logger already sends). Origin/SoC
-    // prefill exists in ABRP's deep-link collection but isn't verified against
-    // the current app — don't guess params here, they fail silently.
-    const url = "https://abetterrouteplanner.com/" + (carModel ? `?car_model=${encodeURIComponent(carModel)}` : "");
-    rows.push(
-      `<a class="ab-row ab-tap" href="${_esc(url)}" target="_blank" rel="noopener noreferrer">` +
-      `<ha-icon class="ab-i" icon="mdi:map-marker-path"></ha-icon>` +
-      `<span class="ab-l">${_esc(L("Plan a route in ABRP", "Planificar ruta en ABRP"))}` +
-      `<span class="ab-s">${_esc(carModel || L("car model not configured", "modelo de coche sin configurar"))}</span></span>` +
-      `<ha-icon class="ab-c" icon="mdi:open-in-new"></ha-icon>` +
-      `</a>`
-    );
+    // --- what we are actually telling ABRP --------------------------------
+    // v2.139 — the row that replaces the deep link, and the one that would
+    // have caught the 2026-08-26 defect on sight: a capacity drift pushed a
+    // 103.23 % SoH for four days, so ABRP planned every route against a
+    // battery better than new. Nothing on screen said what we were sending;
+    // finding it took a forensic dig through four days of history.
+    if (swEnt) {
+      const a = (this._hass.states[swEnt] || {}).attributes || {};
+      const cap = Number(a.sent_capacity_kwh);
+      const soh = Number(a.sent_soh_pct);
+      if (isFinite(cap) && cap > 0) {
+        const bits = [`${cap.toFixed(1)} kWh`];
+        if (isFinite(soh)) bits.push(`SoH ${soh.toFixed(0)} %`);
+        rows.push(
+          `<div class="ab-row">` +
+          `<ha-icon class="ab-i" icon="mdi:battery-heart-variant"></ha-icon>` +
+          `<span class="ab-l">${_esc(L("Pack we report", "Batería que le decimos"))}` +
+          `<span class="ab-s">${_esc(L("ABRP plans every route against this", "ABRP planifica cada ruta con esto"))}</span></span>` +
+          `<span class="ab-v">${_esc(bits.join(" · "))}</span>` +
+          `</div>`
+        );
+      }
+    }
+
+    // v2.139 — the "Plan a route in ABRP" deep link is gone. It carried
+    // one parameter, opened a generic planner in a new tab, and told the
+    // driver nothing they could not get from the app they already have.
+    // What is worth the row instead is what we are SENDING, below.
 
     this.innerHTML =
       `<ha-card><div class="ab-wrap">` +
