@@ -176,3 +176,40 @@ export function makeCard(cards, type, config = {}) {
   card.setConfig(config);
   return card;
 }
+
+/** A click target for a card that uses event delegation.
+ *
+ *  Cards match `ev.target.closest(sel)` against several selectors in order,
+ *  so a test says which selector should match and what attributes that node
+ *  carries: clickTarget({".cal-c[data-cal-day]": {"data-cal-day": "2026-09-07"}}).
+ */
+export function clickTarget(bySelector) {
+  const nodes = new Map();
+  for (const [sel, attrs] of Object.entries(bySelector)) {
+    nodes.set(sel, {
+      getAttribute: (name) => (name in attrs ? attrs[name] : null),
+      getBoundingClientRect: () => ({ left: 0, width: 100, top: 0, height: 10 }),
+    });
+  }
+  return {
+    closest: (sel) => nodes.get(sel) || null,
+    getAttribute: () => null,
+    _nodes: [...nodes.values()],
+  };
+}
+
+/** Run every click listener a card registered on itself.
+ *
+ *  The nodes from `clickTarget` are registered as stubs of the card first, so
+ *  the `this.contains(node)` guard every delegated handler uses passes — the
+ *  same guard that, in a browser, is satisfied because the click came out of
+ *  the card's own subtree.
+ */
+export function dispatchClick(card, target) {
+  if (!card._stubs) card._stubs = new Map();
+  for (const n of target._nodes || []) card._stubs.set(`__click_${card._stubs.size}`, n);
+  const ev = { target, stopPropagation() {}, preventDefault() {}, clientX: 0, clientY: 0 };
+  const listeners = card._listeners.filter((l) => l && l.type === "click");
+  if (!listeners.length) throw new Error("card has no click listener — call connectedCallback() first");
+  for (const l of listeners) l.fn(ev);
+}

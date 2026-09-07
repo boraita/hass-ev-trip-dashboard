@@ -1248,7 +1248,17 @@ function cargasView(D, hass, V, cfg) {
   // detail has an inline €/kWh editor (sets that specific charge by charge_id)
   // and, for not_home charges, the geocoded street + a Google Maps link. This
   // replaces the old "fix last charge" helper+script editor entirely.
-  cards.push({ type: "custom:ev-trip-history-card", device: D, kind: "charges", title: "Charge history", locationEntity, scrollRows: 5 });
+  cards.push({
+    type: "custom:ev-trip-history-card",
+    device: D,
+    kind: "charges",
+    title: L("Charge history", "Historial de cargas"),
+    locationEntity,
+    scrollRows: 5,
+    // Month calendar above the list: tap a day to narrow it (see
+    // _chargeCalendarHtml). Pass calendar:false for a plain list.
+    calendar: true,
+  });
 
   // ---- Charged vs driving summary (RIGHT column) ------------------------
   // Icon tiles of REAL charged kWh (from recent_charges, so today's charges show)
@@ -2231,6 +2241,15 @@ class EvTripHistoryCard extends HTMLElement {
     this._curveTap = this._curveTap || {}; // charge_id -> tapped x-fraction (0..1) in its power curve
     this._unlocked = this._unlocked || {}; // charge_id -> price editor re-opened on an already-set row
     this._chargeSort = this._chargeSort || "date"; // date | rate | kwh | cost
+    // v-next — month calendar over the charges. `_calOffset` is months back
+    // from the current one (0 = this month); `_calDay` is a YYYY-MM-DD the
+    // user tapped, which narrows the list below to that single day. Both are
+    // view state, kept across re-renders like the sort and the open day.
+    this._calOffset = this._calOffset === undefined ? 0 : this._calOffset;
+    this._calDay = this._calDay === undefined ? null : this._calDay;
+    // `_calAll` shows the whole window in the list while the calendar keeps
+    // displaying a month — so turning the calendar on never hides history.
+    this._calAll = this._calAll === undefined ? false : this._calAll;
     this._jroutes = this._jroutes || {}; // journey_id -> [{lat,lon}] | 'loading'
   }
   set hass(hass) {
@@ -2320,6 +2339,42 @@ class EvTripHistoryCard extends HTMLElement {
         const id = j.getAttribute("data-journey-id");
         if (id == null) return;
         this._openId = String(this._openId) === String(id) ? null : id;
+        this._render();
+        return;
+      }
+      // v-next — charge calendar: month nav, a day cell, and the reset chip.
+      const calNav = tgt.closest("[data-cal-nav]");
+      if (calNav && this.contains(calNav)) {
+        ev.stopPropagation();
+        const dir = Number(calNav.getAttribute("data-cal-nav")) || 0;
+        this._calOffset = Math.max(0, (this._calOffset || 0) + dir);
+        this._calAll = false;
+        // Changing month must drop a day selection from the old month,
+        // otherwise the list filters to a day the calendar isn't showing.
+        this._calDay = null;
+        this._openId = null;
+        this._render();
+        return;
+      }
+      const calCell = tgt.closest("[data-cal-day]");
+      if (calCell && this.contains(calCell)) {
+        ev.stopPropagation();
+        const day = calCell.getAttribute("data-cal-day");
+        // Tapping the selected day again clears the filter — the same
+        // toggle the day rows already use, so it behaves as expected.
+        const same = this._calDay === day;
+        this._calAll = false;
+        this._calDay = same ? null : day;
+        this._openId = same ? null : day;
+        this._render();
+        return;
+      }
+      const calAll = tgt.closest("[data-cal-all]");
+      if (calAll && this.contains(calAll)) {
+        ev.stopPropagation();
+        this._calDay = null;
+        this._calAll = true; // list spans the whole window; calendar stays put
+        this._openId = null;
         this._render();
         return;
       }
@@ -2745,6 +2800,63 @@ class EvTripHistoryCard extends HTMLElement {
           .chip--dc{color:var(--warning-color, #fb8c00);
                     border-color:var(--warning-color, #fb8c00);}
           .chip--soc{color:var(--info-color, #039be5);border-color:var(--info-color, #039be5);}
+          /* v-next — where the charge happened. Home and away are the two
+             cases you sort by, so they get shape (icon) and colour, not just
+             a word: a glance down the list separates them without reading. */
+          .chip--home{color:var(--success-color,#43a047);border-color:var(--success-color,#43a047);}
+          .chip--away{color:var(--info-color,#039be5);border-color:var(--info-color,#039be5);}
+          .chip--home ha-icon,.chip--away ha-icon{--mdc-icon-size:13px;}
+          /* v-next — charge calendar. A month grid where only the days with
+             sessions are tappable; kWh is the number on the cell because that
+             is what you scan for, and the count rides in the corner. */
+          .cal{padding:2px 4px 10px;}
+          .cal-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:0 2px 8px;}
+          .cal-nav{background:none;border:1px solid var(--divider-color);border-radius:8px;
+                   color:var(--primary-text-color);cursor:pointer;padding:2px;display:flex;line-height:0;}
+          .cal-nav[disabled]{opacity:.35;cursor:default;}
+          .cal-nav ha-icon{--mdc-icon-size:18px;}
+          .cal-title{font-weight:700;text-transform:capitalize;min-width:8.5em;}
+          .cal-tot{color:var(--secondary-text-color);font-size:.82em;font-variant-numeric:tabular-nums;}
+          .cal-all{margin-left:auto;background:none;border:1px solid var(--divider-color);border-radius:999px;
+                   color:var(--secondary-text-color);cursor:pointer;font:inherit;font-size:.74em;
+                   padding:2px 9px;display:inline-flex;align-items:center;gap:3px;}
+          .cal-all:hover{border-color:var(--primary-color);color:var(--primary-color);}
+          .cal-all ha-icon{--mdc-icon-size:13px;}
+          .cal-note{margin-left:auto;color:var(--secondary-text-color);font-size:.74em;}
+          .cal-wd,.cal-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:4px;}
+          .cal-wd{padding:0 2px 3px;}
+          .cal-wd span{text-align:center;font-size:.64em;font-weight:700;letter-spacing:.06em;
+                       color:var(--secondary-text-color);}
+          .cal-c{position:relative;aspect-ratio:1/1;border:1px solid transparent;border-radius:9px;
+                 display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1px;
+                 background:var(--secondary-background-color,var(--card-background-color));
+                 color:var(--secondary-text-color);font:inherit;padding:0;min-height:34px;}
+          .cal-c--pad{background:none;}
+          .cal-d{font-size:.72em;font-weight:600;line-height:1;}
+          .cal-c--has{cursor:pointer;color:var(--primary-text-color);}
+          .cal-c--has .cal-d{font-weight:800;}
+          .cal-kwh{font-size:.66em;font-weight:800;font-variant-numeric:tabular-nums;line-height:1;}
+          .cal-n{position:absolute;top:2px;right:3px;font-size:.55em;font-weight:800;opacity:.8;}
+          /* rgba first, color-mix second: an older webview drops the
+             second declaration and still gets a tinted cell rather than a
+             bare one. The literals match the default HA accent colours. */
+          .cal-c--ac{border-color:var(--success-color,#43a047);background:rgba(67,160,71,.14);
+                     background:color-mix(in srgb, var(--success-color,#43a047) 14%, transparent);}
+          .cal-c--dc{border-color:var(--warning-color,#fb8c00);background:rgba(251,140,0,.16);
+                     background:color-mix(in srgb, var(--warning-color,#fb8c00) 16%, transparent);}
+          .cal-c--mix{border-color:var(--info-color,#039be5);background:rgba(3,155,229,.15);
+                      background:color-mix(in srgb, var(--info-color,#039be5) 15%, transparent);}
+          .cal-c--today{box-shadow:inset 0 0 0 1px var(--divider-color);}
+          .cal-c--sel{outline:2px solid var(--primary-color);outline-offset:1px;}
+          .cal-c--live .cal-n{color:var(--success-color,#43a047);}
+          .cal-c--has:hover{filter:brightness(1.12);}
+          .cal-c--has:focus-visible{outline:2px solid var(--primary-color);outline-offset:1px;}
+          .cal-key{display:flex;align-items:center;gap:5px;padding:8px 2px 0;
+                   font-size:.68em;color:var(--secondary-text-color);}
+          .cal-kd{width:9px;height:9px;border-radius:3px;display:inline-block;margin-left:6px;}
+          .cal-kd--ac{background:var(--success-color,#43a047);}
+          .cal-kd--dc{background:var(--warning-color,#fb8c00);}
+          .cal-kd--mix{background:var(--info-color,#039be5);}
           .chip--soc ha-icon{--mdc-icon-size:13px;}
           .chip--eff{color:var(--success-color,#43a047);border-color:var(--success-color,#43a047);}
           .chip--eff ha-icon{--mdc-icon-size:13px;}
@@ -2812,7 +2924,14 @@ class EvTripHistoryCard extends HTMLElement {
           .cal-rt-attr{fill:#000;opacity:.5;font-size:7px;text-anchor:end;paint-order:stroke;stroke:#fff;stroke-width:2;}
         </style>
         <div class="head"><span>${_esc(this._config.title || (kind === "journeys" ? "Journeys" : "Charges"))}</span>
-          <span class="count">${kind === "journeys" ? `${rows.length} of ${total}` : `${rows.length} ${rows.length === 1 ? kind.replace(/s$/, "") : kind}`}</span></div>
+          <span class="count">${(() => {
+            if (kind === "journeys") return `${rows.length} of ${total}`;
+            const shown = this._shownCount != null ? this._shownCount : rows.length;
+            const win = this._windowCount != null ? this._windowCount : total;
+            return shown < win
+              ? `${shown} ${L("of", "de")} ${win}`
+              : `${shown} ${shown === 1 ? L("charge", "carga") : L("charges", "cargas")}`;
+          })()}</span></div>
         <div class="list${this._config.scrollRows ? " list--scroll" : ""}"${this._config.scrollRows ? ` style="max-height:${Math.round(this._config.scrollRows * 78)}px;overflow-y:auto;"` : ""}>${inner}</div>
       </ha-card>`;
   }
@@ -2977,18 +3096,55 @@ class EvTripHistoryCard extends HTMLElement {
       </div>`;
   }
 
-  _chargesHtml(charges, sym, DASH, fmtNum) {
-    if (!charges.length) return `<div class="empty">No charges recorded yet.</div>`;
+  _chargesHtml(allCharges, sym, DASH, fmtNum) {
+    if (!allCharges.length) return `<div class="empty">${L("No charges recorded yet.", "Todavía no hay cargas registradas.")}</div>`;
+
+    // v-next — the month calendar. It is built from the WHOLE window (so a
+    // month's cells are right no matter what the list below is filtered to)
+    // and then narrows that list: a month by default, a single day once one
+    // is tapped. `_calAll` opts back out to the full window without moving
+    // the calendar, so the view can always get back to everything.
+    const showCal = this._config.calendar !== false;
+    // First render: land on the newest month that actually HAS charges, not
+    // blindly on the current one. Opening the view on the 2nd of a month and
+    // being told "no charges on the selected date" is a worse default than
+    // showing the last month you charged in.
+    if (showCal && !this._calInit) {
+      this._calInit = true;
+      const newest = allCharges
+        .map((c) => _chargeDayKey(c.ended_at || c.started_at))
+        .filter((k) => k !== "unknown")
+        .sort()
+        .pop();
+      if (newest) {
+        const now = new Date();
+        const [ny, nm] = newest.split("-").map(Number);
+        const back = (now.getFullYear() - ny) * 12 + (now.getMonth() + 1 - nm);
+        if (back > 0) this._calOffset = back;
+      }
+    }
+    const calHtml = showCal ? this._chargeCalendarHtml(allCharges, sym, DASH, fmtNum) : "";
+    let charges = allCharges;
+    if (showCal && !this._calAll) {
+      const m = this._calMonthKey();
+      charges = allCharges.filter((c) => {
+        const k = _chargeDayKey(c.ended_at || c.started_at);
+        return this._calDay ? k === this._calDay : k.startsWith(m);
+      });
+    }
+    // The header count is rendered after this method runs, so tell it what
+    // is actually on screen — "60 charges" over a list filtered to one day
+    // is just wrong.
+    this._shownCount = charges.length;
+    this._windowCount = allCharges.length;
+    if (!charges.length) {
+      return calHtml + `<div class="empty">${L("No charges on the selected date.", "No hay cargas en la fecha seleccionada.")}</div>`;
+    }
 
     // Group sessions by calendar day (from ended_at). Day key is YYYY-MM-DD so
     // it's stable + sortable; the label is a short "Mon 02/06".
     const p = (n) => String(n).padStart(2, "0");
-    const dayKey = (iso) => {
-      if (!iso) return "unknown";
-      const d = new Date(iso);
-      if (isNaN(d)) return "unknown";
-      return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
-    };
+    const dayKey = _chargeDayKey;
     const dayLabel = (key) => {
       if (key === "unknown") return "Unknown date";
       const [, m, dd] = key.split("-");
@@ -3029,7 +3185,7 @@ class EvTripHistoryCard extends HTMLElement {
     const chips = SORTS.map(([k, lbl]) =>
       `<button class="cs-btn${this._chargeSort === k ? " cs-btn--on" : ""}" data-sort="${k}">${_esc(lbl)}</button>`
     ).join("");
-    const bar = `<div class="cs-bar"><span class="cs-lbl">${L("sort by", "ordenar por")}</span>${chips}</div>`;
+    const bar = calHtml + `<div class="cs-bar"><span class="cs-lbl">${L("sort by", "ordenar por")}</span>${chips}</div>`;
 
     if (this._chargeSort !== "date") {
       const key = {
@@ -3096,6 +3252,117 @@ class EvTripHistoryCard extends HTMLElement {
       .join("");
   }
 
+  // YYYY-MM of the month the calendar is showing (offset months back from now).
+  _calMonthKey() {
+    const now = new Date();
+    const d = new Date(now.getFullYear(), now.getMonth() - (this._calOffset || 0), 1);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+  }
+
+  // A month grid of the charge history: every day that has sessions is a
+  // tappable cell showing how many and how much, coloured by AC vs DC. This
+  // is the "find the charge" path — scrolling a 60-session list to reach a
+  // Tuesday in July is not one. Tapping a day narrows the list below to it;
+  // tapping it again, or "all", goes back.
+  _chargeCalendarHtml(charges, sym, DASH, fmtNum) {
+    const p2 = (n) => String(n).padStart(2, "0");
+    // Aggregate the whole window by day, so the cells stay correct whatever
+    // the list is filtered to.
+    const byDay = {};
+    const months = new Set();
+    let curSym = "€";
+    for (const c of charges) {
+      const k = _chargeDayKey(c.ended_at || c.started_at);
+      if (k === "unknown") continue;
+      months.add(k.slice(0, 7));
+      const e = byDay[k] || (byDay[k] = { n: 0, kwh: 0, cost: 0, dc: 0, ac: 0, live: false });
+      e.n += 1;
+      if (c.kwh != null && !isNaN(c.kwh)) e.kwh += Number(c.kwh);
+      if (c.total_cost != null && !isNaN(c.total_cost)) e.cost += Number(c.total_cost);
+      const kind = _chargeKind(c);
+      if (kind === "DC") e.dc += 1;
+      else if (kind === "AC") e.ac += 1;
+      if (c.in_progress) e.live = true;
+      if (c.currency) curSym = sym(c.currency);
+    }
+
+    const monthKey = this._calMonthKey();
+    const [yy, mm] = monthKey.split("-").map(Number);
+    const first = new Date(yy, mm - 1, 1);
+    const daysInMonth = new Date(yy, mm, 0).getDate();
+    // Monday-first grid: JS getDay() is 0=Sunday, so shift it.
+    const lead = (first.getDay() + 6) % 7;
+
+    const MONTHS_ES = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"];
+    const MONTHS_EN = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+    const monthName = (_uiLang === "es" ? MONTHS_ES : MONTHS_EN)[mm - 1];
+    const WD = _uiLang === "es" ? ["L", "M", "X", "J", "V", "S", "D"] : ["M", "T", "W", "T", "F", "S", "S"];
+
+    // Navigation bounds: never past the current month, and no further back
+    // than the oldest month the window still holds (the logger keeps a
+    // rolling 60 sessions, so there is nothing to see beyond it).
+    const sorted = [...months].sort();
+    const oldest = sorted[0] || monthKey;
+    const canOlder = monthKey > oldest;
+    const canNewer = (this._calOffset || 0) > 0;
+
+    // Month totals — from the aggregate, so they match the cells exactly.
+    let mN = 0, mKwh = 0, mCost = 0;
+    for (const k in byDay) {
+      if (!k.startsWith(monthKey)) continue;
+      mN += byDay[k].n; mKwh += byDay[k].kwh; mCost += byDay[k].cost;
+    }
+
+    const todayKey = _chargeDayKey(new Date().toISOString());
+    const cells = [];
+    for (let i = 0; i < lead; i++) cells.push(`<div class="cal-c cal-c--pad"></div>`);
+    for (let day = 1; day <= daysInMonth; day++) {
+      const key = `${monthKey}-${p2(day)}`;
+      const e = byDay[key];
+      const isToday = key === todayKey;
+      const sel = this._calDay === key;
+      if (!e) {
+        cells.push(`<div class="cal-c${isToday ? " cal-c--today" : ""}"><span class="cal-d">${day}</span></div>`);
+        continue;
+      }
+      // Colour by what dominated the day; a day with both gets the mixed
+      // treatment rather than silently picking one.
+      const cls = e.dc && e.ac ? "cal-c--mix" : e.dc ? "cal-c--dc" : "cal-c--ac";
+      const title = `${e.n} ${L(e.n === 1 ? "charge" : "charges", e.n === 1 ? "carga" : "cargas")} · ${e.kwh.toFixed(1)} kWh${e.cost ? ` · ${e.cost.toFixed(2)} ${curSym}` : ""}`;
+      cells.push(
+        `<button type="button" class="cal-c cal-c--has ${cls}${sel ? " cal-c--sel" : ""}${isToday ? " cal-c--today" : ""}${e.live ? " cal-c--live" : ""}" data-cal-day="${_esc(key)}" title="${_esc(title)}">` +
+        `<span class="cal-d">${day}</span>` +
+        `<span class="cal-kwh">${e.kwh >= 10 ? e.kwh.toFixed(0) : e.kwh.toFixed(1)}</span>` +
+        `${e.n > 1 ? `<span class="cal-n">${e.n}</span>` : ""}` +
+        `</button>`
+      );
+    }
+
+    const filterChip = this._calDay
+      ? `<button type="button" class="cal-all" data-cal-all="1"><ha-icon icon="mdi:close"></ha-icon>${L("all", "todo")}</button>`
+      : this._calAll
+        ? `<span class="cal-note">${L("showing the whole window", "mostrando todo el histórico")}</span>`
+        : `<button type="button" class="cal-all" data-cal-all="1">${L("show all", "ver todo")}</button>`;
+
+    return `
+      <div class="cal">
+        <div class="cal-head">
+          <button type="button" class="cal-nav" data-cal-nav="1"${canOlder ? "" : " disabled"}><ha-icon icon="mdi:chevron-left"></ha-icon></button>
+          <span class="cal-title">${_esc(monthName)} ${yy}</span>
+          <button type="button" class="cal-nav" data-cal-nav="-1"${canNewer ? "" : " disabled"}><ha-icon icon="mdi:chevron-right"></ha-icon></button>
+          <span class="cal-tot">${mN ? `${mN} · <b>${mKwh.toFixed(1)}</b> kWh${mCost ? ` · <b>${mCost.toFixed(2)}</b> ${_esc(curSym)}` : ""}` : L("no charges", "sin cargas")}</span>
+          ${filterChip}
+        </div>
+        <div class="cal-wd">${WD.map((d) => `<span>${d}</span>`).join("")}</div>
+        <div class="cal-grid">${cells.join("")}</div>
+        <div class="cal-key">
+          <span class="cal-kd cal-kd--ac"></span>${L("AC", "AC")}
+          <span class="cal-kd cal-kd--dc"></span>${L("DC fast", "DC rápida")}
+          <span class="cal-kd cal-kd--mix"></span>${L("both", "las dos")}
+        </div>
+      </div>`;
+  }
+
   _chargeDayDetailHtml(sessions, sym, DASH, fmtNum, timeOf) {
     // v2.133 — the "same charger" lookup has to span the whole history, not
     // just the day being expanded: you rated the site on a previous visit,
@@ -3117,8 +3384,12 @@ class EvTripHistoryCard extends HTMLElement {
           const ss0 = r0(c.soc_start), se0 = r0(c.soc_end);
           const socStr = se0 != null ? (ss0 != null ? `${ss0}→${se0}% (+${se0 - ss0})` : `→${se0}%`) : null;
           const socChip = socStr ? `<span class="chip chip--soc"><ha-icon icon="mdi:battery-charging-high"></ha-icon>${socStr}</span>` : "";
-          const type = c.type ? String(c.type).toUpperCase() : (c.is_dcfc ? "DC" : null);
-          const typeChip = type ? `<span class="chip chip--${type === "DC" ? "dc" : "ac"}">${_esc(type)}</span>` : "";
+          const type = _chargeKind(c);
+          const typeChip = type
+            ? `<span class="chip chip--${type === "DC" ? "dc" : "ac"}"><ha-icon icon="${type === "DC" ? "mdi:ev-station" : "mdi:power-plug-outline"}"></ha-icon>${_esc(type)}</span>`
+            : "";
+          const whereLive = _chargeWhere(c);
+          const whereChipLive = `<span class="chip chip--${whereLive.home ? "home" : "away"}"><ha-icon icon="${whereLive.home ? "mdi:home-lightning-bolt-outline" : "mdi:map-marker-outline"}"></ha-icon>${_esc(whereLive.label)}</span>`;
           const pwrEnt = this._hass.states[`sensor.${this._device}_current_charge_power`];
           const pwr = pwrEnt && !isNaN(parseFloat(pwrEnt.state)) ? `${Number(pwrEnt.state).toFixed(1)} kW` : null;
           const liveEff = parseFloat(((this._hass.states[`sensor.${this._device}_current_charge_efficiency`] || {}).state));
@@ -3130,7 +3401,7 @@ class EvTripHistoryCard extends HTMLElement {
                 <div class="sbody">
                   <div class="sroute">
                     <span class="chip chip--live"><ha-icon icon="mdi:flash"></ha-icon>${L("Charging now", "Cargando ahora")}</span>
-                    <span class="chip">${_endpoint(null, c.location)}</span>
+                    ${whereChipLive}
                     ${typeChip}
                     ${socChip}
                     ${effChipLive}
@@ -3141,8 +3412,16 @@ class EvTripHistoryCard extends HTMLElement {
               </div>
             </div>`;
         }
-        const type = c.type ? String(c.type).toUpperCase() : (c.is_dcfc ? "DC" : null);
-        const typeChip = type ? `<span class="chip chip--${type === "DC" ? "dc" : "ac"}">${_esc(type)}</span>` : "";
+        // v-next — AC is a real answer, not a missing one: `is_dcfc === false`
+        // used to fall through to null here, so every AC session rendered
+        // without a type chip and the list looked like it only knew about DC.
+        const type = _chargeKind(c);
+        const typeChip = type
+          ? `<span class="chip chip--${type === "DC" ? "dc" : "ac"}"><ha-icon icon="${type === "DC" ? "mdi:ev-station" : "mdi:power-plug-outline"}"></ha-icon>${_esc(type)}</span>`
+          : "";
+        // Home vs away, said outright rather than left to a raw zone token.
+        const where = _chargeWhere(c);
+        const whereChip = `<span class="chip chip--${where.home ? "home" : "away"}"><ha-icon icon="${where.home ? "mdi:home-lightning-bolt-outline" : "mdi:map-marker-outline"}"></ha-icon>${_esc(where.label)}</span>`;
         const total = c.total_cost != null ? `${fmtNum(c.total_cost, 2)} ${_esc(sym(c.currency))}` : DASH;
         // Per-charge power-vs-time curve (recorder history, fetched lazily).
         const id = c.charge_id != null ? c.charge_id : c.id;
@@ -3359,7 +3638,7 @@ class EvTripHistoryCard extends HTMLElement {
               <div class="sbody">
                 <div class="sroute">
                   <span class="stime">${timeOf(c.ended_at)}</span>
-                  <span class="chip">${_endpoint(null, c.location)}</span>
+                  ${whereChip}
                   ${typeChip}
                   ${socChip}
                   ${effChip}
@@ -5044,6 +5323,35 @@ const _zoneLabel = (zone) => {
 // `not_home` token) and NO coordinates, so an away charge can only be named by
 // geocoding where the car stood during the charge window.
 const _chargeKey = (c) => (c == null ? null : c.charge_id != null ? c.charge_id : c.id != null ? c.id : c.ended_at || null);
+// Local calendar day of a charge, as YYYY-MM-DD. Local on purpose: a session
+// that ends at 00:40 belongs to that night in the user's calendar, and using
+// the ISO string's UTC date would file it under the previous day in summer.
+const _chargeDayKey = (iso) => {
+  if (!iso) return "unknown";
+  const d = new Date(iso);
+  if (isNaN(d)) return "unknown";
+  const p = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+};
+// AC / DC for a charge, or null when the logger didn't say. `is_dcfc === false`
+// is a real answer (it IS an AC charge) — treating it as "unknown" is what made
+// every AC session render without a type chip.
+const _chargeKind = (c) => {
+  if (!c) return null;
+  if (c.type) return String(c.type).toUpperCase();
+  if (c.is_dcfc === true) return "DC";
+  if (c.is_dcfc === false) return "AC";
+  return null;
+};
+// Where a charge happened, as {home, label}: `home` for the home zone, the
+// zone's own name for another named place, and "away" when the car was
+// outside every zone (the street then comes from the geocoder).
+const _chargeWhere = (c) => {
+  const zone = _zoneLabel(c && c.location);
+  if (zone === "Home") return { home: true, label: L("At home", "En casa") };
+  if (zone) return { home: false, label: zone };
+  return { home: false, label: L("Away", "Fuera de casa") };
+};
 const _chargeAway = (c) => !_zoneLabel(c && c.location);
 // Street of an away charge: the first vehicle position inside the charge window
 // (± 2 min) from the recorder, reverse-geocoded (an HA zone containing the point

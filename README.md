@@ -98,6 +98,14 @@ All cards live in `cards/` and can be `!include`-ed from any view. Below: the ca
 | `cards/charges-v2.yaml` | "Last 10 charges" tiles + inline price editor (corrects the most recent or a specific id). |
 | `cards/charges-history.yaml` | Full charge history table. |
 
+**Finding a charge (Charges view).** The history card opens with a **month calendar**: every day that has sessions is a cell showing the kWh that went in, with the session count in the corner, coloured by **AC** (green), **DC fast** (amber) or **both** (blue). Tap a day and the list below narrows to it; tap it again — or **show all** — to go back. The arrows move month by month, stopping at the oldest month the `recent_charges` window still holds, and the view opens on the newest month that actually has charges rather than blindly on the current one.
+
+A session is filed under its **local** calendar day, taken from when it *ended*: a charge that finishes at 00:38 belongs to that night, which is also how you remember it.
+
+Each charge in the detail says **where** (`At home` / `Away` / the name of the zone, plus the geocoded street and a Maps link for away sessions) and **which kind** (`AC` / `DC`). Both are chips with their own icon and colour, so the two things you sort charges by are readable at a glance instead of inferred from the price.
+
+Pass `calendar: false` to the card for a plain grouped list.
+
 ### Analytics
 
 | Card | Shows |
