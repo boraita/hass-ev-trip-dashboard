@@ -173,3 +173,18 @@ test("calendar:false keeps the plain list", () => {
   assert.doesNotMatch(html, /class="cal-grid"/);
   assert.match(html, /class="count">4 cargas</, "and shows the whole window");
 });
+
+test("the calendar sits outside the scrolling list, and labels its number", () => {
+  // Reported live: with the calendar inside the list container, `scrollRows`
+  // clipped the month and the first week was only reachable by scrolling the
+  // card — the opposite of what a calendar is for.
+  const html = build(FIXTURE, { scrollRows: 5 }).innerHTML;
+  const calAt = html.indexOf('class="cal"');
+  const listAt = html.indexOf('class="list list--scroll"');
+  assert.ok(calAt > 0 && listAt > 0);
+  assert.ok(calAt < listAt, "calendar must be rendered before the list container");
+  // And nothing of the grid may appear after the list opens.
+  assert.equal(html.indexOf("cal-grid") < listAt, true);
+  // The figure on a cell says what it is.
+  assert.match(html, /class="cal-kwh">[\d.]+<\/span><span class="cal-u">kWh</);
+});

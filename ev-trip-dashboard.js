@@ -2659,6 +2659,20 @@ class EvTripHistoryCard extends HTMLElement {
     const DASH = "—";
     const fmtNum = (v, dp) => (v == null || isNaN(v) ? DASH : dp == null ? String(v) : Number(v).toFixed(dp));
 
+    // v-next — the calendar renders OUTSIDE the list container. Inside it,
+    // `scrollRows` clipped the month to whatever height was left over and you
+    // had to scroll the card to reach the first week, which defeats the point
+    // of a calendar: you are meant to take it in at a glance.
+    let calHtml = "";
+    if (kind === "charges") {
+      this._windowCount = rows.length;
+      if (this._config.calendar !== false) {
+        this._calInitFrom(rows);
+        calHtml = this._chargeCalendarHtml(rows, sym, DASH, fmtNum);
+        rows = this._calFilterRows(rows);
+      }
+      this._shownCount = rows.length;
+    }
     const inner = kind === "journeys" ? this._journeysHtml(rows, D, sym, DASH, fmtNum) : this._chargesHtml(rows, sym, DASH, fmtNum);
     if (kind === "charges") { this._fetchOpenDayCurves(rows); this._fetchOpenChargeStreets(rows); }
 
@@ -2827,16 +2841,21 @@ class EvTripHistoryCard extends HTMLElement {
           .cal-wd{padding:0 2px 3px;}
           .cal-wd span{text-align:center;font-size:.64em;font-weight:700;letter-spacing:.06em;
                        color:var(--secondary-text-color);}
-          .cal-c{position:relative;aspect-ratio:1/1;border:1px solid transparent;border-radius:9px;
-                 display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1px;
+          /* No aspect-ratio: a square cell made a 6-week month taller than
+             the card, which is what forced the scroll. Height comes from the
+             content plus a real gap between the date and the figure. */
+          .cal-c{position:relative;border:1px solid transparent;border-radius:9px;
+                 display:flex;flex-direction:column;align-items:center;justify-content:flex-start;gap:5px;
                  background:var(--secondary-background-color,var(--card-background-color));
-                 color:var(--secondary-text-color);font:inherit;padding:0;min-height:34px;}
-          .cal-c--pad{background:none;}
-          .cal-d{font-size:.72em;font-weight:600;line-height:1;}
+                 color:var(--secondary-text-color);font:inherit;padding:6px 2px 5px;min-height:50px;}
+          .cal-c--pad{background:none;min-height:0;}
+          .cal-d{font-size:.72em;font-weight:600;line-height:1;opacity:.85;}
           .cal-c--has{cursor:pointer;color:var(--primary-text-color);}
-          .cal-c--has .cal-d{font-weight:800;}
-          .cal-kwh{font-size:.66em;font-weight:800;font-variant-numeric:tabular-nums;line-height:1;}
-          .cal-n{position:absolute;top:2px;right:3px;font-size:.55em;font-weight:800;opacity:.8;}
+          .cal-c--has .cal-d{font-weight:800;opacity:1;}
+          .cal-v{display:flex;flex-direction:column;align-items:center;gap:1px;line-height:1;}
+          .cal-kwh{font-size:.8em;font-weight:800;font-variant-numeric:tabular-nums;line-height:1;}
+          .cal-u{font-size:.5em;font-weight:700;letter-spacing:.06em;text-transform:uppercase;opacity:.7;}
+          .cal-n{position:absolute;top:3px;right:4px;font-size:.55em;font-weight:800;opacity:.75;}
           /* rgba first, color-mix second: an older webview drops the
              second declaration and still gets a tinted cell rather than a
              bare one. The literals match the default HA accent colours. */
@@ -2932,6 +2951,7 @@ class EvTripHistoryCard extends HTMLElement {
               ? `${shown} ${L("of", "de")} ${win}`
               : `${shown} ${shown === 1 ? L("charge", "carga") : L("charges", "cargas")}`;
           })()}</span></div>
+        ${calHtml}
         <div class="list${this._config.scrollRows ? " list--scroll" : ""}"${this._config.scrollRows ? ` style="max-height:${Math.round(this._config.scrollRows * 78)}px;overflow-y:auto;"` : ""}>${inner}</div>
       </ha-card>`;
   }
@@ -3096,49 +3116,48 @@ class EvTripHistoryCard extends HTMLElement {
       </div>`;
   }
 
-  _chargesHtml(allCharges, sym, DASH, fmtNum) {
-    if (!allCharges.length) return `<div class="empty">${L("No charges recorded yet.", "Todavía no hay cargas registradas.")}</div>`;
+  // First render lands on the newest month that actually HAS charges, not
+  // blindly on the current one: opening the view on the 2nd of a month and
+  // being told "no charges on the selected date" is a worse default than
+  // showing the last month you charged in.
+  _calInitFrom(charges) {
+    if (this._calInit) return;
+    this._calInit = true;
+    const newest = charges
+      .map((c) => _chargeDayKey(c.ended_at || c.started_at))
+      .filter((k) => k !== "unknown")
+      .sort()
+      .pop();
+    if (!newest) return;
+    const now = new Date();
+    const [ny, nm] = newest.split("-").map(Number);
+    const back = (now.getFullYear() - ny) * 12 + (now.getMonth() + 1 - nm);
+    if (back > 0) this._calOffset = back;
+  }
 
-    // v-next — the month calendar. It is built from the WHOLE window (so a
-    // month's cells are right no matter what the list below is filtered to)
-    // and then narrows that list: a month by default, a single day once one
-    // is tapped. `_calAll` opts back out to the full window without moving
-    // the calendar, so the view can always get back to everything.
-    const showCal = this._config.calendar !== false;
-    // First render: land on the newest month that actually HAS charges, not
-    // blindly on the current one. Opening the view on the 2nd of a month and
-    // being told "no charges on the selected date" is a worse default than
-    // showing the last month you charged in.
-    if (showCal && !this._calInit) {
-      this._calInit = true;
-      const newest = allCharges
-        .map((c) => _chargeDayKey(c.ended_at || c.started_at))
-        .filter((k) => k !== "unknown")
-        .sort()
-        .pop();
-      if (newest) {
-        const now = new Date();
-        const [ny, nm] = newest.split("-").map(Number);
-        const back = (now.getFullYear() - ny) * 12 + (now.getMonth() + 1 - nm);
-        if (back > 0) this._calOffset = back;
-      }
-    }
-    const calHtml = showCal ? this._chargeCalendarHtml(allCharges, sym, DASH, fmtNum) : "";
-    let charges = allCharges;
-    if (showCal && !this._calAll) {
-      const m = this._calMonthKey();
-      charges = allCharges.filter((c) => {
-        const k = _chargeDayKey(c.ended_at || c.started_at);
-        return this._calDay ? k === this._calDay : k.startsWith(m);
-      });
-    }
-    // The header count is rendered after this method runs, so tell it what
-    // is actually on screen — "60 charges" over a list filtered to one day
-    // is just wrong.
-    this._shownCount = charges.length;
-    this._windowCount = allCharges.length;
+  // The month — or the single tapped day — the list is narrowed to. `_calAll`
+  // opts back out to the whole window without moving the calendar.
+  _calFilterRows(charges) {
+    if (this._config.calendar === false || this._calAll) return charges;
+    const m = this._calMonthKey();
+    return charges.filter((c) => {
+      const k = _chargeDayKey(c.ended_at || c.started_at);
+      return this._calDay ? k === this._calDay : k.startsWith(m);
+    });
+  }
+
+  _chargesHtml(charges, sym, DASH, fmtNum) {
     if (!charges.length) {
-      return calHtml + `<div class="empty">${L("No charges on the selected date.", "No hay cargas en la fecha seleccionada.")}</div>`;
+      // Which "empty" this is depends on whether a filter is on: an empty
+      // window and an empty day are different problems for the reader.
+      // …and an empty WINDOW is neither: with nothing logged at all there is
+      // no date to have selected, so say the plain thing.
+      const filtered = this._config.calendar !== false && !this._calAll && (this._windowCount || 0) > 0;
+      return `<div class="empty">${
+        filtered
+          ? L("No charges on the selected date.", "No hay cargas en la fecha seleccionada.")
+          : L("No charges recorded yet.", "Todavía no hay cargas registradas.")
+      }</div>`;
     }
 
     // Group sessions by calendar day (from ended_at). Day key is YYYY-MM-DD so
@@ -3185,7 +3204,7 @@ class EvTripHistoryCard extends HTMLElement {
     const chips = SORTS.map(([k, lbl]) =>
       `<button class="cs-btn${this._chargeSort === k ? " cs-btn--on" : ""}" data-sort="${k}">${_esc(lbl)}</button>`
     ).join("");
-    const bar = calHtml + `<div class="cs-bar"><span class="cs-lbl">${L("sort by", "ordenar por")}</span>${chips}</div>`;
+    const bar = `<div class="cs-bar"><span class="cs-lbl">${L("sort by", "ordenar por")}</span>${chips}</div>`;
 
     if (this._chargeSort !== "date") {
       const key = {
@@ -3332,7 +3351,9 @@ class EvTripHistoryCard extends HTMLElement {
       cells.push(
         `<button type="button" class="cal-c cal-c--has ${cls}${sel ? " cal-c--sel" : ""}${isToday ? " cal-c--today" : ""}${e.live ? " cal-c--live" : ""}" data-cal-day="${_esc(key)}" title="${_esc(title)}">` +
         `<span class="cal-d">${day}</span>` +
-        `<span class="cal-kwh">${e.kwh >= 10 ? e.kwh.toFixed(0) : e.kwh.toFixed(1)}</span>` +
+        // The number needs to say what it is. Unlabelled it reads as another
+        // date, or as the session count, which is the one thing it isn't.
+        `<span class="cal-v"><span class="cal-kwh">${e.kwh >= 10 ? e.kwh.toFixed(0) : e.kwh.toFixed(1)}</span><span class="cal-u">kWh</span></span>` +
         `${e.n > 1 ? `<span class="cal-n">${e.n}</span>` : ""}` +
         `</button>`
       );
