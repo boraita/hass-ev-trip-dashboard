@@ -18,7 +18,7 @@ views:
     sections:
       - type: grid
         cards:
-          !include ../cards/resumen-vehicle.yaml
+          - !include ../cards/resumen-vehicle.yaml
 
   - title: Viajes
     path: trips
@@ -28,7 +28,7 @@ views:
     sections:
       - type: grid
         cards:
-          !include ../cards/trip-list-v2.yaml
+          - !include ../cards/trip-list-v2.yaml
 
   - title: Cargas
     path: charges
@@ -38,5 +38,5 @@ views:
     sections:
       - type: grid
         cards:
-          !include ../cards/charges-v2.yaml
+          - !include ../cards/charges-v2.yaml
 
