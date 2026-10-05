@@ -197,7 +197,6 @@ cards:
         - entity: sensor.__DEVICE___recent_trips
           name: Score ≥ 7
           color: '#2ea043'
-          type: scatter
           data_generator: |
             const trips = (entity.attributes && entity.attributes.trips) || [];
             return trips
@@ -211,7 +210,6 @@ cards:
         - entity: sensor.__DEVICE___recent_trips
           name: Score 4–7
           color: '#f0883e'
-          type: scatter
           data_generator: |
             const trips = (entity.attributes && entity.attributes.trips) || [];
             return trips
@@ -225,7 +223,6 @@ cards:
         - entity: sensor.__DEVICE___recent_trips
           name: Score < 4
           color: '#f85149'
-          type: scatter
           data_generator: |
             const trips = (entity.attributes && entity.attributes.trips) || [];
             return trips
