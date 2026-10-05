@@ -267,6 +267,10 @@ for entities your car lacks, and run `scripts/apply-vehicle-map.sh <brand>`. The
 script's pre-flight lists any canonical token left unmapped. Group B telemetry
 (BYD-cloud consumption, `pm25_*`, doors/windows) is intentionally out of scope —
 those cards degrade on their own when the entities are absent. Note: the brand
-map covers the dashboard **cards** only; the `packages/vehicle-on-from-speed.yaml`
-helper also uses `__VEHICLE__` tokens (`vehicle_on`, `speed`, `power`) which are
-not Group A and must be mapped separately by the brand integrator.
+map covers the dashboard **cards** only; the `vehicle_on` helper packages also use
+`__VEHICLE__` tokens which are not Group A and must be mapped separately by the
+brand integrator — `packages/vehicle-on-from-speed.yaml` uses (`vehicle_on`,
+`speed`, `power`), `packages/vehicle-on-from-shift-state.yaml` uses (`vehicle_on`,
+`shift_state`). Pick the shift-state variant when the integration exposes a gear
+selector: it reads the selector directly, so it needs no power floor to reject
+HVAC / sentry / preconditioning draw while parked.

@@ -1,0 +1,31 @@
+# Optional helper for cars that expose a gear selector but no ignition flag —
+# Tesla (tesla_custom / Tesla Fleet) is the reference case.
+#
+# Sibling of vehicle-on-from-speed.yaml. Prefer THIS one when your integration
+# publishes a shift-state sensor, because it reads the gear selector directly
+# instead of inferring activity from speed/power. That sidesteps the whole
+# false-positive class the speed variant has to tune around: HVAC, sentry mode
+# and preconditioning can draw 0.5-2 kW while parked, so a power-based trigger
+# needs a hand-tuned floor and still twitches. A parked car is in P, full stop.
+#
+# Replace __VEHICLE__ with your car-integration slug, e.g. for tesla_custom the
+# entities are named after the vehicle ("relampago" -> sensor.relampago_shift_state).
+#
+# After dropping the file into config/packages/ and restarting HA, point
+# EV Trip Logger's "Vehicle on" config field to:
+#   binary_sensor.__VEHICLE___vehicle_on
+#
+# Shift-state values: D / R / N while driving, P when parked. When the car is
+# asleep or offline the sensor reads unknown/unavailable, which is not in the
+# driving set, so the sensor correctly reports off — the logger's retry chain
+# absorbs the cloud-poll lag on the off->on edge.
+
+template:
+  - binary_sensor:
+      - name: __VEHICLE__ Vehicle on
+        unique_id: __VEHICLE___vehicle_on
+        # ON only while a drive gear is selected. P / unknown / unavailable -> off.
+        state: >-
+          {{ states('sensor.__VEHICLE___shift_state') in ['D', 'R', 'N'] }}
+        device_class: power
+        icon: mdi:car
