@@ -61,20 +61,23 @@ cards:
         icon_color: teal
       # SOH — lives on the trip-logger device (__DEVICE__ prefix), not the
       # vehicle integration (__VEHICLE__) — sensor.__VEHICLE___state_of_health
-      # doesn't exist. A nonexistent entity's state is 'unknown', not
+      # doesn't exist. Note the object_id comes from the entity's NAME
+      # ("Battery state of health"), not from its key / unique_id suffix
+      # (battery_soh), so sensor.__DEVICE___battery_soh does not exist
+      # either. A nonexistent entity's state is 'unknown', not
       # 'unavailable', so both are excluded here to actually guard the chip.
       - type: conditional
         conditions:
           - condition: state
-            entity: sensor.__DEVICE___battery_soh
+            entity: sensor.__DEVICE___battery_state_of_health
             state_not: unavailable
           - condition: state
-            entity: sensor.__DEVICE___battery_soh
+            entity: sensor.__DEVICE___battery_state_of_health
             state_not: unknown
         chip:
           type: template
           icon: mdi:heart-pulse
-          content: "SOH {{ states('sensor.__DEVICE___battery_soh') }}%"
+          content: "SOH {{ states('sensor.__DEVICE___battery_state_of_health') }}%"
           icon_color: pink
       # SYSTEM — power system status; same guard pattern.
       - type: conditional
