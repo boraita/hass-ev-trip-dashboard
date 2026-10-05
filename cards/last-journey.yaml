@@ -71,18 +71,16 @@ cards:
         {% if st | length > 0 %}
         {%- set o = st[0] %}
         {%- set d = st[-1] %}
-        {%- set waypoints = [] %}
+        {%- set ns = namespace(waypoints=[],
+              markers=[o.start_lat ~ ',' ~ o.start_lon ~ ',lightgreen']) %}
         {%- for s in st[:-1] %}
-        {%-   set _ = waypoints.append(s.end_lat ~ ',' ~ s.end_lon) %}
+        {%-   set ns.waypoints = ns.waypoints + [s.end_lat ~ ',' ~ s.end_lon] %}
+        {%-   set ns.markers = ns.markers + [s.end_lat ~ ',' ~ s.end_lon ~ ',lightblue'] %}
         {%- endfor %}
+        {%- set waypoints = ns.waypoints %}
         {%- set wp = waypoints[:9] %}
         {%- set truncated = waypoints | length > 9 %}
-        {%- set markers = [] %}
-        {%- set _ = markers.append(o.start_lat ~ ',' ~ o.start_lon ~ ',lightgreen') %}
-        {%- for s in st[:-1] %}
-        {%-   set _ = markers.append(s.end_lat ~ ',' ~ s.end_lon ~ ',lightblue') %}
-        {%- endfor %}
-        {%- set _ = markers.append(d.end_lat ~ ',' ~ d.end_lon ~ ',red') %}
+        {%- set markers = ns.markers + [d.end_lat ~ ',' ~ d.end_lon ~ ',red'] %}
         {%- set lats = [o.start_lat | float] + (st | map(attribute='end_lat') | list | map('float') | list) %}
         {%- set lons = [o.start_lon | float] + (st | map(attribute='end_lon') | list | map('float') | list) %}
         {%- set c_lat = (lats | sum) / (lats | length) %}
